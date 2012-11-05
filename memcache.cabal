@@ -1,0 +1,35 @@
+name:           memcache
+version:        0.1.0.0
+homepage:       https://github.com/dterei/mc-hs
+bug-reports:    https://github.com/dterei/mc-hs/issues
+synopsis:       A memcached client library.
+description:    
+    A client library for a Memcache cluster. It is aimed at full binary
+    protocol support, ease of use and speed.
+license:        BSD3
+license-file:   LICENSE
+author:         David Terei <davidterei@gmail.com>
+maintainer:     David Terei <davidterei@gmail.com>
+copyright:      2012 David Terei.
+category:       Database
+build-type:     Simple
+cabal-version:  >= 1.6
+extra-source-files:
+    README.md
+
+library
+  exposed-modules:
+    Database.Memcache.Client
+
+  build-depends:
+    base < 5,
+    bytestring >= 0.9
+
+  ghc-options: -Wall
+  if impl(ghc >= 6.8)
+    ghc-options: -fwarn-tabs
+
+source-repository head
+  type:     git
+  location: http://github.com/dterei/mc-hs
+
