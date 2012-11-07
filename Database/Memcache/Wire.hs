@@ -4,12 +4,25 @@ import Database.Memcache.Protocol
 
 import Data.Binary.Get
 import Data.ByteString (ByteString)
+import qualified Data.ByteString as B
 import qualified Data.ByteString.Lazy as L
 import Data.ByteString.Builder
 import Data.Monoid
 
 serializeMsg :: Msg -> Builder
-serializeMsg (Msg h e k v) =
+serializeMsg (OpGet q k key _) = word8 0x80 
+
+serializeMsg :: Msg -> Builder
+serializeMsg msg = do
+    (c, key', value') <- getCodeKeyValue (op msg)
+    word8 0x80 -- send magic code
+    word8 c
+    let (keyl, key) = case key' of
+                        Just k  -> (B.length k, k)
+                        Nothing -> (0, B.empty)
+    let (vall, val) = case val' of
+                        Just v  -> (B.length v, v)
+                        Nothing -> (0, B.empty)
     serializeHeader h <> byteString e <> byteString k <> byteString v
 
 serializeMsg' :: Msg -> L.ByteString

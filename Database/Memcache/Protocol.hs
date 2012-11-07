@@ -15,107 +15,87 @@ import Data.Word
 -- ErrUnknownCommand = errors.New("mc: unknown command")
 -- ErrOutOfMemory    = errors.New("mc: out of memory")
 
--- Extras: Flags (Word32), Expiration (Word32), Delta (Word64), Initial (Word64)
+type Q          = Bool
+type K          = Bool
+type Key        = ByteString
+type Value      = ByteString
+type Expiration = Word32
+type Flags      = Word32
+type Version    = Word64
 
-type Q = Bool
-type K = Bool
-
--- XXX: Best to represent as flat list or something like OptGet Variant...
 -- 8 bits...
 data Operation'
-    = OpGet       Q K Key       SENone REFlags
+    = OpGet       Q K Key                        REFlags
     | OpSet       Q   Key Value SESet
     | OpAdd       Q   Key Value SESet
     | OpReplace   Q   Key Value SESet
-    | OpDelete    Q   Key
-    | OpIncrement Q   Key       SEIncr -- value returned is 64bit unsigned integer
+    | OpDelete    Q   Key       SENone
+    | OpIncrement Q   Key       SEIncr
     | OpDecrement Q   Key       SEIncr
-    | OpAppend    Q   Key Value
-    | OpPrepend   Q   Key Value
+    | OpAppend    Q   Key Value SENone
+    | OpPrepend   Q   Key Value SENone
     | OpTouch         Key       SETouch
     | OpGAT       Q K Key       SETouch
     | OpFlush     Q             (Maybe SETouch)
     | OpNoop
     | OpVersion
-    | OpStat          Key
-    | OpQuit      Q
+    | OpStat          (Maybe Key)
+    | OpQuit      Q            
 
-data Operation
-    = OpGet         -- Extras: Word32 (rcv only)
-    | OpGetQ
-    | OpGetK
-    | OpGetKQ
-    | OpSet         -- Extras: (Word32, Word32) (snd only)
-    | OpSetQ
-    | OpAdd         -- Extras: (Word32, Word32) (snd only)
-    | OpAddQ
-    | OpReplace     -- Extras: (Word32, Word32) (snd only)
-    | OpReplaceQ
-    | OpDelete
-    | OpDeleteQ
-    | OpIncrement   -- Extras: (Word64, Word64, Word32)
-    | OpIncrementQ
-    | OpDecrement   -- Extras: (Word64, Word64, Word32)
-    | OpDecrementQ
-    | OpAppend
-    | OpAppendQ
-    | OpPrepend
-    | OpPrependQ
-    | OpTouch       -- Extras: Word32 (snd only)
-    | OpGAT         -- Extras: Word32 (both snd/rcv)
-    | OpGATQ
-    | OpGATK
-    | OpGATKQ
-    | OpStat
-    | OpQuit
-    | OpQuitQ
-    | OpFlush       -- Extras: Maybe Word32 (snd only)
-    | OpFlushQ
-    | OpNoop
-    | OpVersion
-
-type Key = ByteString
-type Value = ByteString
-type Expiration = Word32
-type Flags = Word32
-type Initial = Word64
-type Delta = Word64
-type Version = Word64
-
-data SENone  = SENone
-data SEGet   = SEGET   { sflags :: Flags }
 data SESet   = SESet   { sflags :: Flags, expiration :: Expiration }
-data SEIncr  = SEIncr  { initial :: Initial, delta :: Delta, expiration :: Expiration }
+data SEIncr  = SEIncr  { initial :: Word64, delta :: Word64, expiration :: Expiration }
 data SETouch = SETouch { expiration :: Expiration }
 
 data REFlags = REFlags { rflags :: Flags }
 
-data AuthOperations
-    = OpAuthList
-    | OpAuthStart
-    | OpAuthStep
-
--- 8 bits
-data Direction
-    = MsgSend
-    | MsgRecv
-
-data Header = Header {
-        magic    :: Direction, -- 8 bits...
-        op       :: Operation, -- 8 bits...
-        keyLen   :: Word16,
-        extraLen :: Word8,
-        dataType :: Word8,  -- Not used...
-        status   :: Word16, -- Not used for snd, only rcv
-        bodyLen  :: Word32,
-        opaque   :: Word32,
-        cas      :: Version
+{-
+    header {
+        magic    :: Word8
+        op       :: Word8
+        keyLen   :: Word16
+        extraLen :: Word8
+        datatype :: Word8
+        status / reserved :: Word16
+        bodyLen  :: Word16
+        opaque   :: Word32
+        cas      :: Word64
     }
+    extras :: ByteString
+    key    :: ByteString
+    value  :: ByteString
+ -}
 
 data Msg = Msg {
-        header :: Header,
-        extras :: ByteString, -- XXX: size varies based on Op type... how to encode?
+        op     :: Operation
+        opaque :: Word32
+        cas    :: Version
         key    :: Key,
         value  :: Value
     }
 
+getCodeKeyValue :: Operation -> (Word8, Maybe Key, Maybe Value)
+getKey o = case o of
+    OpGet       q k key _ -> let c | !q !k = 0x00
+                                 c |  q !k = 0x09
+                                 c | !q  k = 0x0C
+                                 c |  _  _ = 0x0D
+                             in (c, Just key, Nothing)
+
+    OpSet       q   key v _ -> let c = if q then 0x11 else 0x01
+                               in (c, Just key, Just v)
+    OpAdd       q   key v _
+    -> (Just k, Just v)
+
+    OpReplace   q   key v _
+    OpDelete    Q   Key       SENone
+    OpIncrement Q   Key       SEIncr
+    OpDecrement Q   Key       SEIncr
+    OpAppend    Q   Key Value SENone
+    OpPrepend   Q   Key Value SENone
+    OpTouch         Key       SETouch
+    OpGAT       Q K Key       SETouch
+    OpFlush     Q             (Maybe SETouch)
+    OpNoop
+    OpVersion
+    OpStat          (Maybe Key)
+    OpQuit      Q            
