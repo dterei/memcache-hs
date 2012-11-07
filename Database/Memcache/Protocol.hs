@@ -1,5 +1,6 @@
 module Database.Memcache.Protocol where
 
+import Data.ByteString (ByteString)
 import Data.Word
 
 {- Error types... -}
@@ -14,66 +15,107 @@ import Data.Word
 -- ErrUnknownCommand = errors.New("mc: unknown command")
 -- ErrOutOfMemory    = errors.New("mc: out of memory")
 
+-- Extras: Flags (Word32), Expiration (Word32), Delta (Word64), Initial (Word64)
+
+type Q = Bool
+type K = Bool
+
 -- XXX: Best to represent as flat list or something like OptGet Variant...
+-- 8 bits...
+data Operation'
+    = OpGet       Q K Key       SENone REFlags
+    | OpSet       Q   Key Value SESet
+    | OpAdd       Q   Key Value SESet
+    | OpReplace   Q   Key Value SESet
+    | OpDelete    Q   Key
+    | OpIncrement Q   Key       SEIncr -- value returned is 64bit unsigned integer
+    | OpDecrement Q   Key       SEIncr
+    | OpAppend    Q   Key Value
+    | OpPrepend   Q   Key Value
+    | OpTouch         Key       SETouch
+    | OpGAT       Q K Key       SETouch
+    | OpFlush     Q             (Maybe SETouch)
+    | OpNoop
+    | OpVersion
+    | OpStat          Key
+    | OpQuit      Q
+
 data Operation
-    = OpGet
+    = OpGet         -- Extras: Word32 (rcv only)
     | OpGetQ
     | OpGetK
     | OpGetKQ
-    | OpSet
+    | OpSet         -- Extras: (Word32, Word32) (snd only)
     | OpSetQ
-    | OpAdd
+    | OpAdd         -- Extras: (Word32, Word32) (snd only)
     | OpAddQ
-    | OpReplace
+    | OpReplace     -- Extras: (Word32, Word32) (snd only)
     | OpReplaceQ
     | OpDelete
     | OpDeleteQ
-    | OpIncrement
+    | OpIncrement   -- Extras: (Word64, Word64, Word32)
     | OpIncrementQ
-    | OpDecrement
+    | OpDecrement   -- Extras: (Word64, Word64, Word32)
     | OpDecrementQ
     | OpAppend
     | OpAppendQ
     | OpPrepend
     | OpPrependQ
-    | OpTouch
-    | OpGAT
+    | OpTouch       -- Extras: Word32 (snd only)
+    | OpGAT         -- Extras: Word32 (both snd/rcv)
     | OpGATQ
     | OpGATK
     | OpGATKQ
     | OpStat
     | OpQuit
     | OpQuitQ
-    | OpFlush
+    | OpFlush       -- Extras: Maybe Word32 (snd only)
     | OpFlushQ
     | OpNoop
     | OpVersion
+
+type Key = ByteString
+type Value = ByteString
+type Expiration = Word32
+type Flags = Word32
+type Initial = Word64
+type Delta = Word64
+type Version = Word64
+
+data SENone  = SENone
+data SEGet   = SEGET   { sflags :: Flags }
+data SESet   = SESet   { sflags :: Flags, expiration :: Expiration }
+data SEIncr  = SEIncr  { initial :: Initial, delta :: Delta, expiration :: Expiration }
+data SETouch = SETouch { expiration :: Expiration }
+
+data REFlags = REFlags { rflags :: Flags }
 
 data AuthOperations
     = OpAuthList
     | OpAuthStart
     | OpAuthStep
 
+-- 8 bits
 data Direction
     = MsgSend
     | MsgRecv
 
 data Header = Header {
-        magic    :: Direction,
-        op       :: Operation,
+        magic    :: Direction, -- 8 bits...
+        op       :: Operation, -- 8 bits...
         keyLen   :: Word16,
         extraLen :: Word8,
-        dataType :: Word8,
-        status   :: Word16,
+        dataType :: Word8,  -- Not used...
+        status   :: Word16, -- Not used for snd, only rcv
         bodyLen  :: Word32,
         opaque   :: Word32,
-        cas      :: Word64
+        cas      :: Version
     }
 
 data Msg = Msg {
         header :: Header,
-        extras :: Word64, -- XXX: size varies based on Operation type... how to encode?
-        key    :: Bytestring,
-        value  :: Bytestring
+        extras :: ByteString, -- XXX: size varies based on Op type... how to encode?
+        key    :: Key,
+        value  :: Value
     }
 

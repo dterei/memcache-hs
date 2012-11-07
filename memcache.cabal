@@ -20,10 +20,15 @@ extra-source-files:
 library
   exposed-modules:
     Database.Memcache.Client
+    Database.Memcache.Protocol
+    Database.Memcache.Server
+    Database.Memcache.Wire
 
   build-depends:
     base < 5,
-    bytestring >= 0.9
+    binary >= 0.6.2.0,
+    bytestring >= 0.10.2.0,
+    network >= 2.4
 
   ghc-options: -Wall
   if impl(ghc >= 6.8)
