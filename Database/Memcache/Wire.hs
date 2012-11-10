@@ -2,6 +2,7 @@ module Database.Memcache.Wire where
 
 import Database.Memcache.Protocol
 
+import Data.Binary.Get
 import qualified Data.ByteString as B
 import qualified Data.ByteString.Lazy as L
 import Data.ByteString.Builder
@@ -85,54 +86,12 @@ getCodeKeyValue o = case o of
     ReqQuit     False         -> (0x07, Nothing, Nothing, Nothing)
     ReqQuit     True          -> (0x17, Nothing, Nothing, Nothing)
 
--- deserializeMsg' :: L.ByteString -> Msg
--- deserializeMsg' = runGet deserializeMsg
--- 
--- deserializeMsg :: Get Msg
--- deserializeMsg = do
---     m <- deserializeDirection
---     o <- deserializeOperation
---     kl <- getWord16be
---     el <- getWord8
---     skip 1 -- unused data type field
---     st <- getWord16be
---     vl <- getWord32be
---     opq <- getWord32be
---     ver <- getWord64be
---     e <- getByteString (fromIntegral el)
---     k <- getByteString (fromIntegral kl)
---     v <- getByteString (fromIntegral vl)
---     let h = Header {
---             magic    = m,
---             op       = o,
---             keyLen   = kl,
---             extraLen = el,
---             dataType = 0,
---             status   = st,
---             valueLen = vl,
---             opaque   = opq,
---             cas      = ver
---         }
---         msg = Msg {
---             header = h,
---             extras = e,
---             key    = k,
---             value  = v
---         }
---     return msg
--- 
--- deserializeDirection :: Get Direction
--- deserializeDirection = do
---     m <- getWord8
---     return $ case m of
---         0x80 -> MsgSend
---         0x81 -> MsgRecv
---         _    -> error "Shit!"
--- 
+dzResponse' :: L.ByteString -> Response
+dzResponse' = runGet dzResponse
 
--- XXX: Status!
 dzResponse :: Get Response
 dzResponse = do
+    -- XXX: Status!
     skip 1 -- assume 0x81...
     o   <- getWord8
     kl  <- getWord16be
@@ -145,41 +104,45 @@ dzResponse = do
     e   <- getByteString (fromIntegral el)
     k   <- getByteString (fromIntegral kl)
     v   <- getByteString (fromIntegral vl)
-    case o of
-        0x00 -> ResGet False (Just v) Nothing -- handle value, extras correctly and status
-        0x09 -> ResGet True  (Just v) Nothing
-        0x0C -> ResGetK False k (Just v) Nothing
-        0x0D -> ResGetK True  k (Just v) Nothing
-        0x01 -> ResSet False
-        0x11 -> ResSet True
-        0x02 -> ResAdd False
-        0x12 -> ResAdd True
-        0x03 -> ResReplace False
-        0x13 -> ResReplace True
-        0x04 -> ResDelete False
-        0x14 -> ResDelete True
-        0x05 -> ResIncrement False Nothing -- word64
-        0x15 -> ResIncrement True  Nothing -- word64
-        0x06 -> ResDecrement False Nothing
-        0x16 -> ResDecrement True  Nothing
-        0x0E -> ResAppend False
-        0x19 -> ResAppend True
-        0x0F -> ResPrepend False
-        0x1A -> ResPrepend True
-        0x1C -> ResTouch
-        0x1D -> ResGAT False (Just v)
-        0x1E -> ResGAT True  (Just v)
-        0x23 -> ResGATK False (Just v)
-        0x24 -> ResGATK True (Just v)
-        0x10 -> OpStat
-        0x07 -> OpQuit
-        0x17 -> OpQuitQ
-        0x08 -> OpFlush
-        0x18 -> OpFlushQ
-        0x0A -> OpNoop
-        0x0B -> OpVersion
-        _    -> error "Shit!"
-
--- deserializeFlags :: ByteString -> Flags
--- deserializeFlags = runGet getWord32be . L.fromStrict
+    let op' = case o of
+                -- XXX: handle value, extras correctly and status
+                0x00 -> ResGet False (Just v) Nothing
+                0x09 -> ResGet True  (Just v) Nothing
+                0x0C -> ResGetK False k (Just v) Nothing
+                0x0D -> ResGetK True  k (Just v) Nothing
+                0x01 -> ResSet False
+                0x11 -> ResSet True
+                0x02 -> ResAdd False
+                0x12 -> ResAdd True
+                0x03 -> ResReplace False
+                0x13 -> ResReplace True
+                0x04 -> ResDelete False
+                0x14 -> ResDelete True
+                0x05 -> ResIncrement False Nothing -- word64
+                0x15 -> ResIncrement True  Nothing -- word64
+                0x06 -> ResDecrement False Nothing
+                0x16 -> ResDecrement True  Nothing
+                0x0E -> ResAppend False
+                0x19 -> ResAppend True
+                0x0F -> ResPrepend False
+                0x1A -> ResPrepend True
+                0x1C -> ResTouch
+                0x1D -> ResGAT False (Just v)
+                0x1E -> ResGAT True  (Just v)
+                0x23 -> ResGATK False k (Just v)
+                0x24 -> ResGATK True k (Just v)
+                0x10 -> ResStat Nothing
+                0x07 -> ResQuit False
+                0x17 -> ResQuit True
+                0x08 -> ResFlush False
+                0x18 -> ResFlush True
+                0x0A -> ResNoop
+                0x0B -> ResVersion Nothing
+                _    -> error "Shit!"
+    return Res {
+            resOp = op',
+            resStatus = NoError,
+            resOpaque = opq,
+            resCas = ver
+        }
 

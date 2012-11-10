@@ -20,18 +20,6 @@ import Data.Word
     value  :: ByteString
  -}
 
-{- Error types... -}
--- ErrNotFound       = errors.New("mc: not found")
--- ErrKeyExists      = errors.New("mc: key exists")
--- ErrValueTooLarge  = errors.New("mc: value to large")
--- ErrInvalidArgs    = errors.New("mc: invalid arguments")
--- ErrValueNotStored = errors.New("mc: value not stored")
--- ErrNonNumeric     = errors.New("mc: incr/decr called on non-numeric value")
--- ErrAuthRequired   = errors.New("mc: authentication required")
--- ErrAuthContinue   = errors.New("mc: authentication continue (unsupported)")
--- ErrUnknownCommand = errors.New("mc: unknown command")
--- ErrOutOfMemory    = errors.New("mc: out of memory")
-
 type Q          = Bool
 type K          = Bool
 type Key        = ByteString
@@ -43,7 +31,6 @@ type Expiration = Word32
 type Flags      = Word32
 type Version    = Word64
 
--- 8 bits...
 data OpRequest
     = ReqGet       Q K Key
     | ReqSet       Q   Key Value SESet
@@ -72,7 +59,6 @@ data Request = Req {
         reqCas    :: Version
     }
 
--- 8 bits...
 data OpResponse
     = ResGet       Q     (Maybe Value) (Maybe REFlags)
     | ResGetK      Q Key (Maybe Value) (Maybe REFlags)
@@ -95,9 +81,22 @@ data OpResponse
 
 data REFlags = REFlags { rflags :: Flags }
 
+data Status
+    = NoError
+    | ErrNotFound
+    | ErrKeyExists
+    | ErrValueTooLarge
+    | ErrInvalidArgs
+    | ErrValueNotStored
+    | ErrNonNumeric
+    | ErrAuthRequired
+    | ErrAuthContinue
+    | ErrUnknownCommand
+    | ErrOutOfMemory
+
 data Response = Res {
         resOp     :: OpResponse,
-        resStatus :: Word16,
+        resStatus :: Status,
         resOpaque :: Word32,
         resCas    :: Version
     }
