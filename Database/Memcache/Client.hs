@@ -10,30 +10,31 @@ import Data.Word
 -- XXX: Errors as exceptions or return values?
 
 get :: Connection -> Key -> Version -> IO (Value, Flags, Version)
-get c k v = do
-    -- XXX: check key length is valid
-    let hd = Header {
-            magic    = MsgSend,
-            op       = OpGet,
-            keyLen   = fromIntegral (B.length k),
-            extraLen = 0,
-            dataType = 0,
-            status   = 0,
-            bodyLen  = 0,
-            opaque   = 0,
-            cas      = v
-        }
-        msg = Msg {
-            header = hd,
-            extras = B.empty,
-            key    = k,
-            value  = B.empty
-        }
-        msg_z = serializeMsg msg
-    r_z <- sendRecv c msg_z
-    let r = deserializeMsg' r_z
-        f = deserializeFlags (extras r)
-    return (value r, f, cas $ header r)
+get = undefined
+-- get c k v = do
+--     -- XXX: check key length is valid
+--     let hd = Header {
+--             magic    = MsgSend,
+--             op       = OpGet,
+--             keyLen   = fromIntegral (B.length k),
+--             extraLen = 0,
+--             dataType = 0,
+--             status   = 0,
+--             bodyLen  = 0,
+--             opaque   = 0,
+--             cas      = v
+--         }
+--         msg = Msg {
+--             header = hd,
+--             extras = B.empty,
+--             key    = k,
+--             value  = B.empty
+--         }
+--         msg_z = serializeMsg msg
+--     r_z <- sendRecv c msg_z
+--     let r = deserializeMsg' r_z
+--         f = deserializeFlags (extras r)
+--     return (value r, f, cas $ header r)
 
 gat :: Connection -> Key -> Expiration -> IO (Value, Flags, Version)
 gat = undefined

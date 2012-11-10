@@ -4,8 +4,8 @@ homepage:       https://github.com/dterei/mc-hs
 bug-reports:    https://github.com/dterei/mc-hs/issues
 synopsis:       A memcached client library.
 description:    
-    A client library for a Memcache cluster. It is aimed at full binary
-    protocol support, ease of use and speed.
+  A client library for a Memcache cluster. It is aimed at full binary
+  protocol support, ease of use and speed.
 license:        BSD3
 license-file:   LICENSE
 author:         David Terei <davidterei@gmail.com>
@@ -15,7 +15,7 @@ category:       Database
 build-type:     Simple
 cabal-version:  >= 1.6
 extra-source-files:
-    README.md
+  README.md
 
 library
   exposed-modules:
@@ -30,7 +30,21 @@ library
     bytestring >= 0.10.2.0,
     network >= 2.4
 
-  ghc-options: -Wall
+  ghc-options: -Wall -O2
+  if impl(ghc >= 6.8)
+    ghc-options: -fwarn-tabs
+
+benchmark parser
+  type:           exitcode-stdio-1.0
+
+  hs-source-dirs: . bench
+  main-is:        Parser.hs
+
+  build-depends:
+    base < 5,
+    criterion > 0.6.0.0
+
+  ghc-options: -O2
   if impl(ghc >= 6.8)
     ghc-options: -fwarn-tabs
 

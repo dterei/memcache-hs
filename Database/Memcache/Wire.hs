@@ -2,156 +2,175 @@ module Database.Memcache.Wire where
 
 import Database.Memcache.Protocol
 
-import Data.Binary.Get
-import Data.ByteString (ByteString)
 import qualified Data.ByteString as B
 import qualified Data.ByteString.Lazy as L
 import Data.ByteString.Builder
 import Data.Monoid
+import Data.Word
 
-serializeMsg :: Msg -> Builder
-serializeMsg (OpGet q k key _) = word8 0x80 
+szRequest' :: Request -> L.ByteString
+szRequest' = toLazyByteString . szRequest
 
-serializeMsg :: Msg -> Builder
-serializeMsg msg = do
-    (c, key', value') <- getCodeKeyValue (op msg)
-    word8 0x80 -- send magic code
-    word8 c
-    let (keyl, key) = case key' of
-                        Just k  -> (B.length k, k)
-                        Nothing -> (0, B.empty)
-    let (vall, val) = case val' of
-                        Just v  -> (B.length v, v)
-                        Nothing -> (0, B.empty)
-    serializeHeader h <> byteString e <> byteString k <> byteString v
+szRequest :: Request -> Builder
+szRequest req =
+       word8 0x80
+    <> word8 c
+    <> word16BE keyl
+    <> word8 extl
+    <> word8 0
+    <> word16BE 0
+    <> word32BE vall
+    <> word32BE (reqOpaque req)
+    <> word64BE (reqCas req)
+    <> ext'
+    <> key'
+    <> val'
+  where
+    (c, k', v', e') = getCodeKeyValue (reqOp req)
+    (extl, ext') = case e' of
+        Just e  -> (fromIntegral $ B.length e, byteString e)
+        Nothing -> (0, mempty)
+    (keyl, key') = case k' of
+        Just k  -> (fromIntegral $ B.length k, byteString k)
+        Nothing -> (0, mempty)
+    (vall, val') = case v' of
+        Just v  -> (fromIntegral $ B.length v, byteString v)
+        Nothing -> (0, mempty)
 
-serializeMsg' :: Msg -> L.ByteString
-serializeMsg' = toLazyByteString . serializeMsg
+getCodeKeyValue :: OpRequest -> (Word8, Maybe Key, Maybe Value, Maybe Extras)
+getCodeKeyValue o = case o of
+    ReqGet      q k key   -> let c | q && k    = 0x0D
+                                   | q         = 0x09
+                                   | k         = 0x0C
+                                   | otherwise = 0x00
+                             in (c, Just key, Nothing, Nothing)
 
-serializeHeader :: Header -> Builder
-serializeHeader h =
-    serializeDirection (magic h) <>
-    serializeOperation (op h) <>
-    word16BE (keyLen h) <>
-    word8 (extraLen h) <>
-    word8 0 <>    -- Datatype, which is not used right now...
-    word16BE 0 <> -- Reserved for snd (status for recv)...
-    word32BE (bodyLen h) <>
-    word32BE (opaque h) <>
-    word64BE (cas h)
+    ReqSet       False key v _ -> (0x01, Just key, Just v, Nothing)
+    ReqSet       True  key v _ -> (0x11, Just key, Just v, Nothing)
 
-serializeDirection :: Direction -> Builder
-serializeDirection MsgSend = word8 0x80
-serializeDirection MsgRecv = word8 0x81
+    ReqAdd       False key v _ -> (0x02, Just key, Just v, Nothing)
+    ReqAdd       True  key v _ -> (0x12, Just key, Just v, Nothing)
 
-serializeOperation :: Operation -> Builder
-serializeOperation o = word8 $ case o of
-    OpGet         -> 0x00
-    OpGetQ        -> 0x09
-    OpGetK        -> 0x0C
-    OpGetKQ       -> 0x0D
-    OpSet         -> 0x01
-    OpSetQ        -> 0x11
-    OpAdd         -> 0x02
-    OpAddQ        -> 0x12
-    OpReplace     -> 0x03
-    OpReplaceQ    -> 0x13
-    OpDelete      -> 0x04
-    OpDeleteQ     -> 0x14
-    OpIncrement   -> 0x05
-    OpIncrementQ  -> 0x15
-    OpDecrement   -> 0x06
-    OpDecrementQ  -> 0x16
-    OpAppend      -> 0x0E
-    OpAppendQ     -> 0x19
-    OpPrepend     -> 0x0F
-    OpPrependQ    -> 0x1A
-    OpTouch       -> 0x1C
-    OpGAT         -> 0x1D
-    OpGATQ        -> 0x1E
-    OpGATK        -> 0x23
-    OpGATKQ       -> 0x24
-    OpStat        -> 0x10
-    OpQuit        -> 0x07
-    OpQuitQ       -> 0x17
-    OpFlush       -> 0x08
-    OpFlushQ      -> 0x18
-    OpNoop        -> 0x0A
-    OpVersion     -> 0x0B
+    ReqReplace   False key v _ -> (0x03, Just key, Just v, Nothing)
+    ReqReplace   True  key v _ -> (0x13, Just key, Just v, Nothing)
 
-deserializeMsg' :: L.ByteString -> Msg
-deserializeMsg' = runGet deserializeMsg
+    ReqDelete    False key     -> (0x04, Just key, Nothing, Nothing)
+    ReqDelete    True  key     -> (0x14, Just key, Nothing, Nothing)
 
-deserializeMsg :: Get Msg
-deserializeMsg = do
-    m <- deserializeDirection
-    o <- deserializeOperation
-    kl <- getWord16be
-    el <- getWord8
+    ReqIncrement False key   _ -> (0x05, Just key, Nothing, Nothing)
+    ReqIncrement True  key   _ -> (0x15, Just key, Nothing, Nothing)
+
+    ReqDecrement False key   _ -> (0x06, Just key, Nothing, Nothing)
+    ReqDecrement True  key   _ -> (0x16, Just key, Nothing, Nothing)
+
+    ReqAppend    False key v   -> (0x0E, Just key, Just v, Nothing)
+    ReqAppend    True  key v   -> (0x19, Just key, Just v, Nothing)
+
+    ReqPrepend   False key v   -> (0x0F, Just key, Just v, Nothing)
+    ReqPrepend   True  key v   -> (0x1A, Just key, Just v, Nothing)
+
+    ReqTouch           key   _ -> (0x1C, Just key, Nothing, Nothing)
+
+    ReqGAT       q k   key   _ -> let c | q && k    = 0x24
+                                        | q         = 0x1E
+                                        | k         = 0x23
+                                        | otherwise = 0x1D
+                                  in (c, Just key, Nothing, Nothing)
+
+    ReqFlush    False      _  -> (0x08, Nothing, Nothing, Nothing)
+    ReqFlush    True       _  -> (0x18, Nothing, Nothing, Nothing)
+    ReqNoop                   -> (0x0A, Nothing, Nothing, Nothing)
+    ReqVersion                -> (0x0B, Nothing, Nothing, Nothing)
+    ReqStat           key     -> (0x10, key, Nothing, Nothing)
+    ReqQuit     False         -> (0x07, Nothing, Nothing, Nothing)
+    ReqQuit     True          -> (0x17, Nothing, Nothing, Nothing)
+
+-- deserializeMsg' :: L.ByteString -> Msg
+-- deserializeMsg' = runGet deserializeMsg
+-- 
+-- deserializeMsg :: Get Msg
+-- deserializeMsg = do
+--     m <- deserializeDirection
+--     o <- deserializeOperation
+--     kl <- getWord16be
+--     el <- getWord8
+--     skip 1 -- unused data type field
+--     st <- getWord16be
+--     vl <- getWord32be
+--     opq <- getWord32be
+--     ver <- getWord64be
+--     e <- getByteString (fromIntegral el)
+--     k <- getByteString (fromIntegral kl)
+--     v <- getByteString (fromIntegral vl)
+--     let h = Header {
+--             magic    = m,
+--             op       = o,
+--             keyLen   = kl,
+--             extraLen = el,
+--             dataType = 0,
+--             status   = st,
+--             valueLen = vl,
+--             opaque   = opq,
+--             cas      = ver
+--         }
+--         msg = Msg {
+--             header = h,
+--             extras = e,
+--             key    = k,
+--             value  = v
+--         }
+--     return msg
+-- 
+-- deserializeDirection :: Get Direction
+-- deserializeDirection = do
+--     m <- getWord8
+--     return $ case m of
+--         0x80 -> MsgSend
+--         0x81 -> MsgRecv
+--         _    -> error "Shit!"
+-- 
+
+-- XXX: Status!
+dzResponse :: Get Response
+dzResponse = do
+    skip 1 -- assume 0x81...
+    o   <- getWord8
+    kl  <- getWord16be
+    el  <- getWord8
     skip 1 -- unused data type field
-    st <- getWord16be
-    vl <- getWord32be
+    st  <- getWord16be
+    vl  <- getWord32be
     opq <- getWord32be
     ver <- getWord64be
-    e <- getByteString (fromIntegral el)
-    k <- getByteString (fromIntegral kl)
-    v <- getByteString (fromIntegral vl)
-    let h = Header {
-            magic    = m,
-            op       = o,
-            keyLen   = kl,
-            extraLen = el,
-            dataType = 0,
-            status   = st,
-            bodyLen  = vl,
-            opaque   = opq,
-            cas      = ver
-        }
-        msg = Msg {
-            header = h,
-            extras = e,
-            key    = k,
-            value  = v
-        }
-    return msg
-
-deserializeDirection :: Get Direction
-deserializeDirection = do
-    m <- getWord8
-    return $ case m of
-        0x80 -> MsgSend
-        0x81 -> MsgRecv
-        _    -> error "Shit!"
-
-deserializeOperation :: Get Operation
-deserializeOperation = do
-    o <- getWord8
-    return $ case o of
-        0x00 -> OpGet
-        0x09 -> OpGetQ
-        0x0C -> OpGetK
-        0x0D -> OpGetKQ
-        0x01 -> OpSet
-        0x11 -> OpSetQ
-        0x02 -> OpAdd
-        0x12 -> OpAddQ
-        0x03 -> OpReplace
-        0x13 -> OpReplaceQ
-        0x04 -> OpDelete
-        0x14 -> OpDeleteQ
-        0x05 -> OpIncrement
-        0x15 -> OpIncrementQ
-        0x06 -> OpDecrement
-        0x16 -> OpDecrementQ
-        0x0E -> OpAppend
-        0x19 -> OpAppendQ
-        0x0F -> OpPrepend
-        0x1A -> OpPrependQ
-        0x1C -> OpTouch
-        0x1D -> OpGAT
-        0x1E -> OpGATQ
-        0x23 -> OpGATK
-        0x24 -> OpGATKQ
+    e   <- getByteString (fromIntegral el)
+    k   <- getByteString (fromIntegral kl)
+    v   <- getByteString (fromIntegral vl)
+    case o of
+        0x00 -> ResGet False (Just v) Nothing -- handle value, extras correctly and status
+        0x09 -> ResGet True  (Just v) Nothing
+        0x0C -> ResGetK False k (Just v) Nothing
+        0x0D -> ResGetK True  k (Just v) Nothing
+        0x01 -> ResSet False
+        0x11 -> ResSet True
+        0x02 -> ResAdd False
+        0x12 -> ResAdd True
+        0x03 -> ResReplace False
+        0x13 -> ResReplace True
+        0x04 -> ResDelete False
+        0x14 -> ResDelete True
+        0x05 -> ResIncrement False Nothing -- word64
+        0x15 -> ResIncrement True  Nothing -- word64
+        0x06 -> ResDecrement False Nothing
+        0x16 -> ResDecrement True  Nothing
+        0x0E -> ResAppend False
+        0x19 -> ResAppend True
+        0x0F -> ResPrepend False
+        0x1A -> ResPrepend True
+        0x1C -> ResTouch
+        0x1D -> ResGAT False (Just v)
+        0x1E -> ResGAT True  (Just v)
+        0x23 -> ResGATK False (Just v)
+        0x24 -> ResGATK True (Just v)
         0x10 -> OpStat
         0x07 -> OpQuit
         0x17 -> OpQuitQ
@@ -161,6 +180,6 @@ deserializeOperation = do
         0x0B -> OpVersion
         _    -> error "Shit!"
 
-deserializeFlags :: ByteString -> Flags
-deserializeFlags = runGet getWord32be . L.fromStrict
+-- deserializeFlags :: ByteString -> Flags
+-- deserializeFlags = runGet getWord32be . L.fromStrict
 

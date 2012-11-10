@@ -3,6 +3,23 @@ module Database.Memcache.Protocol where
 import Data.ByteString (ByteString)
 import Data.Word
 
+{-
+    header {
+        magic    :: Word8
+        op       :: Word8
+        keyLen   :: Word16
+        extraLen :: Word8
+        datatype :: Word8
+        status / reserved :: Word16
+        valueLen :: Word32
+        opaque   :: Word32
+        cas      :: Word64
+    }
+    extras :: ByteString
+    key    :: ByteString
+    value  :: ByteString
+ -}
+
 {- Error types... -}
 -- ErrNotFound       = errors.New("mc: not found")
 -- ErrKeyExists      = errors.New("mc: key exists")
@@ -19,83 +36,69 @@ type Q          = Bool
 type K          = Bool
 type Key        = ByteString
 type Value      = ByteString
+type Extras     = ByteString
+type Initial    = Word64
+type Delta      = Word64
 type Expiration = Word32
 type Flags      = Word32
 type Version    = Word64
 
 -- 8 bits...
-data Operation'
-    = OpGet       Q K Key                        REFlags
-    | OpSet       Q   Key Value SESet
-    | OpAdd       Q   Key Value SESet
-    | OpReplace   Q   Key Value SESet
-    | OpDelete    Q   Key       SENone
-    | OpIncrement Q   Key       SEIncr
-    | OpDecrement Q   Key       SEIncr
-    | OpAppend    Q   Key Value SENone
-    | OpPrepend   Q   Key Value SENone
-    | OpTouch         Key       SETouch
-    | OpGAT       Q K Key       SETouch
-    | OpFlush     Q             (Maybe SETouch)
-    | OpNoop
-    | OpVersion
-    | OpStat          (Maybe Key)
-    | OpQuit      Q            
+data OpRequest
+    = ReqGet       Q K Key
+    | ReqSet       Q   Key Value SESet
+    | ReqAdd       Q   Key Value SESet
+    | ReqReplace   Q   Key Value SESet
+    | ReqDelete    Q   Key
+    | ReqIncrement Q   Key       SEIncr
+    | ReqDecrement Q   Key       SEIncr
+    | ReqAppend    Q   Key Value
+    | ReqPrepend   Q   Key Value
+    | ReqTouch         Key       SETouch
+    | ReqGAT       Q K Key       SETouch
+    | ReqFlush     Q             (Maybe SETouch)
+    | ReqNoop
+    | ReqVersion
+    | ReqStat          (Maybe Key)
+    | ReqQuit      Q
 
-data SESet   = SESet   { sflags :: Flags, expiration :: Expiration }
-data SEIncr  = SEIncr  { initial :: Word64, delta :: Word64, expiration :: Expiration }
-data SETouch = SETouch { expiration :: Expiration }
+data SESet   = SESet   Flags Expiration
+data SEIncr  = SEIncr  Initial Delta Expiration
+data SETouch = SETouch Expiration
+
+data Request = Req {
+        reqOp     :: OpRequest,
+        reqOpaque :: Word32,
+        reqCas    :: Version
+    }
+
+-- 8 bits...
+data OpResponse
+    = ResGet       Q     (Maybe Value) (Maybe REFlags)
+    | ResGetK      Q Key (Maybe Value) (Maybe REFlags)
+    | ResSet       Q
+    | ResAdd       Q
+    | ResReplace   Q
+    | ResDelete    Q
+    | ResIncrement Q     (Maybe Word64)
+    | ResDecrement Q     (Maybe Word64)
+    | ResAppend    Q
+    | ResPrepend   Q
+    | ResTouch
+    | ResGAT       Q     (Maybe Value)
+    | ResGATK      Q Key (Maybe Value)
+    | ResFlush     Q
+    | ResNoop
+    | ResVersion         (Maybe Value)
+    | ResStat            (Maybe Value)
+    | ResQuit      Q
 
 data REFlags = REFlags { rflags :: Flags }
 
-{-
-    header {
-        magic    :: Word8
-        op       :: Word8
-        keyLen   :: Word16
-        extraLen :: Word8
-        datatype :: Word8
-        status / reserved :: Word16
-        bodyLen  :: Word16
-        opaque   :: Word32
-        cas      :: Word64
-    }
-    extras :: ByteString
-    key    :: ByteString
-    value  :: ByteString
- -}
-
-data Msg = Msg {
-        op     :: Operation
-        opaque :: Word32
-        cas    :: Version
-        key    :: Key,
-        value  :: Value
+data Response = Res {
+        resOp     :: OpResponse,
+        resStatus :: Word16,
+        resOpaque :: Word32,
+        resCas    :: Version
     }
 
-getCodeKeyValue :: Operation -> (Word8, Maybe Key, Maybe Value)
-getKey o = case o of
-    OpGet       q k key _ -> let c | !q !k = 0x00
-                                 c |  q !k = 0x09
-                                 c | !q  k = 0x0C
-                                 c |  _  _ = 0x0D
-                             in (c, Just key, Nothing)
-
-    OpSet       q   key v _ -> let c = if q then 0x11 else 0x01
-                               in (c, Just key, Just v)
-    OpAdd       q   key v _
-    -> (Just k, Just v)
-
-    OpReplace   q   key v _
-    OpDelete    Q   Key       SENone
-    OpIncrement Q   Key       SEIncr
-    OpDecrement Q   Key       SEIncr
-    OpAppend    Q   Key Value SENone
-    OpPrepend   Q   Key Value SENone
-    OpTouch         Key       SETouch
-    OpGAT       Q K Key       SETouch
-    OpFlush     Q             (Maybe SETouch)
-    OpNoop
-    OpVersion
-    OpStat          (Maybe Key)
-    OpQuit      Q            
