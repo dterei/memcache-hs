@@ -3,7 +3,8 @@ module Database.Memcache.Protocol where
 import Data.ByteString (ByteString)
 import Data.Word
 
-{-
+{- MEMCACHE MESSAGE:
+
     header {
         magic    :: Word8
         op       :: Word8
@@ -60,6 +61,7 @@ data Request = Req {
     }
 
 data OpResponse
+    -- XXX: Lets get rid of all the maybe's and encode differently...
     = ResGet       Q     (Maybe Value) (Maybe REFlags)
     | ResGetK      Q Key (Maybe Value) (Maybe REFlags)
     | ResSet       Q
@@ -71,8 +73,8 @@ data OpResponse
     | ResAppend    Q
     | ResPrepend   Q
     | ResTouch
-    | ResGAT       Q     (Maybe Value)
-    | ResGATK      Q Key (Maybe Value)
+    | ResGAT       Q     (Maybe Value) (Maybe REFlags)
+    | ResGATK      Q Key (Maybe Value) (Maybe REFlags)
     | ResFlush     Q
     | ResNoop
     | ResVersion         (Maybe Value)
@@ -83,21 +85,32 @@ data REFlags = REFlags { rflags :: Flags }
 
 data Status
     = NoError
-    | ErrNotFound
+    | ErrKeyNotFound
     | ErrKeyExists
     | ErrValueTooLarge
     | ErrInvalidArgs
-    | ErrValueNotStored
-    | ErrNonNumeric
-    | ErrAuthRequired
-    | ErrAuthContinue
+    | ErrItemNotStored
+    | ErrValueNonNumeric
     | ErrUnknownCommand
     | ErrOutOfMemory
+    | SaslAuthRequired
+    | SaslAuthContinue
+    deriving (Eq, Show)
 
 data Response = Res {
         resOp     :: OpResponse,
         resStatus :: Status,
         resOpaque :: Word32,
         resCas    :: Version
+    }
+
+data Header = Header {
+        op       :: Word8,
+        keyLen   :: Word16,
+        extraLen :: Word8,
+        status   :: Status,
+        valueLen :: Word32,
+        opaque   :: Word32,
+        cas      :: Version
     }
 

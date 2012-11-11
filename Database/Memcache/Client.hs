@@ -4,40 +4,34 @@ import Database.Memcache.Protocol
 import Database.Memcache.Server
 import Database.Memcache.Wire
 
-import qualified Data.ByteString as B
 import Data.Word
 
 -- XXX: Errors as exceptions or return values?
 
-get :: Connection -> Key -> Version -> IO (Value, Flags, Version)
-get = undefined
--- get c k v = do
---     -- XXX: check key length is valid
---     let hd = Header {
---             magic    = MsgSend,
---             op       = OpGet,
---             keyLen   = fromIntegral (B.length k),
---             extraLen = 0,
---             dataType = 0,
---             status   = 0,
---             bodyLen  = 0,
---             opaque   = 0,
---             cas      = v
---         }
---         msg = Msg {
---             header = hd,
---             extras = B.empty,
---             key    = k,
---             value  = B.empty
---         }
---         msg_z = serializeMsg msg
---     r_z <- sendRecv c msg_z
---     let r = deserializeMsg' r_z
---         f = deserializeFlags (extras r)
---     return (value r, f, cas $ header r)
+get :: Connection -> Key -> Version -> IO (Maybe (Value, Flags, Version))
+get c k ver = do
+    let msg = Req { reqOp = ReqGet False False k, reqOpaque = 0, reqCas = ver }
+    r_z <- sendRecv c (szRequest msg)
+    let r = dzResponse' r_z
+    case resStatus r of
+        NoError -> case resOp r of
+            ResGet False (Just v) (Just (REFlags f)) -> return $ Just (v, f, resCas r)
+            _ -> error "unexpected response!"
+        ErrKeyNotFound -> return Nothing
+        _ -> error "unexpected error!"
 
-gat :: Connection -> Key -> Expiration -> IO (Value, Flags, Version)
-gat = undefined
+-- XXX: does GAT take a version?
+gat :: Connection -> Key -> Expiration -> IO (Maybe (Value, Flags, Version))
+gat c k e = do
+    let msg = Req { reqOp = ReqGAT False False k (SETouch e), reqOpaque = 0, reqCas = 0 }
+    r_z <- sendRecv c (szRequest msg)
+    let r = dzResponse' r_z
+    case resStatus r of
+        NoError -> case resOp r of
+            ResGAT False (Just v) (Just (REFlags f)) -> return  $ Just (v, f, resCas r)
+            _ -> error "unexpected response!"
+        ErrKeyNotFound -> return Nothing
+        _ -> error "unexpected error!"
 
 touch :: Connection -> Key -> Expiration -> IO Version
 touch = undefined

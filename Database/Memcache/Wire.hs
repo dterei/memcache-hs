@@ -91,58 +91,153 @@ dzResponse' = runGet dzResponse
 
 dzResponse :: Get Response
 dzResponse = do
-    -- XXX: Status!
     skip 1 -- assume 0x81...
     o   <- getWord8
     kl  <- getWord16be
     el  <- getWord8
     skip 1 -- unused data type field
-    st  <- getWord16be
+    st  <- dzStatus
     vl  <- getWord32be
     opq <- getWord32be
     ver <- getWord64be
-    e   <- getByteString (fromIntegral el)
-    k   <- getByteString (fromIntegral kl)
-    v   <- getByteString (fromIntegral vl)
-    let op' = case o of
-                -- XXX: handle value, extras correctly and status
-                0x00 -> ResGet False (Just v) Nothing
-                0x09 -> ResGet True  (Just v) Nothing
-                0x0C -> ResGetK False k (Just v) Nothing
-                0x0D -> ResGetK True  k (Just v) Nothing
-                0x01 -> ResSet False
-                0x11 -> ResSet True
-                0x02 -> ResAdd False
-                0x12 -> ResAdd True
-                0x03 -> ResReplace False
-                0x13 -> ResReplace True
-                0x04 -> ResDelete False
-                0x14 -> ResDelete True
-                0x05 -> ResIncrement False Nothing -- word64
-                0x15 -> ResIncrement True  Nothing -- word64
-                0x06 -> ResDecrement False Nothing
-                0x16 -> ResDecrement True  Nothing
-                0x0E -> ResAppend False
-                0x19 -> ResAppend True
-                0x0F -> ResPrepend False
-                0x1A -> ResPrepend True
-                0x1C -> ResTouch
-                0x1D -> ResGAT False (Just v)
-                0x1E -> ResGAT True  (Just v)
-                0x23 -> ResGATK False k (Just v)
-                0x24 -> ResGATK True k (Just v)
-                0x10 -> ResStat Nothing
-                0x07 -> ResQuit False
-                0x17 -> ResQuit True
-                0x08 -> ResFlush False
-                0x18 -> ResFlush True
-                0x0A -> ResNoop
-                0x0B -> ResVersion Nothing
-                _    -> error "Shit!"
-    return Res {
-            resOp = op',
-            resStatus = NoError,
-            resOpaque = opq,
-            resCas = ver
+    let h = Header {
+            op       = o,
+            keyLen   = kl,
+            extraLen = el,
+            status   = st,
+            valueLen = vl,
+            opaque   = opq,
+            cas      = ver
         }
+    case o of
+        0x00 -> dzGetResponse h $ ResGet False
+        0x09 -> dzGetResponse h $ ResGet True
+        0x1D -> dzGetResponse h $ ResGAT False
+        0x1E -> dzGetResponse h $ ResGAT True
+        0x0C -> dzGetKResponse h $ ResGetK False
+        0x0D -> dzGetKResponse h $ ResGetK True
+        0x23 -> dzGetKResponse h $ ResGATK False
+        0x24 -> dzGetKResponse h $ ResGATK True
+        0x05 -> dzNumericResponse h $ ResIncrement False
+        0x15 -> dzNumericResponse h $ ResIncrement True
+        0x06 -> dzNumericResponse h $ ResDecrement False
+        0x16 -> dzNumericResponse h $ ResDecrement True
+        0x01 -> dzGenericResponse h $ ResSet False
+        0x11 -> dzGenericResponse h $ ResSet True
+        0x02 -> dzGenericResponse h $ ResAdd False
+        0x12 -> dzGenericResponse h $ ResAdd True
+        0x03 -> dzGenericResponse h $ ResReplace False
+        0x13 -> dzGenericResponse h $ ResReplace True
+        0x04 -> dzGenericResponse h $ ResDelete False
+        0x14 -> dzGenericResponse h $ ResDelete True
+        0x0E -> dzGenericResponse h $ ResAppend False
+        0x19 -> dzGenericResponse h $ ResAppend True
+        0x0F -> dzGenericResponse h $ ResPrepend False
+        0x1A -> dzGenericResponse h $ ResPrepend True
+        0x1C -> dzGenericResponse h $ ResTouch
+        0x07 -> dzGenericResponse h $ ResQuit False
+        0x17 -> dzGenericResponse h $ ResQuit True
+        0x08 -> dzGenericResponse h $ ResFlush False
+        0x18 -> dzGenericResponse h $ ResFlush True
+        0x0A -> dzGenericResponse h ResNoop
+        0x0B -> dzValueResponse h ResVersion
+        0x10 -> dzValueResponse h ResStat
+        _    -> error "Shit!" -- XXX: hande better...
+
+dzGenericResponse :: Header -> OpResponse -> Get Response
+dzGenericResponse h o = do
+    -- XXX: throw exception if any of below aren't 0...
+    skip (fromIntegral $ extraLen h)
+    skip (fromIntegral $ keyLen h)
+    skip (fromIntegral $ valueLen h)
+    return Res {
+            resOp     = o,
+            resStatus = status h,
+            resOpaque = opaque h,
+            resCas    = cas h
+        }
+
+dzGetResponse :: Header -> (Maybe Value -> Maybe REFlags -> OpResponse) -> Get Response
+dzGetResponse h o = do
+    -- XXX: extra lengths should be 4...
+    -- XXX: Make sure to always clear out extra length...
+    e <- if status h == NoError
+            then (Just . REFlags) `fmap` getWord32be
+            else return Nothing
+    -- XXX: key should be 0...
+    skip (fromIntegral $ keyLen h)
+    v <- getByteString (fromIntegral $ valueLen h)
+    let v' = if status h == NoError then Just v else Nothing
+    return Res {
+            resOp     = o v' e,
+            resStatus = status h,
+            resOpaque = opaque h,
+            resCas    = cas h
+        }
+    
+dzGetKResponse :: Header -> (Key -> Maybe Value -> Maybe REFlags -> OpResponse) -> Get Response
+dzGetKResponse h o = do
+    -- XXX: extra lengths should be 4...
+    -- XXX: Make sure to always clear out extra length...
+    e <- if status h == NoError
+            then (Just . REFlags) `fmap` getWord32be
+            else return Nothing
+    k <- getByteString (fromIntegral $ keyLen h)
+    v <- getByteString (fromIntegral $ valueLen h)
+    let v' = if status h == NoError then Just v else Nothing
+    return Res {
+            resOp     = o k v' e,
+            resStatus = status h,
+            resOpaque = opaque h,
+            resCas    = cas h
+        }
+
+dzNumericResponse :: Header -> (Maybe Word64 -> OpResponse) -> Get Response
+dzNumericResponse h o = do
+    -- XXX: extra & key should be 0
+    skip (fromIntegral $ extraLen h)
+    skip (fromIntegral $ keyLen h)
+    -- XXX: value length should be 8...
+    -- XXX: Make sure to always clear out value length...
+    v <- if status h == NoError
+            then Just `fmap` getWord64be
+            else return Nothing
+    return Res {
+            resOp     = o v,
+            resStatus = status h,
+            resOpaque = opaque h,
+            resCas    = cas h
+        }
+
+dzValueResponse :: Header -> (Maybe Value -> OpResponse) -> Get Response
+dzValueResponse h o = do
+    -- XXX: extra & key should be 0
+    skip (fromIntegral $ extraLen h)
+    skip (fromIntegral $ keyLen h)
+    -- XXX: value length should be 8...
+    v <- getByteString (fromIntegral $ valueLen h)
+    let v' = if status h == NoError then Just v else Nothing
+    return Res {
+            resOp     = o v',
+            resStatus = status h,
+            resOpaque = opaque h,
+            resCas    = cas h
+        }
+
+dzStatus :: Get Status
+dzStatus = do
+    st <- getWord16be
+    return $ case st of
+        0x00 -> NoError
+        0x01 -> ErrKeyNotFound
+        0x02 -> ErrKeyExists
+        0x03 -> ErrValueTooLarge
+        0x04 -> ErrInvalidArgs
+        0x05 -> ErrItemNotStored
+        0x06 -> ErrValueNonNumeric
+        0x81 -> ErrUnknownCommand
+        0x82 -> ErrOutOfMemory
+        0x20 -> SaslAuthRequired
+        0x21 -> SaslAuthContinue
+        _    -> error "Shit!"
 
