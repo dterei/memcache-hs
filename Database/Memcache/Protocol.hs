@@ -1,6 +1,9 @@
+{-# LANGUAGE DeriveDataTypeable #-}
 module Database.Memcache.Protocol where
 
+import Control.Exception
 import Data.ByteString (ByteString)
+import Data.Typeable
 import Data.Word
 
 {- MEMCACHE MESSAGE:
@@ -49,39 +52,38 @@ data OpRequest
     | ReqVersion
     | ReqStat          (Maybe Key)
     | ReqQuit      Q
+    deriving (Eq, Show, Typeable)
 
-data SESet   = SESet   Flags Expiration
-data SEIncr  = SEIncr  Initial Delta Expiration
-data SETouch = SETouch Expiration
+data SESet   = SESet   Flags Expiration         deriving (Eq, Show, Typeable)
+data SEIncr  = SEIncr  Initial Delta Expiration deriving (Eq, Show, Typeable)
+data SETouch = SETouch Expiration               deriving (Eq, Show, Typeable)
 
 data Request = Req {
         reqOp     :: OpRequest,
         reqOpaque :: Word32,
         reqCas    :: Version
-    }
+    } deriving (Eq, Show, Typeable)
 
 data OpResponse
-    -- XXX: Lets get rid of all the maybe's and encode differently...
-    = ResGet       Q     (Maybe Value) (Maybe REFlags)
-    | ResGetK      Q Key (Maybe Value) (Maybe REFlags)
+    = ResGet       Q     Value Flags
+    | ResGetK      Q Key Value Flags
     | ResSet       Q
     | ResAdd       Q
     | ResReplace   Q
     | ResDelete    Q
-    | ResIncrement Q     (Maybe Word64)
-    | ResDecrement Q     (Maybe Word64)
+    | ResIncrement Q     Word64
+    | ResDecrement Q     Word64
     | ResAppend    Q
     | ResPrepend   Q
     | ResTouch
-    | ResGAT       Q     (Maybe Value) (Maybe REFlags)
-    | ResGATK      Q Key (Maybe Value) (Maybe REFlags)
+    | ResGAT       Q     Value Flags
+    | ResGATK      Q Key Value Flags
     | ResFlush     Q
     | ResNoop
     | ResVersion         (Maybe Value)
     | ResStat            (Maybe Value)
     | ResQuit      Q
-
-data REFlags = REFlags { rflags :: Flags }
+    deriving (Eq, Show, Typeable)
 
 data Status
     = NoError
@@ -95,14 +97,14 @@ data Status
     | ErrOutOfMemory
     | SaslAuthRequired
     | SaslAuthContinue
-    deriving (Eq, Show)
+    deriving (Eq, Show, Typeable)
 
 data Response = Res {
         resOp     :: OpResponse,
         resStatus :: Status,
         resOpaque :: Word32,
         resCas    :: Version
-    }
+    } deriving (Eq, Show, Typeable)
 
 data Header = Header {
         op       :: Word8,
@@ -112,5 +114,13 @@ data Header = Header {
         valueLen :: Word32,
         opaque   :: Word32,
         cas      :: Version
-    }
+    } deriving (Eq, Show, Typeable)
+
+data ProtocolError = ProtocolError {
+        protocolMessage :: String,
+        protocolHeader  :: Maybe Header,
+        protocolParams  :: [String]
+    } deriving (Eq, Show, Typeable)
+
+instance Exception ProtocolError
 

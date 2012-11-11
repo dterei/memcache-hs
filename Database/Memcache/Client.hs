@@ -15,10 +15,10 @@ get c k ver = do
     let r = dzResponse' r_z
     case resStatus r of
         NoError -> case resOp r of
-            ResGet False (Just v) (Just (REFlags f)) -> return $ Just (v, f, resCas r)
-            _ -> error "unexpected response!"
+            ResGet False v f -> return $ Just (v, f, resCas r)
+            _                -> error "unexpected response!"
         ErrKeyNotFound -> return Nothing
-        _ -> error "unexpected error!"
+        _              -> error "unexpected error!"
 
 -- XXX: does GAT take a version?
 gat :: Connection -> Key -> Expiration -> IO (Maybe (Value, Flags, Version))
@@ -28,10 +28,10 @@ gat c k e = do
     let r = dzResponse' r_z
     case resStatus r of
         NoError -> case resOp r of
-            ResGAT False (Just v) (Just (REFlags f)) -> return  $ Just (v, f, resCas r)
-            _ -> error "unexpected response!"
+            ResGAT False v f -> return $ Just (v, f, resCas r)
+            _                -> error "unexpected response!"
         ErrKeyNotFound -> return Nothing
-        _ -> error "unexpected error!"
+        _              -> error "unexpected error!"
 
 touch :: Connection -> Key -> Expiration -> IO Version
 touch = undefined

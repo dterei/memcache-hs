@@ -2,6 +2,8 @@ module Database.Memcache.Wire where
 
 import Database.Memcache.Protocol
 
+import Control.Exception
+import Control.Monad
 import Data.Binary.Get
 import qualified Data.ByteString as B
 import qualified Data.ByteString.Lazy as L
@@ -91,7 +93,7 @@ dzResponse' = runGet dzResponse
 
 dzResponse :: Get Response
 dzResponse = do
-    skip 1 -- assume 0x81...
+    skip 1 -- assume 0x81... XXX: should I assume?
     o   <- getWord8
     kl  <- getWord16be
     el  <- getWord8
@@ -142,14 +144,20 @@ dzResponse = do
         0x0A -> dzGenericResponse h ResNoop
         0x0B -> dzValueResponse h ResVersion
         0x10 -> dzValueResponse h ResStat
-        _    -> error "Shit!" -- XXX: hande better...
+        _    -> throw $ ProtocolError {
+                    protocolMessage = "Unknown operation type!",
+                    protocolHeader  = Just h,
+                    protocolParams  = [show o]
+                }
 
 dzGenericResponse :: Header -> OpResponse -> Get Response
 dzGenericResponse h o = do
-    -- XXX: throw exception if any of below aren't 0...
     skip (fromIntegral $ extraLen h)
     skip (fromIntegral $ keyLen h)
     skip (fromIntegral $ valueLen h)
+    chkLength h 0 (extraLen h) "Extra length expected to be zero!"
+    chkLength h 0 (keyLen   h) "Key length expected to be zero!"
+    chkLength h 0 (valueLen h) "Value length expected to be zero!"
     return Res {
             resOp     = o,
             resStatus = status h,
@@ -157,51 +165,48 @@ dzGenericResponse h o = do
             resCas    = cas h
         }
 
-dzGetResponse :: Header -> (Maybe Value -> Maybe REFlags -> OpResponse) -> Get Response
+dzGetResponse :: Header -> (Value -> Flags -> OpResponse) -> Get Response
 dzGetResponse h o = do
-    -- XXX: extra lengths should be 4...
-    -- XXX: Make sure to always clear out extra length...
-    e <- if status h == NoError
-            then (Just . REFlags) `fmap` getWord32be
-            else return Nothing
-    -- XXX: key should be 0...
+    e <- if status h == NoError && extraLen h == 4
+            then getWord32be
+            else skip (fromIntegral $ extraLen h) >> return 0
     skip (fromIntegral $ keyLen h)
     v <- getByteString (fromIntegral $ valueLen h)
-    let v' = if status h == NoError then Just v else Nothing
+    chkLength h 4 (extraLen h) "Extra length expected to be four!"
+    chkLength h 0 (keyLen   h) "Key length expected to be zero!"
     return Res {
-            resOp     = o v' e,
+            resOp     = o v e,
             resStatus = status h,
             resOpaque = opaque h,
             resCas    = cas h
         }
+  where
     
-dzGetKResponse :: Header -> (Key -> Maybe Value -> Maybe REFlags -> OpResponse) -> Get Response
+dzGetKResponse :: Header -> (Key -> Value -> Flags -> OpResponse) -> Get Response
 dzGetKResponse h o = do
-    -- XXX: extra lengths should be 4...
-    -- XXX: Make sure to always clear out extra length...
-    e <- if status h == NoError
-            then (Just . REFlags) `fmap` getWord32be
-            else return Nothing
+    e <- if status h == NoError && extraLen h == 4
+            then getWord32be
+            else skip (fromIntegral $ extraLen h) >> return 0
     k <- getByteString (fromIntegral $ keyLen h)
     v <- getByteString (fromIntegral $ valueLen h)
-    let v' = if status h == NoError then Just v else Nothing
+    chkLength h 4 (extraLen h) "Extra length expected to be four!"
     return Res {
-            resOp     = o k v' e,
+            resOp     = o k v e,
             resStatus = status h,
             resOpaque = opaque h,
             resCas    = cas h
         }
 
-dzNumericResponse :: Header -> (Maybe Word64 -> OpResponse) -> Get Response
+dzNumericResponse :: Header -> (Word64 -> OpResponse) -> Get Response
 dzNumericResponse h o = do
-    -- XXX: extra & key should be 0
     skip (fromIntegral $ extraLen h)
     skip (fromIntegral $ keyLen h)
-    -- XXX: value length should be 8...
-    -- XXX: Make sure to always clear out value length...
-    v <- if status h == NoError
-            then Just `fmap` getWord64be
-            else return Nothing
+    v <- if status h == NoError && valueLen h == 8
+            then getWord64be
+            else skip (fromIntegral $ valueLen h) >> return 0
+    chkLength h 0 (extraLen h) "Extra length expected to be zero!"
+    chkLength h 0 (keyLen   h) "Key length expected to be zero!"
+    chkLength h 8 (valueLen h) "Value length expected to be zero!"
     return Res {
             resOp     = o v,
             resStatus = status h,
@@ -211,11 +216,11 @@ dzNumericResponse h o = do
 
 dzValueResponse :: Header -> (Maybe Value -> OpResponse) -> Get Response
 dzValueResponse h o = do
-    -- XXX: extra & key should be 0
     skip (fromIntegral $ extraLen h)
     skip (fromIntegral $ keyLen h)
-    -- XXX: value length should be 8...
     v <- getByteString (fromIntegral $ valueLen h)
+    chkLength h 0 (extraLen h) "Extra length expected to be zero!"
+    chkLength h 0 (keyLen   h) "Key length expected to be zero!"
     let v' = if status h == NoError then Just v else Nothing
     return Res {
             resOp     = o v',
@@ -239,5 +244,17 @@ dzStatus = do
         0x82 -> ErrOutOfMemory
         0x20 -> SaslAuthRequired
         0x21 -> SaslAuthContinue
-        _    -> error "Shit!"
+        _    -> throw $ ProtocolError {
+                    protocolMessage = "Unknown status type!",
+                    protocolHeader  = Nothing,
+                    protocolParams  = [show st]
+                }
+
+chkLength :: (Eq a, Show a) => Header -> a -> a -> String -> Get ()
+chkLength h expected l msg =
+    when (l /= expected) $ return $ throw ProtocolError {
+            protocolMessage = msg,
+            protocolHeader  = Just h,
+            protocolParams  = [show l]
+        }
 
