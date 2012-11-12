@@ -1,3 +1,4 @@
+-- | Deals with serializing and parsing memcached requests and responses.
 module Database.Memcache.Wire where
 
 import Database.Memcache.Types

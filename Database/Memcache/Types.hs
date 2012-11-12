@@ -1,4 +1,7 @@
 {-# LANGUAGE DeriveDataTypeable #-}
+
+-- | Stores the various types needed by memcache. Mostly concerned with the
+-- representation of the protocol.
 module Database.Memcache.Types where
 
 import Control.Exception

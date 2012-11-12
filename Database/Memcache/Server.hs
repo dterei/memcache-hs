@@ -1,3 +1,5 @@
+-- | Handles the connections between a memcache client and the various servers
+-- that make up the cluster.
 module Database.Memcache.Server where
 
 import qualified Data.ByteString.Lazy as L (ByteString)

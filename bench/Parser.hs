@@ -1,4 +1,6 @@
 {-# LANGUAGE BangPatterns, OverloadedStrings #-}
+
+-- | Benchmark the parsing and serialization aspects of memcache.
 module Main where
 
 import Database.Memcache.Types
@@ -16,6 +18,9 @@ main =
         bgroup "serialize" [
             bench "get" $ whnf szRequest' getReqMsg,
             bench "set" $ whnf szRequest' setReqMsg
+        ]
+        bgroup "deserialize" [
+            bench "get" $ whnf dzResponse' getRespBytes
         ]
     ]
 

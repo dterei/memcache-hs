@@ -1,3 +1,9 @@
+-- | A raw, low level interface to the memcache protocol.
+--
+-- The various operations are represented in full as they appear at the
+-- protocol level and so aren't generaly well suited for application use.
+-- Instead, applications should use Database.Memcache.Client which presents a
+-- higher level API suited for application use.
 module Database.Memcache.Protocol where
 
 import Database.Memcache.Server
