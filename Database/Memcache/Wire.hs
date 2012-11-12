@@ -1,6 +1,6 @@
 module Database.Memcache.Wire where
 
-import Database.Memcache.Protocol
+import Database.Memcache.Types
 
 import Control.Exception
 import Control.Monad

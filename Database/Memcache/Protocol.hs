@@ -1,126 +1,173 @@
-{-# LANGUAGE DeriveDataTypeable #-}
 module Database.Memcache.Protocol where
 
+import Database.Memcache.Server
+import Database.Memcache.Types
+import Database.Memcache.Wire
+
 import Control.Exception
-import Data.ByteString (ByteString)
-import Data.Typeable
 import Data.Word
 
-{- MEMCACHE MESSAGE:
+get :: Connection -> Key -> IO (Maybe (Value, Flags, Version))
+get c k = do
+    let msg = emptyReq { reqOp = ReqGet False False k }
+    r_z <- sendRecv c (szRequest msg)
+    let r = dzResponse' r_z
+    -- XXX: Probably want to match on return op first, then status...
+    case resStatus r of
+        NoError -> case resOp r of
+            ResGet False v f -> return $ Just (v, f, resCas r)
+            _                -> throwIO $ IncorrectResponse {
+                                        increspMessage = "Expected GET response! Got: " ++ show (resOp r),
+                                        increspActual  = r
+                                    }
+        ErrKeyNotFound -> return Nothing
+        _              -> throwIO (resStatus r)
 
-    header {
-        magic    :: Word8
-        op       :: Word8
-        keyLen   :: Word16
-        extraLen :: Word8
-        datatype :: Word8
-        status / reserved :: Word16
-        valueLen :: Word32
-        opaque   :: Word32
-        cas      :: Word64
-    }
-    extras :: ByteString
-    key    :: ByteString
-    value  :: ByteString
- -}
+gat :: Connection -> Key -> Expiration -> IO (Maybe (Value, Flags, Version))
+gat c k e = do
+    let msg = emptyReq { reqOp = ReqGAT False False k (SETouch e) }
+    r_z <- sendRecv c (szRequest msg)
+    let r = dzResponse' r_z
+    case resStatus r of
+        NoError -> case resOp r of
+            ResGAT False v f -> return $ Just (v, f, resCas r)
+            _                -> throwIO $ IncorrectResponse {
+                                        increspMessage = "Expected GAT response! Got: " ++ show (resOp r),
+                                        increspActual  = r
+                                    }
+        ErrKeyNotFound -> return Nothing
+        _              -> throwIO (resStatus r)
 
-type Q          = Bool
-type K          = Bool
-type Key        = ByteString
-type Value      = ByteString
-type Extras     = ByteString
-type Initial    = Word64
-type Delta      = Word64
-type Expiration = Word32
-type Flags      = Word32
-type Version    = Word64
+touch :: Connection -> Key -> Expiration -> IO (Maybe Version)
+touch c k e = do
+    let msg = emptyReq { reqOp = ReqTouch k (SETouch e) }
+    r_z <- sendRecv c (szRequest msg)
+    let r = dzResponse' r_z
+    case resStatus r of
+        NoError -> case resOp r of
+            ResTouch -> return $ Just (resCas r)
+            _        -> throwIO $ IncorrectResponse {
+                                increspMessage = "Expected TOUCH response! Got: " ++ show (resOp r),
+                                increspActual  = r
+                            }
+        ErrKeyNotFound -> return Nothing
+        _              -> throwIO (resStatus r)
 
-data OpRequest
-    = ReqGet       Q K Key
-    | ReqSet       Q   Key Value SESet
-    | ReqAdd       Q   Key Value SESet
-    | ReqReplace   Q   Key Value SESet
-    | ReqDelete    Q   Key
-    | ReqIncrement Q   Key       SEIncr
-    | ReqDecrement Q   Key       SEIncr
-    | ReqAppend    Q   Key Value
-    | ReqPrepend   Q   Key Value
-    | ReqTouch         Key       SETouch
-    | ReqGAT       Q K Key       SETouch
-    | ReqFlush     Q             (Maybe SETouch)
-    | ReqNoop
-    | ReqVersion
-    | ReqStat          (Maybe Key)
-    | ReqQuit      Q
-    deriving (Eq, Show, Typeable)
+--
 
-data SESet   = SESet   Flags Expiration         deriving (Eq, Show, Typeable)
-data SEIncr  = SEIncr  Initial Delta Expiration deriving (Eq, Show, Typeable)
-data SETouch = SETouch Expiration               deriving (Eq, Show, Typeable)
+set :: Connection -> Key -> Value -> Flags -> Expiration -> IO Version
+set c k v f e = do
+    let msg = emptyReq { reqOp = ReqSet False k v (SESet f e) }
+    r_z <- sendRecv c (szRequest msg)
+    let r = dzResponse' r_z
+    case resStatus r of
+        NoError -> case resOp r of
+            ResSet False -> return $ resCas r
+            _            -> throwIO $ IncorrectResponse {
+                                    increspMessage = "Expected SET response! Got: " ++ show (resOp r),
+                                    increspActual  = r
+                                }
+        _ -> throwIO (resStatus r)
 
-data Request = Req {
-        reqOp     :: OpRequest,
-        reqOpaque :: Word32,
-        reqCas    :: Version
-    } deriving (Eq, Show, Typeable)
+set' :: Connection -> Key -> Value -> Flags -> Expiration -> Version -> IO (Maybe Version)
+set' c k v f e ver = do
+    let msg = emptyReq { reqOp = ReqSet False k v (SESet f e), reqCas = ver }
+    r_z <- sendRecv c (szRequest msg)
+    let r = dzResponse' r_z
+    case resStatus r of
+        NoError -> case resOp r of
+            ResSet False -> return $ Just (resCas r)
+            _            -> throwIO $ IncorrectResponse {
+                                    increspMessage = "Expected SET response! Got: " ++ show (resOp r),
+                                    increspActual  = r
+                                }
+        -- version specified and key doesn't exist...
+        ErrKeyNotFound -> return Nothing
+        -- version specified and doesn't match key...
+        ErrKeyExists   -> return Nothing
+        _              -> throwIO (resStatus r)
 
-data OpResponse
-    = ResGet       Q     Value Flags
-    | ResGetK      Q Key Value Flags
-    | ResSet       Q
-    | ResAdd       Q
-    | ResReplace   Q
-    | ResDelete    Q
-    | ResIncrement Q     Word64
-    | ResDecrement Q     Word64
-    | ResAppend    Q
-    | ResPrepend   Q
-    | ResTouch
-    | ResGAT       Q     Value Flags
-    | ResGATK      Q Key Value Flags
-    | ResFlush     Q
-    | ResNoop
-    | ResVersion         (Maybe Value)
-    | ResStat            (Maybe Value)
-    | ResQuit      Q
-    deriving (Eq, Show, Typeable)
+add :: Connection -> Key -> Value -> Flags -> Expiration -> IO (Maybe Version)
+add c k v f e = do
+    let msg = emptyReq { reqOp = ReqAdd False k v (SESet f e) }
+    r_z <- sendRecv c (szRequest msg)
+    let r = dzResponse' r_z
+    case resStatus r of
+        NoError -> case resOp r of
+            ResAdd False -> return $ Just (resCas r)
+            _            -> throwIO $ IncorrectResponse {
+                                    increspMessage = "Expected ADD response! Got: " ++ show (resOp r),
+                                    increspActual  = r
+                                }
+        ErrKeyExists -> return Nothing
+        _            -> throwIO (resStatus r)
 
-data Status
-    = NoError
-    | ErrKeyNotFound
-    | ErrKeyExists
-    | ErrValueTooLarge
-    | ErrInvalidArgs
-    | ErrItemNotStored
-    | ErrValueNonNumeric
-    | ErrUnknownCommand
-    | ErrOutOfMemory
-    | SaslAuthRequired
-    | SaslAuthContinue
-    deriving (Eq, Show, Typeable)
+replace :: Connection -> Key -> Value -> Flags -> Expiration -> Version -> IO (Maybe Version)
+replace c k v f e ver = do
+    let msg = emptyReq { reqOp = ReqReplace False k v (SESet f e), reqCas = ver }
+    r_z <- sendRecv c (szRequest msg)
+    let r = dzResponse' r_z
+    case resStatus r of
+        NoError -> case resOp r of
+            ResReplace False -> return $ Just (resCas r)
+            _                -> throwIO $ IncorrectResponse {
+                                        increspMessage = "Expected REPLACE response! Got: " ++ show (resOp r),
+                                        increspActual  = r
+                                    }
+        -- replace only applies to an existing key...
+        ErrKeyNotFound -> return Nothing
+        -- version specified and doesn't match key...
+        ErrKeyExists   -> return Nothing
+        _              -> throwIO (resStatus r)
 
-data Response = Res {
-        resOp     :: OpResponse,
-        resStatus :: Status,
-        resOpaque :: Word32,
-        resCas    :: Version
-    } deriving (Eq, Show, Typeable)
+--
 
-data Header = Header {
-        op       :: Word8,
-        keyLen   :: Word16,
-        extraLen :: Word8,
-        status   :: Status,
-        valueLen :: Word32,
-        opaque   :: Word32,
-        cas      :: Version
-    } deriving (Eq, Show, Typeable)
+delete :: Connection -> Key -> Version -> IO Bool
+delete c k ver = do
+    let msg = emptyReq { reqOp = ReqDelete False k, reqCas = ver }
+    r_z <- sendRecv c (szRequest msg)
+    let r = dzResponse' r_z
+    case resStatus r of
+        NoError -> case resOp r of
+            ResDelete False -> return True
+            _                -> throwIO $ IncorrectResponse {
+                                        increspMessage = "Expected DELETE response! Got: " ++ show (resOp r),
+                                        increspActual  = r
+                                    }
+        -- delete only applies to an existing key...
+        ErrKeyNotFound -> return False
+        -- version specified and doesn't match key...
+        ErrKeyExists   -> return False
+        _              -> throwIO (resStatus r)
 
-data ProtocolError = ProtocolError {
-        protocolMessage :: String,
-        protocolHeader  :: Maybe Header,
-        protocolParams  :: [String]
-    } deriving (Eq, Show, Typeable)
+--
 
-instance Exception ProtocolError
+increment :: Connection -> Key -> Initial -> Delta -> Expiration -> Version -> IO (Word64, Version)
+increment = undefined
+
+decrement :: Connection -> Key -> Initial -> Delta -> Expiration -> Version -> IO (Word64, Version)
+decrement = undefined
+
+--
+
+append :: Connection -> Key -> Value -> Version -> IO Version
+append = undefined
+
+prepend :: Connection -> Key -> Value -> Version -> IO Version
+prepend = undefined
+
+--
+
+flush :: Connection -> Expiration -> IO ()
+flush = undefined
+
+noop :: Connection -> IO ()
+noop = undefined
+
+version :: Connection -> IO String
+version = undefined
+
+quit :: Connection -> IO ()
+quit = undefined
+
 

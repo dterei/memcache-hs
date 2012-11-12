@@ -1,7 +1,7 @@
 {-# LANGUAGE BangPatterns, OverloadedStrings #-}
 module Main where
 
-import Database.Memcache.Protocol
+import Database.Memcache.Types
 import Database.Memcache.Wire
 
 import Criterion.Main

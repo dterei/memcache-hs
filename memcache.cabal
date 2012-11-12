@@ -22,6 +22,7 @@ library
     Database.Memcache.Client
     Database.Memcache.Protocol
     Database.Memcache.Server
+    Database.Memcache.Types
     Database.Memcache.Wire
 
   build-depends:
