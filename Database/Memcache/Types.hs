@@ -27,6 +27,9 @@ import Data.Word
     value  :: ByteString
  -}
 
+mEMCACHE_HEADER_SIZE :: Int
+mEMCACHE_HEADER_SIZE = 24
+
 type Q          = Bool
 type K          = Bool
 type Key        = ByteString

@@ -94,6 +94,14 @@ dzResponse' = runGet dzResponse
 
 dzResponse :: Get Response
 dzResponse = do
+    h <- dzHeader
+    dzBody h
+
+dzHeader' :: L.ByteString -> Header
+dzHeader' = runGet dzHeader
+
+dzHeader :: Get Header
+dzHeader = do
     skip 1 -- assume 0x81... XXX: should I assume?
     o   <- getWord8
     kl  <- getWord16be
@@ -103,7 +111,7 @@ dzResponse = do
     vl  <- getWord32be
     opq <- getWord32be
     ver <- getWord64be
-    let h = Header {
+    return Header {
             op       = o,
             keyLen   = kl,
             extraLen = el,
@@ -112,7 +120,13 @@ dzResponse = do
             opaque   = opq,
             cas      = ver
         }
-    case o of
+
+dzBody' :: Header -> L.ByteString -> Response
+dzBody' h = runGet (dzBody h)
+
+dzBody :: Header -> Get Response
+dzBody h = do
+    case op h of
         0x00 -> dzGetResponse h $ ResGet False
         0x09 -> dzGetResponse h $ ResGet True
         0x1D -> dzGetResponse h $ ResGAT False
@@ -148,7 +162,7 @@ dzResponse = do
         _    -> throw $ ProtocolError {
                     protocolMessage = "Unknown operation type!",
                     protocolHeader  = Just h,
-                    protocolParams  = [show o]
+                    protocolParams  = [show $ op h]
                 }
 
 dzGenericResponse :: Header -> OpResponse -> Get Response

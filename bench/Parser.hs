@@ -18,7 +18,7 @@ main =
         bgroup "serialize" [
             bench "get" $ whnf szRequest' getReqMsg,
             bench "set" $ whnf szRequest' setReqMsg
-        ]
+        ],
         bgroup "deserialize" [
             bench "get" $ whnf dzResponse' getRespBytes
         ]
