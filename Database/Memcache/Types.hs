@@ -18,7 +18,7 @@ import Data.Word
         extraLen :: Word8
         datatype :: Word8
         status / reserved :: Word16
-        valueLen :: Word32
+        bodyLen  :: Word32 (total body length!)
         opaque   :: Word32
         cas      :: Word64
     }
@@ -124,7 +124,7 @@ data Header = Header {
         keyLen   :: Word16,
         extraLen :: Word8,
         status   :: Status,
-        valueLen :: Word32,
+        bodyLen  :: Word32,
         opaque   :: Word32,
         cas      :: Version
     } deriving (Eq, Show, Typeable)

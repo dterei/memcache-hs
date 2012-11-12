@@ -48,10 +48,9 @@ recv :: Connection -> IO Response
 recv c = do
     header <- N.recv (conn c) mEMCACHE_HEADER_SIZE
     let h = dzHeader' (L.fromStrict header)
-        -- XXX: May be best to store them as Int's...
-        -- XXX: Could be larger than 32bit int... also maybe Lazy is better...
-        z = fromIntegral (extraLen h) + fromIntegral (keyLen h) + fromIntegral (valueLen h)
-    body <- N.recv (conn c) z
+    -- XXX: May be best to store them as Int's...
+    -- XXX: Could be larger than 32bit int... also maybe Lazy is better...
+    body <- N.recv (conn c) (fromIntegral $ bodyLen h)
     let b = dzBody' h (L.fromStrict body)
     return b
 

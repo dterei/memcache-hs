@@ -19,75 +19,79 @@ szRequest :: Request -> Builder
 szRequest req =
        word8 0x80
     <> word8 c
-    <> word16BE keyl
-    <> word8 extl
+    <> word16BE (fromIntegral keyl)
+    <> word8 (fromIntegral extl)
     <> word8 0
     <> word16BE 0
-    <> word32BE vall
+    <> word32BE (fromIntegral $ extl + keyl + vall)
     <> word32BE (reqOpaque req)
     <> word64BE (reqCas req)
     <> ext'
     <> key'
     <> val'
   where
-    (c, k', v', e') = getCodeKeyValue (reqOp req)
-    (extl, ext') = case e' of
-        Just e  -> (fromIntegral $ B.length e, byteString e)
-        Nothing -> (0, mempty)
+    (c, k', v', ext', extl) = getCodeKeyValue (reqOp req)
     (keyl, key') = case k' of
-        Just k  -> (fromIntegral $ B.length k, byteString k)
+        Just k  -> (B.length k, byteString k)
         Nothing -> (0, mempty)
     (vall, val') = case v' of
-        Just v  -> (fromIntegral $ B.length v, byteString v)
+        Just v  -> (B.length v, byteString v)
         Nothing -> (0, mempty)
 
-getCodeKeyValue :: OpRequest -> (Word8, Maybe Key, Maybe Value, Maybe Extras)
+getCodeKeyValue :: OpRequest -> (Word8, Maybe Key, Maybe Value, Builder, Int)
 getCodeKeyValue o = case o of
     ReqGet      q k key   -> let c | q && k    = 0x0D
                                    | q         = 0x09
                                    | k         = 0x0C
                                    | otherwise = 0x00
-                             in (c, Just key, Nothing, Nothing)
+                             in (c, Just key, Nothing, mempty, 0)
 
-    ReqSet       False key v _ -> (0x01, Just key, Just v, Nothing)
-    ReqSet       True  key v _ -> (0x11, Just key, Just v, Nothing)
+    ReqSet       False key v e -> (0x01, Just key, Just v, szSESet e, 8)
+    ReqSet       True  key v e -> (0x11, Just key, Just v, szSESet e, 8)
 
-    ReqAdd       False key v _ -> (0x02, Just key, Just v, Nothing)
-    ReqAdd       True  key v _ -> (0x12, Just key, Just v, Nothing)
+    ReqAdd       False key v e -> (0x02, Just key, Just v, szSESet e, 8)
+    ReqAdd       True  key v e -> (0x12, Just key, Just v, szSESet e, 8)
 
-    ReqReplace   False key v _ -> (0x03, Just key, Just v, Nothing)
-    ReqReplace   True  key v _ -> (0x13, Just key, Just v, Nothing)
+    ReqReplace   False key v e -> (0x03, Just key, Just v, szSESet e, 8)
+    ReqReplace   True  key v e -> (0x13, Just key, Just v, szSESet e, 8)
 
-    ReqDelete    False key     -> (0x04, Just key, Nothing, Nothing)
-    ReqDelete    True  key     -> (0x14, Just key, Nothing, Nothing)
+    ReqDelete    False key     -> (0x04, Just key, Nothing, mempty, 0)
+    ReqDelete    True  key     -> (0x14, Just key, Nothing, mempty, 0)
 
-    ReqIncrement False key   _ -> (0x05, Just key, Nothing, Nothing)
-    ReqIncrement True  key   _ -> (0x15, Just key, Nothing, Nothing)
+    ReqIncrement False key   e -> (0x05, Just key, Nothing, szSEIncr e, 20)
+    ReqIncrement True  key   e -> (0x15, Just key, Nothing, szSEIncr e, 20)
 
-    ReqDecrement False key   _ -> (0x06, Just key, Nothing, Nothing)
-    ReqDecrement True  key   _ -> (0x16, Just key, Nothing, Nothing)
+    ReqDecrement False key   e -> (0x06, Just key, Nothing, szSEIncr e, 20)
+    ReqDecrement True  key   e -> (0x16, Just key, Nothing, szSEIncr e, 20)
 
-    ReqAppend    False key v   -> (0x0E, Just key, Just v, Nothing)
-    ReqAppend    True  key v   -> (0x19, Just key, Just v, Nothing)
+    ReqAppend    False key v   -> (0x0E, Just key, Just v, mempty, 0)
+    ReqAppend    True  key v   -> (0x19, Just key, Just v, mempty, 0)
 
-    ReqPrepend   False key v   -> (0x0F, Just key, Just v, Nothing)
-    ReqPrepend   True  key v   -> (0x1A, Just key, Just v, Nothing)
+    ReqPrepend   False key v   -> (0x0F, Just key, Just v, mempty, 0)
+    ReqPrepend   True  key v   -> (0x1A, Just key, Just v, mempty, 0)
 
-    ReqTouch           key   _ -> (0x1C, Just key, Nothing, Nothing)
+    ReqTouch           key   e -> (0x1C, Just key, Nothing, szSETouch e, 4)
 
-    ReqGAT       q k   key   _ -> let c | q && k    = 0x24
+    ReqGAT       q k   key   e -> let c | q && k    = 0x24
                                         | q         = 0x1E
                                         | k         = 0x23
                                         | otherwise = 0x1D
-                                  in (c, Just key, Nothing, Nothing)
+                                  in (c, Just key, Nothing, szSETouch e, 4)
 
-    ReqFlush    False      _  -> (0x08, Nothing, Nothing, Nothing)
-    ReqFlush    True       _  -> (0x18, Nothing, Nothing, Nothing)
-    ReqNoop                   -> (0x0A, Nothing, Nothing, Nothing)
-    ReqVersion                -> (0x0B, Nothing, Nothing, Nothing)
-    ReqStat           key     -> (0x10, key, Nothing, Nothing)
-    ReqQuit     False         -> (0x07, Nothing, Nothing, Nothing)
-    ReqQuit     True          -> (0x17, Nothing, Nothing, Nothing)
+    ReqFlush    False (Just e) -> (0x08, Nothing, Nothing, szSETouch e, 4)
+    ReqFlush    True  (Just e) -> (0x18, Nothing, Nothing, szSETouch e, 4)
+    ReqFlush    False Nothing  -> (0x08, Nothing, Nothing, mempty, 0)
+    ReqFlush    True  Nothing  -> (0x18, Nothing, Nothing, mempty, 0)
+    ReqNoop                    -> (0x0A, Nothing, Nothing, mempty, 0)
+    ReqVersion                 -> (0x0B, Nothing, Nothing, mempty, 0)
+    ReqStat           key      -> (0x10, key, Nothing, mempty, 0)
+    ReqQuit     False          -> (0x07, Nothing, Nothing, mempty, 0)
+    ReqQuit     True           -> (0x17, Nothing, Nothing, mempty, 0)
+
+  where
+    szSESet (SESet f e) = word32BE f <> word32BE e
+    szSEIncr (SEIncr i d e) = word64BE i <> word64BE d <> word32BE e
+    szSETouch (SETouch e) = word32BE e
 
 dzResponse' :: L.ByteString -> Response
 dzResponse' = runGet dzResponse
@@ -108,7 +112,7 @@ dzHeader = do
     el  <- getWord8
     skip 1 -- unused data type field
     st  <- dzStatus
-    vl  <- getWord32be
+    bl  <- getWord32be
     opq <- getWord32be
     ver <- getWord64be
     return Header {
@@ -116,7 +120,7 @@ dzHeader = do
             keyLen   = kl,
             extraLen = el,
             status   = st,
-            valueLen = vl,
+            bodyLen  = bl,
             opaque   = opq,
             cas      = ver
         }
@@ -167,12 +171,10 @@ dzBody h = do
 
 dzGenericResponse :: Header -> OpResponse -> Get Response
 dzGenericResponse h o = do
-    skip (fromIntegral $ extraLen h)
-    skip (fromIntegral $ keyLen h)
-    skip (fromIntegral $ valueLen h)
+    skip (fromIntegral $ bodyLen h)
     chkLength h 0 (extraLen h) "Extra length expected to be zero!"
     chkLength h 0 (keyLen   h) "Key length expected to be zero!"
-    chkLength h 0 (valueLen h) "Value length expected to be zero!"
+    chkLength h 0 (bodyLen  h) "Body length expected to be zero!"
     return Res {
             resOp     = o,
             resStatus = status h,
@@ -182,13 +184,12 @@ dzGenericResponse h o = do
 
 dzGetResponse :: Header -> (Value -> Flags -> OpResponse) -> Get Response
 dzGetResponse h o = do
-    e <- if status h == NoError && extraLen h == 4
+    e <- if status h == NoError && el == 4
             then getWord32be
-            else skip (fromIntegral $ extraLen h) >> return 0
-    skip (fromIntegral $ keyLen h)
-    v <- getByteString (fromIntegral $ valueLen h)
-    chkLength h 4 (extraLen h) "Extra length expected to be four!"
-    chkLength h 0 (keyLen   h) "Key length expected to be zero!"
+            else skip el >> return 0
+    v <- getByteString vl
+    chkLength h 4 el "Extra length expected to be four!"
+    chkLength h 0 (keyLen h) "Key length expected to be zero!"
     return Res {
             resOp     = o v e,
             resStatus = status h,
@@ -196,32 +197,36 @@ dzGetResponse h o = do
             resCas    = cas h
         }
   where
+    el = fromIntegral $ extraLen h
+    vl = fromIntegral (bodyLen h) - el
     
 dzGetKResponse :: Header -> (Key -> Value -> Flags -> OpResponse) -> Get Response
 dzGetKResponse h o = do
-    e <- if status h == NoError && extraLen h == 4
+    e <- if status h == NoError && el == 4
             then getWord32be
-            else skip (fromIntegral $ extraLen h) >> return 0
-    k <- getByteString (fromIntegral $ keyLen h)
-    v <- getByteString (fromIntegral $ valueLen h)
-    chkLength h 4 (extraLen h) "Extra length expected to be four!"
+            else skip el >> return 0
+    k <- getByteString kl
+    v <- getByteString vl
+    chkLength h 4 el "Extra length expected to be four!"
     return Res {
             resOp     = o k v e,
             resStatus = status h,
             resOpaque = opaque h,
             resCas    = cas h
         }
+  where
+    el = fromIntegral $ extraLen h
+    kl = fromIntegral $ keyLen h
+    vl = fromIntegral (bodyLen h) - el - kl
 
 dzNumericResponse :: Header -> (Word64 -> OpResponse) -> Get Response
 dzNumericResponse h o = do
-    skip (fromIntegral $ extraLen h)
-    skip (fromIntegral $ keyLen h)
-    v <- if status h == NoError && valueLen h == 8
+    v <- if status h == NoError && bodyLen h == 8
             then getWord64be
-            else skip (fromIntegral $ valueLen h) >> return 0
+            else skip (fromIntegral $ bodyLen h) >> return 0
     chkLength h 0 (extraLen h) "Extra length expected to be zero!"
     chkLength h 0 (keyLen   h) "Key length expected to be zero!"
-    chkLength h 8 (valueLen h) "Value length expected to be zero!"
+    chkLength h 8 (bodyLen  h) "body length expected to be eight!"
     return Res {
             resOp     = o v,
             resStatus = status h,
@@ -231,9 +236,7 @@ dzNumericResponse h o = do
 
 dzValueResponse :: Header -> (Maybe Value -> OpResponse) -> Get Response
 dzValueResponse h o = do
-    skip (fromIntegral $ extraLen h)
-    skip (fromIntegral $ keyLen h)
-    v <- getByteString (fromIntegral $ valueLen h)
+    v <- getByteString (fromIntegral $ bodyLen h)
     chkLength h 0 (extraLen h) "Extra length expected to be zero!"
     chkLength h 0 (keyLen   h) "Key length expected to be zero!"
     let v' = if status h == NoError then Just v else Nothing

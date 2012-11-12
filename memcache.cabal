@@ -35,9 +35,20 @@ library
   if impl(ghc >= 6.8)
     ghc-options: -fwarn-tabs
 
+test-suite full
+  type:           exitcode-stdio-1.0
+  hs-source-dirs: . test
+  main-is:        Full.hs
+
+  build-depends:
+    base < 5
+
+  ghc-options: -O2
+  if impl(ghc >= 6.8)
+    ghc-options: -fwarn-tabs
+
 benchmark parser
   type:           exitcode-stdio-1.0
-
   hs-source-dirs: . bench
   main-is:        Parser.hs
 
