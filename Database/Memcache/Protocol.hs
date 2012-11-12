@@ -253,6 +253,9 @@ version c = do
         NoError -> return v
         _       -> throwIO (resStatus r)
 
+stats :: Connection -> Maybe Key -> IO ByteString
+stats = undefined
+
 quit :: Connection -> IO ()
 quit c = flip finally (N.close $ conn c) $ do 
     let msg = emptyReq { reqOp = ReqQuit False }
