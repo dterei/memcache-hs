@@ -234,14 +234,13 @@ dzNumericResponse h o = do
             resCas    = cas h
         }
 
-dzValueResponse :: Header -> (Maybe Value -> OpResponse) -> Get Response
+dzValueResponse :: Header -> (Value -> OpResponse) -> Get Response
 dzValueResponse h o = do
     v <- getByteString (fromIntegral $ bodyLen h)
     chkLength h 0 (extraLen h) "Extra length expected to be zero!"
     chkLength h 0 (keyLen   h) "Key length expected to be zero!"
-    let v' = if status h == NoError then Just v else Nothing
     return Res {
-            resOp     = o v',
+            resOp     = o v,
             resStatus = status h,
             resOpaque = opaque h,
             resCas    = cas h

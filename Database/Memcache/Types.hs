@@ -90,8 +90,8 @@ data OpResponse
     | ResGATK      Q Key Value Flags
     | ResFlush     Q
     | ResNoop
-    | ResVersion         (Maybe Value)
-    | ResStat            (Maybe Value)
+    | ResVersion         Value
+    | ResStat            Value
     | ResQuit      Q
     deriving (Eq, Show, Typeable)
 
@@ -121,6 +121,7 @@ data Response = Res {
 
 data Header = Header {
         op       :: Word8,
+        -- XXX: May be best to store them as Int's...
         keyLen   :: Word16,
         extraLen :: Word8,
         status   :: Status,

@@ -9,16 +9,27 @@ import System.Exit
 
 main :: IO ()
 main = do
-    getTest
+    c <- newMemcacheClient "localhost" 11211
+    getTest c
     exitSuccess
 
-getTest :: IO ()
-getTest = do
-    c <- newMemcacheClient "localhost" 11211
+getTest :: Connection -> IO ()
+getTest c = do
     v <- M.set c "key" "world" 0 0
-    putStrLn $ "Version: " ++ show v
     Just (v', _, _) <- M.get c "key"
     when (v' /= "world") $ do
         putStrLn $ "bad value returned! " ++ show v'
         exitFailure 
+
+deleteTest :: Connection -> IO ()
+deleteTest c = do
+    v1 <- M.set c "key" "world" 0 0
+    v2 <- M.set c "key" "world22" 0 0
+    when (v1 == v2) $ do
+        putStrLn $ "bad versions! " ++ show v1 ++ ", " ++ show v2
+        exitFailure
+    r <- M.delete c "key" 0
+    when (not r) $ do
+        putStrLn "delete failed!"
+        exitFailure
 

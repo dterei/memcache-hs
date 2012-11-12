@@ -36,20 +36,18 @@ connectTo host port = do
             return sock
         )
 
-send :: Connection -> Builder -> IO ()
-send c b = N.sendAll (conn c) (L.toStrict $ toLazyByteString b)
+send :: Connection -> Request -> IO ()
+send c m = N.sendAll (conn c) (L.toStrict $ toLazyByteString $ szRequest m)
 
-sendRecv :: Connection -> Builder -> IO Response
-sendRecv c bd = do
-    send c bd
+sendRecv :: Connection -> Request -> IO Response
+sendRecv c m = do
+    send c m
     recv c
 
 recv :: Connection -> IO Response
 recv c = do
     header <- N.recv (conn c) mEMCACHE_HEADER_SIZE
     let h = dzHeader' (L.fromStrict header)
-    -- XXX: May be best to store them as Int's...
-    -- XXX: Could be larger than 32bit int... also maybe Lazy is better...
     body <- N.recv (conn c) (fromIntegral $ bodyLen h)
     let b = dzBody' h (L.fromStrict body)
     return b
