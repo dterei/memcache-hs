@@ -37,6 +37,7 @@ get c k = do
         ErrKeyNotFound -> return Nothing
         _              -> throwIO (resStatus r)
 
+-- XXX: Maybe collapse data structures into single...
 gat :: Connection -> Key -> Expiration -> IO (Maybe (Value, Flags, Version))
 gat c k e = do
     let msg = emptyReq { reqOp = ReqGAT False False k (SETouch e) }
@@ -179,6 +180,7 @@ decrement c k i d e ver = do
                                 }
     case resStatus r of
         NoError        -> return $ Just (n, resCas r)
+        -- XXX: Should differentiate, use custom sum, NOT either.
         ErrKeyNotFound -> return Nothing
         ErrKeyExists   -> return Nothing
         -- XXX: Exception or Nothing for nonnumeric status?
@@ -279,6 +281,7 @@ stats c k = do
         _              -> throwIO (resStatus r)
 
 quit :: Connection -> IO ()
+-- XXX: close can throw, need to handle...
 quit c = flip finally (N.close $ conn c) $ do 
     let msg = emptyReq { reqOp = ReqQuit False }
     send c msg

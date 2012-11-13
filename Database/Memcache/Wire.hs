@@ -78,6 +78,7 @@ getCodeKeyValue o = case o of
 
     ReqTouch           key   e -> (0x1C, Just key, Nothing, szSETouch e, 4)
 
+    -- XXX: beware allocation.
     ReqGAT       q k   key   e -> let c | q && k    = 0x24
                                         | q         = 0x1E
                                         | k         = 0x23
@@ -120,7 +121,7 @@ dzHeader' = runGet dzHeader
 -- | Deserialize a Header.
 dzHeader :: Get Header
 dzHeader = do
-    skip 1 -- assume 0x81... XXX: should I assume?
+    skip 1 -- assume 0x81... XXX: should I assume? probably check...
     o   <- getWord8
     kl  <- getWord16be
     el  <- getWord8
@@ -232,6 +233,7 @@ dzGetKResponse h o = do
     k <- getByteString kl
     v <- getByteString vl
     chkLength h 4 el "Extra length expected to be four!"
+    -- XXX: check strictness ($!)
     return Res {
             resOp     = o k v e,
             resStatus = status h,

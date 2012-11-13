@@ -36,6 +36,7 @@ import Data.Word
 mEMCACHE_HEADER_SIZE :: Int
 mEMCACHE_HEADER_SIZE = 24
 
+-- XXX: Use a new type instead...
 type Q          = Bool
 type K          = Bool
 type Key        = ByteString

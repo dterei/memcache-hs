@@ -55,6 +55,7 @@ sendRecv c m = do
 -- | Retrieve a single response from the memcache cluster.
 recv :: Connection -> IO Response
 recv c = do
+    -- XXX: recv may return less.
     header <- N.recv (conn c) mEMCACHE_HEADER_SIZE
     let h = dzHeader' (L.fromStrict header)
     body <- N.recv (conn c) (fromIntegral $ bodyLen h)
