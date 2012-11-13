@@ -24,10 +24,10 @@ import qualified Network.Socket as N
 
 get :: Connection -> Key -> IO (Maybe (Value, Flags, Version))
 get c k = do
-    let msg = emptyReq { reqOp = ReqGet False False k }
+    let msg = emptyReq { reqOp = ReqGet Loud NoKey k }
     r <- sendRecv c msg
     (v, f) <- case resOp r of
-        ResGet False v f -> return (v, f)
+        ResGet Loud v f -> return (v, f)
         _                -> throwIO $ IncorrectResponse {
                                 increspMessage = "Expected GET response! Got: " ++ show (resOp r),
                                 increspActual  = r
@@ -40,10 +40,10 @@ get c k = do
 -- XXX: Maybe collapse data structures into single...
 gat :: Connection -> Key -> Expiration -> IO (Maybe (Value, Flags, Version))
 gat c k e = do
-    let msg = emptyReq { reqOp = ReqGAT False False k (SETouch e) }
+    let msg = emptyReq { reqOp = ReqGAT Loud NoKey k (SETouch e) }
     r <- sendRecv c msg
     (v, f) <- case resOp r of
-        ResGAT False v f -> return (v, f)
+        ResGAT Loud v f -> return (v, f)
         _                -> throwIO $ IncorrectResponse {
                                 increspMessage = "Expected GAT response! Got: " ++ show (resOp r),
                                 increspActual  = r
@@ -71,9 +71,9 @@ touch c k e = do
 
 set :: Connection -> Key -> Value -> Flags -> Expiration -> IO Version
 set c k v f e = do
-    let msg = emptyReq { reqOp = ReqSet False k v (SESet f e) }
+    let msg = emptyReq { reqOp = ReqSet Loud k v (SESet f e) }
     r <- sendRecv c msg
-    when (resOp r /= ResSet False) $
+    when (resOp r /= ResSet Loud) $
         throwIO $ IncorrectResponse {
             increspMessage = "Expected SET response! Got: " ++ show (resOp r),
             increspActual  = r
@@ -84,9 +84,9 @@ set c k v f e = do
 
 set' :: Connection -> Key -> Value -> Flags -> Expiration -> Version -> IO (Maybe Version)
 set' c k v f e ver = do
-    let msg = emptyReq { reqOp = ReqSet False k v (SESet f e), reqCas = ver }
+    let msg = emptyReq { reqOp = ReqSet Loud k v (SESet f e), reqCas = ver }
     r <- sendRecv c msg
-    when (resOp r /= ResSet False) $
+    when (resOp r /= ResSet Loud) $
         throwIO $ IncorrectResponse {
             increspMessage = "Expected SET response! Got: " ++ show (resOp r),
             increspActual  = r
@@ -101,9 +101,9 @@ set' c k v f e ver = do
 
 add :: Connection -> Key -> Value -> Flags -> Expiration -> IO (Maybe Version)
 add c k v f e = do
-    let msg = emptyReq { reqOp = ReqAdd False k v (SESet f e) }
+    let msg = emptyReq { reqOp = ReqAdd Loud k v (SESet f e) }
     r <- sendRecv c msg
-    when (resOp r /= ResAdd False) $
+    when (resOp r /= ResAdd Loud) $
         throwIO $ IncorrectResponse {
             increspMessage = "Expected ADD response! Got: " ++ show (resOp r),
             increspActual  = r
@@ -115,9 +115,9 @@ add c k v f e = do
 
 replace :: Connection -> Key -> Value -> Flags -> Expiration -> Version -> IO (Maybe Version)
 replace c k v f e ver = do
-    let msg = emptyReq { reqOp = ReqReplace False k v (SESet f e), reqCas = ver }
+    let msg = emptyReq { reqOp = ReqReplace Loud k v (SESet f e), reqCas = ver }
     r <- sendRecv c msg
-    when (resOp r /= ResReplace False) $
+    when (resOp r /= ResReplace Loud) $
         throwIO $ IncorrectResponse {
             increspMessage = "Expected REPLACE response! Got: " ++ show (resOp r),
             increspActual  = r
@@ -134,9 +134,9 @@ replace c k v f e ver = do
 
 delete :: Connection -> Key -> Version -> IO Bool
 delete c k ver = do
-    let msg = emptyReq { reqOp = ReqDelete False k, reqCas = ver }
+    let msg = emptyReq { reqOp = ReqDelete Loud k, reqCas = ver }
     r <- sendRecv c msg
-    when (resOp r /= ResDelete False) $
+    when (resOp r /= ResDelete Loud) $
         throwIO $ IncorrectResponse {
             increspMessage = "Expected DELETE response! Got: " ++ show (resOp r),
             increspActual  = r
@@ -153,14 +153,14 @@ delete c k ver = do
 
 increment :: Connection -> Key -> Initial -> Delta -> Expiration -> Version -> IO (Maybe (Word64, Version))
 increment c k i d e ver = do
-    let msg = emptyReq { reqOp = ReqIncrement False k (SEIncr i d e), reqCas = ver }
+    let msg = emptyReq { reqOp = ReqIncrement Loud k (SEIncr i d e), reqCas = ver }
     r <- sendRecv c msg
     n <- case resOp r of
-        ResIncrement False n -> return n
-        _                    -> throwIO $ IncorrectResponse {
-                                    increspMessage = "Expected INCREMENT response! Got: " ++ show (resOp r),
-                                    increspActual  = r
-                                }
+        ResIncrement Loud n -> return n
+        _                   -> throwIO $ IncorrectResponse {
+                                   increspMessage = "Expected INCREMENT response! Got: " ++ show (resOp r),
+                                   increspActual  = r
+                               }
     case resStatus r of
         NoError        -> return $ Just (n, resCas r)
         ErrKeyNotFound -> return Nothing
@@ -170,14 +170,14 @@ increment c k i d e ver = do
 
 decrement :: Connection -> Key -> Initial -> Delta -> Expiration -> Version -> IO (Maybe (Word64, Version))
 decrement c k i d e ver = do
-    let msg = emptyReq { reqOp = ReqDecrement False k (SEIncr i d e), reqCas = ver }
+    let msg = emptyReq { reqOp = ReqDecrement Loud k (SEIncr i d e), reqCas = ver }
     r <- sendRecv c msg
     n <- case resOp r of
-        ResDecrement False n -> return n
-        _                    -> throwIO $ IncorrectResponse {
-                                    increspMessage = "Expected DECREMENT response! Got: " ++ show (resOp r),
-                                    increspActual  = r
-                                }
+        ResDecrement Loud n -> return n
+        _                   -> throwIO $ IncorrectResponse {
+                                   increspMessage = "Expected DECREMENT response! Got: " ++ show (resOp r),
+                                   increspActual  = r
+                               }
     case resStatus r of
         NoError        -> return $ Just (n, resCas r)
         -- XXX: Should differentiate, use custom sum, NOT either.
@@ -191,9 +191,9 @@ decrement c k i d e ver = do
 -- XXX: Maybe? perhaps should be either so I can indicate why...
 append :: Connection -> Key -> Value -> Version -> IO (Maybe Version)
 append c k v ver = do
-    let msg = emptyReq { reqOp = ReqAppend False k v, reqCas = ver }
+    let msg = emptyReq { reqOp = ReqAppend Loud k v, reqCas = ver }
     r <- sendRecv c msg
-    when (resOp r /= ResAppend False) $
+    when (resOp r /= ResAppend Loud) $
         throwIO $ IncorrectResponse {
             increspMessage = "Expected APPEND response! Got: " ++ show (resOp r),
             increspActual  = r
@@ -206,9 +206,9 @@ append c k v ver = do
 
 prepend :: Connection -> Key -> Value -> Version -> IO (Maybe Version)
 prepend c k v ver = do
-    let msg = emptyReq { reqOp = ReqPrepend False k v, reqCas = ver }
+    let msg = emptyReq { reqOp = ReqPrepend Loud k v, reqCas = ver }
     r <- sendRecv c msg
-    when (resOp r /= ResPrepend False) $
+    when (resOp r /= ResPrepend Loud) $
         throwIO $ IncorrectResponse {
             increspMessage = "Expected PREPEND response! Got: " ++ show (resOp r),
             increspActual  = r
@@ -224,9 +224,9 @@ prepend c k v ver = do
 flush :: Connection -> Maybe Expiration -> IO ()
 flush c e = do
     let e'  = maybe Nothing (\xp -> Just (SETouch xp)) e
-        msg = emptyReq { reqOp = ReqFlush False e' }
+        msg = emptyReq { reqOp = ReqFlush Loud e' }
     r <- sendRecv c msg
-    when (resOp r /= ResFlush False) $
+    when (resOp r /= ResFlush Loud) $
         throwIO $ IncorrectResponse {
             increspMessage = "Expected FLUSH response! Got: " ++ show (resOp r),
             increspActual  = r
@@ -283,11 +283,11 @@ stats c k = do
 quit :: Connection -> IO ()
 -- XXX: close can throw, need to handle...
 quit c = flip finally (N.close $ conn c) $ do 
-    let msg = emptyReq { reqOp = ReqQuit False }
+    let msg = emptyReq { reqOp = ReqQuit Loud }
     send c msg
     N.shutdown (conn c) N.ShutdownSend
     r <- recv c
-    when (resOp r /= ResQuit False) $
+    when (resOp r /= ResQuit Loud) $
         throwIO $ IncorrectResponse {
             increspMessage = "Expected QUIT response! Got: " ++ show (resOp r),
             increspActual  = r

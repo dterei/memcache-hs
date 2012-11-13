@@ -3,7 +3,7 @@
 -- | Stores the various types needed by memcache. Mostly concerned with the
 -- representation of the protocol.
 module Database.Memcache.Types (
-        Q, K, Key, Value, Extras, Initial, Delta, Expiration, Flags, Version,
+        Q(..), K(..), Key, Value, Extras, Initial, Delta, Expiration, Flags, Version,
         mEMCACHE_HEADER_SIZE, Header(..),
         Request(..), OpRequest(..), SESet(..), SEIncr(..), SETouch(..), emptyReq,
         Response(..), OpResponse(..), Status(..),
@@ -36,9 +36,8 @@ import Data.Word
 mEMCACHE_HEADER_SIZE :: Int
 mEMCACHE_HEADER_SIZE = 24
 
--- XXX: Use a new type instead...
-type Q          = Bool
-type K          = Bool
+data Q          = Quiet | Loud deriving (Eq, Show, Typeable)
+data K          = NoKey | IncludeKey deriving (Eq, Show, Typeable)
 type Key        = ByteString
 type Value      = ByteString
 type Extras     = ByteString
@@ -122,7 +121,7 @@ data Status
     | SaslAuthContinue    -- SASL
     deriving (Eq, Show, Typeable)
 
--- XXX: Better way?
+-- XXX: Better way? (encode in own data type)
 instance Exception Status
 
 data Response = Res {
@@ -134,7 +133,6 @@ data Response = Res {
 
 data Header = Header {
         op       :: Word8,
-        -- XXX: May be best to store them as Int's...
         keyLen   :: Word16,
         extraLen :: Word8,
         status   :: Status,
