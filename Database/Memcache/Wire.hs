@@ -48,10 +48,10 @@ szRequest req =
 getCodeKeyValue :: OpRequest -> (Word8, Maybe Key, Maybe Value, Builder, Int)
 getCodeKeyValue o = case o of
     -- XXX: make sure this isn't a thunk! (c)
-    ReqGet      q k key   -> let c | q == Loud  && k == NoKey      = 0x00
-                                   | q == Loud  && k == IncludeKey = 0x0C
-                                   | q == Quiet && k == NoKey      = 0x09
-                                   | q == Quiet && k == IncludeKey = 0x0D
+    ReqGet      q k key   -> let c | q == Loud && k == NoKey      = 0x00
+                                   | q == Loud && k == IncludeKey = 0x0C
+                                   |              k == NoKey      = 0x09 -- Quiet
+                                   | otherwise                    = 0x0D -- Quiet && IncludeKey
                              in (c, Just key, Nothing, mempty, 0)
 
     ReqSet       Loud  key v e -> (0x01, Just key, Just v, szSESet e, 8)
@@ -83,8 +83,8 @@ getCodeKeyValue o = case o of
     -- XXX: beware allocation.
     ReqGAT       q k   key   e -> let c | q == Quiet && k == IncludeKey = 0x24
                                         | q == Quiet && k == NoKey      = 0x1E
-                                        | q == Loud  && k == IncludeKey = 0x23
-                                        | q == Loud  && k == NoKey      = 0x1D
+                                        | k == IncludeKey               = 0x23
+                                        | otherwise                     = 0x1D
                                   in (c, Just key, Nothing, szSETouch e, 4)
 
     ReqFlush    Loud  (Just e) -> (0x08, Nothing, Nothing, szSETouch e, 4)
@@ -123,7 +123,13 @@ dzHeader' = runGet dzHeader
 -- | Deserialize a Header.
 dzHeader :: Get Header
 dzHeader = do
-    skip 1 -- assume 0x81... XXX: should I assume? probably check...
+    m   <- getWord8
+    when (m /= 0x81) $ throw
+        ProtocolError {
+            protocolMessage = "Bad magic value for a response packet",
+            protocolHeader  = Nothing,
+            protocolParams  = [show $ m]
+        }
     o   <- getWord8
     kl  <- getWord16be
     el  <- getWord8
@@ -188,7 +194,7 @@ dzBody h = do
         0x22 -> dzGenericResponse h ResSASLStep
 
         _    -> throw $ ProtocolError {
-                    protocolMessage = "Unknown operation type!",
+                    protocolMessage = "Unknown operation type",
                     protocolHeader  = Just h,
                     protocolParams  = [show $ op h]
                 }
@@ -197,9 +203,9 @@ dzBody h = do
 dzGenericResponse :: Header -> OpResponse -> Get Response
 dzGenericResponse h o = do
     skip (fromIntegral $ bodyLen h)
-    chkLength h 0 (extraLen h) "Extra length expected to be zero!"
-    chkLength h 0 (keyLen   h) "Key length expected to be zero!"
-    chkLength h 0 (bodyLen  h) "Body length expected to be zero!"
+    chkLength h 0 (extraLen h) "Extra length expected to be zero"
+    chkLength h 0 (keyLen   h) "Key length expected to be zero"
+    chkLength h 0 (bodyLen  h) "Body length expected to be zero"
     return Res {
             resOp     = o,
             resStatus = status h,
@@ -214,8 +220,8 @@ dzGetResponse h o = do
             then getWord32be
             else skip el >> return 0
     v <- getByteString vl
-    chkLength h 4 el "Extra length expected to be four!"
-    chkLength h 0 (keyLen h) "Key length expected to be zero!"
+    chkLength h 4 el "Extra length expected to be four"
+    chkLength h 0 (keyLen h) "Key length expected to be zero"
     return Res {
             resOp     = o v e,
             resStatus = status h,
@@ -234,7 +240,7 @@ dzGetKResponse h o = do
             else skip el >> return 0
     k <- getByteString kl
     v <- getByteString vl
-    chkLength h 4 el "Extra length expected to be four!"
+    chkLength h 4 el "Extra length expected to be four"
     -- XXX: check strictness ($!)
     return Res {
             resOp     = o k v e,
@@ -253,9 +259,9 @@ dzNumericResponse h o = do
     v <- if status h == NoError && bodyLen h == 8
             then getWord64be
             else skip (fromIntegral $ bodyLen h) >> return 0
-    chkLength h 0 (extraLen h) "Extra length expected to be zero!"
-    chkLength h 0 (keyLen   h) "Key length expected to be zero!"
-    chkLength h 8 (bodyLen  h) "body length expected to be eight!"
+    chkLength h 0 (extraLen h) "Extra length expected to be zero"
+    chkLength h 0 (keyLen   h) "Key length expected to be zero"
+    chkLength h 8 (bodyLen  h) "body length expected to be eight"
     return Res {
             resOp     = o v,
             resStatus = status h,
@@ -268,8 +274,8 @@ dzNumericResponse h o = do
 dzValueResponse :: Header -> (Value -> OpResponse) -> Get Response
 dzValueResponse h o = do
     v <- getByteString (fromIntegral $ bodyLen h)
-    chkLength h 0 (extraLen h) "Extra length expected to be zero!"
-    chkLength h 0 (keyLen   h) "Key length expected to be zero!"
+    chkLength h 0 (extraLen h) "Extra length expected to be zero"
+    chkLength h 0 (keyLen   h) "Key length expected to be zero"
     return Res {
             resOp     = o v,
             resStatus = status h,
@@ -294,7 +300,7 @@ dzStatus = do
         0x20 -> SaslAuthFail
         0x21 -> SaslAuthContinue
         _    -> throw $ ProtocolError {
-                    protocolMessage = "Unknown status type!",
+                    protocolMessage = "Unknown status type",
                     protocolHeader  = Nothing,
                     protocolParams  = [show st]
                 }

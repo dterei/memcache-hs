@@ -24,7 +24,7 @@ import Data.Word
         extraLen :: Word8
         datatype :: Word8
         status / reserved :: Word16
-        bodyLen  :: Word32 (total body length!)
+        bodyLen  :: Word32 (total body length)
         opaque   :: Word32
         cas      :: Word64
     }
