@@ -4,7 +4,14 @@
 -- protocol level and so aren't generaly well suited for application use.
 -- Instead, applications should use Database.Memcache.Client which presents a
 -- higher level API suited for application use.
-module Database.Memcache.Protocol where
+module Database.Memcache.Protocol (
+        get, gat, touch,
+        set, set', add, replace,
+        delete,
+        increment, decrement,
+        append, prepend,
+        flush, noop, version, stats, quit
+    ) where
 
 import Database.Memcache.Server
 import Database.Memcache.Types
@@ -253,8 +260,23 @@ version c = do
         NoError -> return v
         _       -> throwIO (resStatus r)
 
-stats :: Connection -> Maybe Key -> IO ByteString
-stats = undefined
+-- XXX: Stats returns lots of responses... termination is a packet with no key
+-- and no value...
+-- XXX: Note, key is also meaningful...
+stats :: Connection -> Maybe Key -> IO (Maybe [(ByteString, ByteString)])
+stats c k = do
+    let msg = emptyReq { reqOp = ReqStat k }
+    r <- sendRecv c msg
+    _v <- case resOp r of
+        ResStat v -> return v
+        _         -> throwIO $ IncorrectResponse {
+                         increspMessage = "Expected STATS response! Got: " ++ show (resOp r),
+                         increspActual  = r
+                     }
+    case resStatus r of
+        NoError        -> return $ Just undefined -- XXX: undefined!
+        ErrKeyNotFound -> return Nothing
+        _              -> throwIO (resStatus r)
 
 quit :: Connection -> IO ()
 quit c = flip finally (N.close $ conn c) $ do 

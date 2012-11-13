@@ -20,7 +20,9 @@ extra-source-files:
 library
   exposed-modules:
     Database.Memcache.Client
+    Database.Memcache.LClient
     Database.Memcache.Protocol
+    Database.Memcache.SASL
     Database.Memcache.Server
     Database.Memcache.Types
     Database.Memcache.Wire
@@ -29,6 +31,8 @@ library
     base < 5,
     binary >= 0.6.2.0,
     bytestring >= 0.10.2.0,
+    cereal > 0.3.5,
+    lio >= 0.9,
     network >= 2.4
 
   ghc-options: -Wall -O2
@@ -37,11 +41,12 @@ library
 
 test-suite full
   type:           exitcode-stdio-1.0
-  hs-source-dirs: . test
+  hs-source-dirs: test
   main-is:        Full.hs
 
   build-depends:
-    base < 5
+    base < 5,
+    memcache
 
   ghc-options: -O2
   if impl(ghc >= 6.8)
@@ -49,12 +54,13 @@ test-suite full
 
 benchmark parser
   type:           exitcode-stdio-1.0
-  hs-source-dirs: . bench
+  hs-source-dirs: bench
   main-is:        Parser.hs
 
   build-depends:
     base < 5,
-    criterion > 0.6.0.0
+    criterion > 0.6.0.0,
+    memcache
 
   ghc-options: -O2
   if impl(ghc >= 6.8)

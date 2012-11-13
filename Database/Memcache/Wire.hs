@@ -1,5 +1,8 @@
 -- | Deals with serializing and parsing memcached requests and responses.
-module Database.Memcache.Wire where
+module Database.Memcache.Wire (
+        szRequest, szRequest',
+        dzResponse, dzResponse', dzHeader, dzHeader', dzBody, dzBody'
+    ) where
 
 import Database.Memcache.Types
 
@@ -12,9 +15,11 @@ import Data.ByteString.Builder
 import Data.Monoid
 import Data.Word
 
+-- | Serialize a request to a ByteString.
 szRequest' :: Request -> L.ByteString
 szRequest' = toLazyByteString . szRequest
 
+-- | Serialize a request to a ByteString Builder.
 szRequest :: Request -> Builder
 szRequest req =
        word8 0x80
@@ -38,6 +43,7 @@ szRequest req =
         Just v  -> (B.length v, byteString v)
         Nothing -> (0, mempty)
 
+-- Extract needed info from an OpRequest for serialization.
 getCodeKeyValue :: OpRequest -> (Word8, Maybe Key, Maybe Value, Builder, Int)
 getCodeKeyValue o = case o of
     ReqGet      q k key   -> let c | q && k    = 0x0D
@@ -88,22 +94,30 @@ getCodeKeyValue o = case o of
     ReqQuit     False          -> (0x07, Nothing, Nothing, mempty, 0)
     ReqQuit     True           -> (0x17, Nothing, Nothing, mempty, 0)
 
-  where
-    szSESet (SESet f e) = word32BE f <> word32BE e
-    szSEIncr (SEIncr i d e) = word64BE i <> word64BE d <> word32BE e
-    szSETouch (SETouch e) = word32BE e
+    ReqSASLList                -> (0x20, Nothing, Nothing, mempty, 0)
+    ReqSASLStart      key v    -> (0x21, Just key, Just v, mempty, 0)
+    ReqSASLStep       key v    -> (0x22, Just key, Just v, mempty, 0)
 
+  where
+    szSESet   (SESet    f e) = word32BE f <> word32BE e
+    szSEIncr  (SEIncr i d e) = word64BE i <> word64BE d <> word32BE e
+    szSETouch (SETouch    e) = word32BE e
+
+-- | Deserialize a Response from a ByteString.
 dzResponse' :: L.ByteString -> Response
 dzResponse' = runGet dzResponse
 
+-- | Deserialize a Response.
 dzResponse :: Get Response
 dzResponse = do
     h <- dzHeader
     dzBody h
 
+-- | Deserialize a Header from a ByteString.
 dzHeader' :: L.ByteString -> Header
 dzHeader' = runGet dzHeader
 
+-- | Deserialize a Header.
 dzHeader :: Get Header
 dzHeader = do
     skip 1 -- assume 0x81... XXX: should I assume?
@@ -125,9 +139,11 @@ dzHeader = do
             cas      = ver
         }
 
+-- | Deserialize a Response body from a ByteString.
 dzBody' :: Header -> L.ByteString -> Response
 dzBody' h = runGet (dzBody h)
 
+-- | Deserialize a Response body.
 dzBody :: Header -> Get Response
 dzBody h = do
     case op h of
@@ -163,12 +179,18 @@ dzBody h = do
         0x0A -> dzGenericResponse h ResNoop
         0x0B -> dzValueResponse h ResVersion
         0x10 -> dzValueResponse h ResStat
+        -- SASL
+        0x20 -> dzValueResponse h ResSASLList
+        0x21 -> dzGenericResponse h ResSASLStart
+        0x22 -> dzGenericResponse h ResSASLStep
+
         _    -> throw $ ProtocolError {
                     protocolMessage = "Unknown operation type!",
                     protocolHeader  = Just h,
                     protocolParams  = [show $ op h]
                 }
 
+-- | Deserialize the body of a Response that contains nothing.
 dzGenericResponse :: Header -> OpResponse -> Get Response
 dzGenericResponse h o = do
     skip (fromIntegral $ bodyLen h)
@@ -182,6 +204,7 @@ dzGenericResponse h o = do
             resCas    = cas h
         }
 
+-- | Deserialize the body of a Get Response (Extras [flags] & Value).
 dzGetResponse :: Header -> (Value -> Flags -> OpResponse) -> Get Response
 dzGetResponse h o = do
     e <- if status h == NoError && el == 4
@@ -200,6 +223,7 @@ dzGetResponse h o = do
     el = fromIntegral $ extraLen h
     vl = fromIntegral (bodyLen h) - el
     
+-- | Deserialize the body of a GetK Response (Extras [flags] & Key & Value).
 dzGetKResponse :: Header -> (Key -> Value -> Flags -> OpResponse) -> Get Response
 dzGetKResponse h o = do
     e <- if status h == NoError && el == 4
@@ -219,6 +243,7 @@ dzGetKResponse h o = do
     kl = fromIntegral $ keyLen h
     vl = fromIntegral (bodyLen h) - el - kl
 
+-- | Deserialize the body of a Incr/Decr Response (Value [Word64]).
 dzNumericResponse :: Header -> (Word64 -> OpResponse) -> Get Response
 dzNumericResponse h o = do
     v <- if status h == NoError && bodyLen h == 8
@@ -234,6 +259,8 @@ dzNumericResponse h o = do
             resCas    = cas h
         }
 
+-- | Deserialize the body of a general response that just has a value (no key
+-- or extras).
 dzValueResponse :: Header -> (Value -> OpResponse) -> Get Response
 dzValueResponse h o = do
     v <- getByteString (fromIntegral $ bodyLen h)
@@ -246,6 +273,7 @@ dzValueResponse h o = do
             resCas    = cas h
         }
 
+-- | Deserialize a Response status code.
 dzStatus :: Get Status
 dzStatus = do
     st <- getWord16be
@@ -259,7 +287,7 @@ dzStatus = do
         0x06 -> ErrValueNonNumeric
         0x81 -> ErrUnknownCommand
         0x82 -> ErrOutOfMemory
-        0x20 -> SaslAuthRequired
+        0x20 -> SaslAuthFail
         0x21 -> SaslAuthContinue
         _    -> throw $ ProtocolError {
                     protocolMessage = "Unknown status type!",
@@ -267,6 +295,8 @@ dzStatus = do
                     protocolParams  = [show st]
                 }
 
+-- | Check the length of a header field is as expected, throwing a
+-- ProtocolError exception if it is not.
 chkLength :: (Eq a, Show a) => Header -> a -> a -> String -> Get ()
 chkLength h expected l msg =
     when (l /= expected) $ return $ throw ProtocolError {

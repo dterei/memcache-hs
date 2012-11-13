@@ -2,7 +2,13 @@
 
 -- | Stores the various types needed by memcache. Mostly concerned with the
 -- representation of the protocol.
-module Database.Memcache.Types where
+module Database.Memcache.Types (
+        Q, K, Key, Value, Extras, Initial, Delta, Expiration, Flags, Version,
+        mEMCACHE_HEADER_SIZE, Header(..),
+        Request(..), OpRequest(..), SESet(..), SEIncr(..), SETouch(..), emptyReq,
+        Response(..), OpResponse(..), Status(..),
+        ProtocolError(..), IncorrectResponse(..)
+    ) where
 
 import Control.Exception
 import Data.ByteString (ByteString)
@@ -59,6 +65,9 @@ data OpRequest
     | ReqVersion
     | ReqStat          (Maybe Key)
     | ReqQuit      Q
+    | ReqSASLList
+    | ReqSASLStart     Key Value -- key: auth method, value: auth data
+    | ReqSASLStep      Key Value -- key: auth method, value: auth data (continued)
     deriving (Eq, Show, Typeable)
 
 data SESet   = SESet   Flags Expiration         deriving (Eq, Show, Typeable)
@@ -93,6 +102,9 @@ data OpResponse
     | ResVersion         Value
     | ResStat            Value
     | ResQuit      Q
+    | ResSASLList           Value
+    | ResSASLStart
+    | ResSASLStep
     deriving (Eq, Show, Typeable)
 
 data Status
@@ -105,7 +117,7 @@ data Status
     | ErrValueNonNumeric  -- Incr, Decr
     | ErrUnknownCommand   -- All
     | ErrOutOfMemory      -- All
-    | SaslAuthRequired    -- SASL
+    | SaslAuthFail        -- SASL
     | SaslAuthContinue    -- SASL
     deriving (Eq, Show, Typeable)
 

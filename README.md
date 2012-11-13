@@ -9,7 +9,28 @@ This library is BSD-licensed.
 
 # To do
 
-* Everything!
+* Complete protocol support: Stats
+* Timeouts
+* Ring / CHORD support
+* Thread-safe?
+
+* Connection drop / reconnect resiliance?
+* Asynchronous support?
+* Connection pooling?
+* Tweaking? (e.g., drop in hash algorithm?, timeout, max connection
+  retries...)
+* Max value validation...?
+
+* Optimizations? http://code.google.com/p/spymemcached/wiki/Optimizations
+
+* Typeclass for serialization?
+* Monad / Typeclass for memcache?
+
+# Other clients
+
+* [C: libmemcached](http://libmemcached.org/libMemcached.html)
+* [Java: SpyMemcached](http://code.google.com/p/spymemcached/)
+* [Ruby: Dalli](https://github.com/mperham/dalli)
 
 # Get involved!
 
