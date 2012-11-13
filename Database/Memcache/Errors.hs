@@ -1,4 +1,8 @@
-module Database.Memcache.Utils (
+{-# LANGUAGE DeriveDataTypeable #-}
+
+-- | Some utility functions for Memcache.
+module Database.Memcache.Errors (
+        MemcacheError(..),
         statusToError,
         throwStatus,
         throwIncorrectRes
@@ -7,6 +11,20 @@ module Database.Memcache.Utils (
 import Database.Memcache.Types
 
 import Control.Exception
+import Data.Typeable
+
+data MemcacheError
+    = MemErrNoKey
+    | MemErrKeyExists
+    | MemErrValueTooLarge
+    | MemErrInvalidArgs
+    | MemErrStoreFailed
+    | MemErrValueNonNumeric
+    | MemErrUnknownCmd
+    | MemErrOutOfMemory
+    deriving (Eq, Show, Typeable)
+
+instance Exception MemcacheError
 
 statusToError :: Status -> MemcacheError
 statusToError NoError            = error "statusToError: called on NoError"

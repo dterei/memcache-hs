@@ -13,9 +13,9 @@ module Database.Memcache.Protocol (
         flush, noop, version, stats, quit
     ) where
 
+import Database.Memcache.Errors
 import Database.Memcache.Server
 import Database.Memcache.Types
-import Database.Memcache.Utils
 
 import Control.Exception
 import Control.Monad

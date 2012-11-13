@@ -6,11 +6,10 @@ module Database.Memcache.SASL (
         authenticate, Username, Password
     ) where
 
+import Database.Memcache.Errors
 import Database.Memcache.Server
 import Database.Memcache.Types
-import Database.Memcache.Utils
 
-import Control.Exception
 import Control.Monad
 import Data.ByteString
 import Data.Monoid
