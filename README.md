@@ -9,10 +9,11 @@ This library is BSD-licensed.
 
 # To do
 
-* Complete protocol support: Stats
 * Timeouts
 * Ring / CHORD support
 * Thread-safe?
+
+* mutli(-get)
 
 * Connection drop / reconnect resiliance?
 * Asynchronous support?
@@ -25,6 +26,9 @@ This library is BSD-licensed.
 
 * Typeclass for serialization?
 * Monad / Typeclass for memcache?
+
+* UDP
+* ASCII
 
 # Other clients
 
