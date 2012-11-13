@@ -20,6 +20,7 @@ import Database.Memcache.Types
 import Control.Exception
 import Control.Monad
 import Data.ByteString (ByteString)
+import qualified Data.ByteString as B
 import Data.Word
 import qualified Network.Socket as N
 
@@ -208,20 +209,22 @@ version c = do
         NoError -> return v
         _       -> throwStatus r
 
--- XXX: Stats returns lots of responses... termination is a packet with no key
--- and no value...
--- XXX: Note, key is also meaningful...
 stats :: Connection -> Maybe Key -> IO (Maybe [(ByteString, ByteString)])
-stats c k = do
-    let msg = emptyReq { reqOp = ReqStat k }
-    r <- sendRecv c msg
-    _v <- case resOp r of
-        ResStat v -> return v
-        _         -> throwIncorrectRes r "STATS"
-    case resStatus r of
-        NoError        -> return $ Just undefined -- XXX: undefined!
-        ErrKeyNotFound -> return Nothing
-        _              -> throwStatus r
+stats c key = do
+    let msg = emptyReq { reqOp = ReqStat key }
+    send c msg
+    getAllStats []
+  where
+    getAllStats xs = do
+        r <- recv c
+        (k, v) <- case resOp r of
+            ResStat k v -> return (k, v)
+            _           -> throwIncorrectRes r "STATS"
+        case resStatus r of
+            NoError | B.null k && B.null v -> return $ Just xs
+                    | otherwise            -> getAll $ (k, v):xs
+            ErrKeyNotFound                 -> return Nothing
+            _                              -> throwStatus r
 
 quit :: Connection -> IO ()
 -- XXX: close can throw, need to handle...

@@ -186,8 +186,8 @@ dzBody h = do
         0x08 -> dzGenericResponse h $ ResFlush Loud
         0x18 -> dzGenericResponse h $ ResFlush Quiet
         0x0A -> dzGenericResponse h ResNoop
+        0x10 -> dzKeyValueResponse h ResStat
         0x0B -> dzValueResponse h ResVersion
-        0x10 -> dzValueResponse h ResStat
         -- SASL
         0x20 -> dzValueResponse h ResSASLList
         0x21 -> dzGenericResponse h ResSASLStart
@@ -282,6 +282,23 @@ dzValueResponse h o = do
             resOpaque = opaque h,
             resCas    = cas h
         }
+
+-- | Deserialize the body of a general response that just has a key and value
+-- (no extras).
+dzKeyValueResponse :: Header -> (Key -> Value -> OpResponse) -> Get Response
+dzKeyValueResponse h o = do
+    k <- getByteString kl
+    v <- getByteString vl
+    chkLength h 0 (extraLen h) "Extra length expected to be zero"
+    return Res {
+            resOp     = o k v,
+            resStatus = status h,
+            resOpaque = opaque h,
+            resCas    = cas h
+        }
+  where
+    kl = fromIntegral $ keyLen h
+    vl = fromIntegral (bodyLen h) - kl
 
 -- | Deserialize a Response status code.
 dzStatus :: Get Status

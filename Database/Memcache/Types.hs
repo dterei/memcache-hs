@@ -100,7 +100,7 @@ data OpResponse
     | ResFlush     Q
     | ResNoop
     | ResVersion         Value
-    | ResStat            Value
+    | ResStat        Key Value
     | ResQuit      Q
     | ResSASLList           Value
     | ResSASLStart
