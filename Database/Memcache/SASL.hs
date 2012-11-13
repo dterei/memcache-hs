@@ -8,6 +8,7 @@ module Database.Memcache.SASL (
 
 import Database.Memcache.Server
 import Database.Memcache.Types
+import Database.Memcache.Utils
 
 import Control.Exception
 import Control.Monad
@@ -33,15 +34,11 @@ saslAuthPlain c u p = do
     let credentials = singleton 0 <> u <> singleton 0 <> p
         msg = emptyReq { reqOp = ReqSASLStart "PLAIN" credentials }
     r <- sendRecv c msg
-    when (resOp r /= ResSASLStart) $
-        throwIO $ IncorrectResponse {
-             increspMessage = "Expected SASL_START response! Got: " ++ show (resOp r),
-             increspActual  = r
-        }
+    when (resOp r /= ResSASLStart) $ throwIncorrectRes r "SASL_START"
     case resStatus r of
         NoError      -> return True
         SaslAuthFail -> return False
-        _            -> throwIO (resStatus r)
+        _            -> throwStatus r
 
 -- | List available SASL authentication methods. We could call this but as we
 -- only support PLAIN as does the memcached server, we simply assume PLAIN
@@ -52,11 +49,8 @@ saslListMechs c = do
     r <- sendRecv c msg
     v <- case resOp r of
         ResSASLList v -> return v
-        _             -> throwIO $ IncorrectResponse {
-                             increspMessage = "Expected SASL_LIST response! Got: " ++ show (resOp r),
-                             increspActual  = r
-                         }
+        _             -> throwIncorrectRes r "SASL_LIST"
     case resStatus r of
         NoError        -> return v
-        _              -> throwIO (resStatus r)
+        _              -> throwStatus r
 

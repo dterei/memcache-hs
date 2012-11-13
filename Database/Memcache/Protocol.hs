@@ -15,6 +15,7 @@ module Database.Memcache.Protocol (
 
 import Database.Memcache.Server
 import Database.Memcache.Types
+import Database.Memcache.Utils
 
 import Control.Exception
 import Control.Monad
@@ -28,14 +29,11 @@ get c k = do
     r <- sendRecv c msg
     (v, f) <- case resOp r of
         ResGet Loud v f -> return (v, f)
-        _                -> throwIO $ IncorrectResponse {
-                                increspMessage = "Expected GET response! Got: " ++ show (resOp r),
-                                increspActual  = r
-                            }
+        _               -> throwIncorrectRes r "GET"
     case resStatus r of
         NoError        -> return $ Just (v, f, resCas r)
         ErrKeyNotFound -> return Nothing
-        _              -> throwIO (resStatus r)
+        _              -> throwStatus r
 
 -- XXX: Maybe collapse data structures into single...
 gat :: Connection -> Key -> Expiration -> IO (Maybe (Value, Flags, Version))
@@ -44,28 +42,21 @@ gat c k e = do
     r <- sendRecv c msg
     (v, f) <- case resOp r of
         ResGAT Loud v f -> return (v, f)
-        _                -> throwIO $ IncorrectResponse {
-                                increspMessage = "Expected GAT response! Got: " ++ show (resOp r),
-                                increspActual  = r
-                            }
+        _               -> throwIncorrectRes r "GAT"
     case resStatus r of
         NoError        -> return $ Just (v, f, resCas r)
         ErrKeyNotFound -> return Nothing
-        _              -> throwIO (resStatus r)
+        _              -> throwStatus r
 
 touch :: Connection -> Key -> Expiration -> IO (Maybe Version)
 touch c k e = do
     let msg = emptyReq { reqOp = ReqTouch k (SETouch e) }
     r <- sendRecv c msg
-    when (resOp r /= ResTouch) $
-        throwIO $ IncorrectResponse {
-            increspMessage = "Expected TOUCH response! Got: " ++ show (resOp r),
-            increspActual  = r
-        }
+    when (resOp r /= ResTouch) $ throwIncorrectRes r "TOUCH"
     case resStatus r of
         NoError        -> return $ Just (resCas r)
         ErrKeyNotFound -> return Nothing
-        _              -> throwIO (resStatus r)
+        _              -> throwStatus r
 
 --
 
@@ -73,62 +64,46 @@ set :: Connection -> Key -> Value -> Flags -> Expiration -> IO Version
 set c k v f e = do
     let msg = emptyReq { reqOp = ReqSet Loud k v (SESet f e) }
     r <- sendRecv c msg
-    when (resOp r /= ResSet Loud) $
-        throwIO $ IncorrectResponse {
-            increspMessage = "Expected SET response! Got: " ++ show (resOp r),
-            increspActual  = r
-        }
+    when (resOp r /= ResSet Loud) $ throwIncorrectRes r "SET"
     case resStatus r of
         NoError -> return $ resCas r
-        _       -> throwIO (resStatus r)
+        _       -> throwStatus r
 
 set' :: Connection -> Key -> Value -> Flags -> Expiration -> Version -> IO (Maybe Version)
 set' c k v f e ver = do
     let msg = emptyReq { reqOp = ReqSet Loud k v (SESet f e), reqCas = ver }
     r <- sendRecv c msg
-    when (resOp r /= ResSet Loud) $
-        throwIO $ IncorrectResponse {
-            increspMessage = "Expected SET response! Got: " ++ show (resOp r),
-            increspActual  = r
-        }
+    when (resOp r /= ResSet Loud) $ throwIncorrectRes r "SET"
     case resStatus r of
         NoError        -> return $ Just (resCas r)
         -- version specified and key doesn't exist...
         ErrKeyNotFound -> return Nothing
         -- version specified and doesn't match key...
         ErrKeyExists   -> return Nothing
-        _              -> throwIO (resStatus r)
+        _              -> throwStatus r
 
 add :: Connection -> Key -> Value -> Flags -> Expiration -> IO (Maybe Version)
 add c k v f e = do
     let msg = emptyReq { reqOp = ReqAdd Loud k v (SESet f e) }
     r <- sendRecv c msg
-    when (resOp r /= ResAdd Loud) $
-        throwIO $ IncorrectResponse {
-            increspMessage = "Expected ADD response! Got: " ++ show (resOp r),
-            increspActual  = r
-        }
+    when (resOp r /= ResAdd Loud) $ throwIncorrectRes r "ADD"
     case resStatus r of
         NoError      -> return $ Just (resCas r)
         ErrKeyExists -> return Nothing
-        _            -> throwIO (resStatus r)
+        _            -> throwStatus r
 
 replace :: Connection -> Key -> Value -> Flags -> Expiration -> Version -> IO (Maybe Version)
 replace c k v f e ver = do
     let msg = emptyReq { reqOp = ReqReplace Loud k v (SESet f e), reqCas = ver }
     r <- sendRecv c msg
-    when (resOp r /= ResReplace Loud) $
-        throwIO $ IncorrectResponse {
-            increspMessage = "Expected REPLACE response! Got: " ++ show (resOp r),
-            increspActual  = r
-        }
+    when (resOp r /= ResReplace Loud) $ throwIncorrectRes r "REPLACE"
     case resStatus r of
         NoError        -> return $ Just (resCas r)
         -- replace only applies to an existing key...
         ErrKeyNotFound -> return Nothing
         -- version specified and doesn't match key...
         ErrKeyExists   -> return Nothing
-        _              -> throwIO (resStatus r)
+        _              -> throwStatus r
 
 --
 
@@ -136,18 +111,14 @@ delete :: Connection -> Key -> Version -> IO Bool
 delete c k ver = do
     let msg = emptyReq { reqOp = ReqDelete Loud k, reqCas = ver }
     r <- sendRecv c msg
-    when (resOp r /= ResDelete Loud) $
-        throwIO $ IncorrectResponse {
-            increspMessage = "Expected DELETE response! Got: " ++ show (resOp r),
-            increspActual  = r
-        }
+    when (resOp r /= ResDelete Loud) $ throwIncorrectRes r "DELETE"
     case resStatus r of
         NoError        -> return True
         -- delete only applies to an existing key...
         ErrKeyNotFound -> return False
         -- version specified and doesn't match key...
         ErrKeyExists   -> return False
-        _              -> throwIO (resStatus r)
+        _              -> throwStatus r
 
 --
 
@@ -157,16 +128,13 @@ increment c k i d e ver = do
     r <- sendRecv c msg
     n <- case resOp r of
         ResIncrement Loud n -> return n
-        _                   -> throwIO $ IncorrectResponse {
-                                   increspMessage = "Expected INCREMENT response! Got: " ++ show (resOp r),
-                                   increspActual  = r
-                               }
+        _                   -> throwIncorrectRes r "INCREMENT"
     case resStatus r of
         NoError        -> return $ Just (n, resCas r)
         ErrKeyNotFound -> return Nothing
         ErrKeyExists   -> return Nothing
         -- XXX: Exception or Nothing for nonnumeric status?
-        _              -> throwIO (resStatus r)
+        _              -> throwStatus r
 
 decrement :: Connection -> Key -> Initial -> Delta -> Expiration -> Version -> IO (Maybe (Word64, Version))
 decrement c k i d e ver = do
@@ -174,17 +142,14 @@ decrement c k i d e ver = do
     r <- sendRecv c msg
     n <- case resOp r of
         ResDecrement Loud n -> return n
-        _                   -> throwIO $ IncorrectResponse {
-                                   increspMessage = "Expected DECREMENT response! Got: " ++ show (resOp r),
-                                   increspActual  = r
-                               }
+        _                   -> throwIncorrectRes r "DECREMENT"
     case resStatus r of
         NoError        -> return $ Just (n, resCas r)
         -- XXX: Should differentiate, use custom sum, NOT either.
         ErrKeyNotFound -> return Nothing
         ErrKeyExists   -> return Nothing
         -- XXX: Exception or Nothing for nonnumeric status?
-        _              -> throwIO (resStatus r)
+        _              -> throwStatus r
 
 --
 
@@ -193,31 +158,23 @@ append :: Connection -> Key -> Value -> Version -> IO (Maybe Version)
 append c k v ver = do
     let msg = emptyReq { reqOp = ReqAppend Loud k v, reqCas = ver }
     r <- sendRecv c msg
-    when (resOp r /= ResAppend Loud) $
-        throwIO $ IncorrectResponse {
-            increspMessage = "Expected APPEND response! Got: " ++ show (resOp r),
-            increspActual  = r
-        }
+    when (resOp r /= ResAppend Loud) $ throwIncorrectRes r "APPEND"
     case resStatus r of
         NoError        -> return $ Just (resCas r)
         ErrKeyNotFound -> return Nothing
         ErrKeyExists   -> return Nothing
-        _              -> throwIO (resStatus r)
+        _              -> throwStatus r
 
 prepend :: Connection -> Key -> Value -> Version -> IO (Maybe Version)
 prepend c k v ver = do
     let msg = emptyReq { reqOp = ReqPrepend Loud k v, reqCas = ver }
     r <- sendRecv c msg
-    when (resOp r /= ResPrepend Loud) $
-        throwIO $ IncorrectResponse {
-            increspMessage = "Expected PREPEND response! Got: " ++ show (resOp r),
-            increspActual  = r
-        }
+    when (resOp r /= ResPrepend Loud) $ throwIncorrectRes r "PREPEND"
     case resStatus r of
         NoError        -> return $ Just (resCas r)
         ErrKeyNotFound -> return Nothing
         ErrKeyExists   -> return Nothing
-        _              -> throwIO (resStatus r)
+        _              -> throwStatus r
 
 --
 
@@ -226,27 +183,19 @@ flush c e = do
     let e'  = maybe Nothing (\xp -> Just (SETouch xp)) e
         msg = emptyReq { reqOp = ReqFlush Loud e' }
     r <- sendRecv c msg
-    when (resOp r /= ResFlush Loud) $
-        throwIO $ IncorrectResponse {
-            increspMessage = "Expected FLUSH response! Got: " ++ show (resOp r),
-            increspActual  = r
-        }
+    when (resOp r /= ResFlush Loud) $ throwIncorrectRes r "FLUSH"
     case resStatus r of
         NoError -> return ()
-        _       -> throwIO (resStatus r)
+        _       -> throwStatus r
 
 noop :: Connection -> IO ()
 noop c = do
     let msg = emptyReq { reqOp = ReqNoop }
     r <- sendRecv c msg
-    when (resOp r /= ResNoop) $
-        throwIO $ IncorrectResponse {
-            increspMessage = "Expected NOOP response! Got: " ++ show (resOp r),
-            increspActual  = r
-        }
+    when (resOp r /= ResNoop) $ throwIncorrectRes r "NOOP"
     case resStatus r of
         NoError -> return ()
-        _       -> throwIO (resStatus r)
+        _       -> throwStatus r
 
 version :: Connection -> IO ByteString
 version c = do
@@ -254,13 +203,10 @@ version c = do
     r <- sendRecv c msg
     v <- case resOp r of
         ResVersion v -> return v
-        _            -> throwIO $ IncorrectResponse {
-                            increspMessage = "Expected VERSION response! Got: " ++ show (resOp r),
-                            increspActual  = r
-                        }
+        _            -> throwIncorrectRes r "VERSION"
     case resStatus r of
         NoError -> return v
-        _       -> throwIO (resStatus r)
+        _       -> throwStatus r
 
 -- XXX: Stats returns lots of responses... termination is a packet with no key
 -- and no value...
@@ -271,14 +217,11 @@ stats c k = do
     r <- sendRecv c msg
     _v <- case resOp r of
         ResStat v -> return v
-        _         -> throwIO $ IncorrectResponse {
-                         increspMessage = "Expected STATS response! Got: " ++ show (resOp r),
-                         increspActual  = r
-                     }
+        _         -> throwIncorrectRes r "STATS"
     case resStatus r of
         NoError        -> return $ Just undefined -- XXX: undefined!
         ErrKeyNotFound -> return Nothing
-        _              -> throwIO (resStatus r)
+        _              -> throwStatus r
 
 quit :: Connection -> IO ()
 -- XXX: close can throw, need to handle...
@@ -287,12 +230,8 @@ quit c = flip finally (N.close $ conn c) $ do
     send c msg
     N.shutdown (conn c) N.ShutdownSend
     r <- recv c
-    when (resOp r /= ResQuit Loud) $
-        throwIO $ IncorrectResponse {
-            increspMessage = "Expected QUIT response! Got: " ++ show (resOp r),
-            increspActual  = r
-        }
+    when (resOp r /= ResQuit Loud) $ throwIncorrectRes r "QUIT"
     case resStatus r of
         NoError -> return ()
-        _       -> throwIO (resStatus r)
+        _       -> throwStatus r
 

@@ -25,6 +25,7 @@ library
     Database.Memcache.SASL
     Database.Memcache.Server
     Database.Memcache.Types
+    Database.Memcache.Utils
     Database.Memcache.Wire
 
   build-depends:

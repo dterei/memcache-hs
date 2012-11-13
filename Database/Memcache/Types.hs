@@ -6,7 +6,7 @@ module Database.Memcache.Types (
         Q(..), K(..), Key, Value, Extras, Initial, Delta, Expiration, Flags, Version,
         mEMCACHE_HEADER_SIZE, Header(..),
         Request(..), OpRequest(..), SESet(..), SEIncr(..), SETouch(..), emptyReq,
-        Response(..), OpResponse(..), Status(..),
+        Response(..), OpResponse(..), Status(..), MemcacheError(..),
         ProtocolError(..), IncorrectResponse(..)
     ) where
 
@@ -121,8 +121,18 @@ data Status
     | SaslAuthContinue    -- SASL
     deriving (Eq, Show, Typeable)
 
--- XXX: Better way? (encode in own data type)
-instance Exception Status
+data MemcacheError
+    = MemErrNoKey
+    | MemErrKeyExists
+    | MemErrValueTooLarge
+    | MemErrInvalidArgs
+    | MemErrStoreFailed
+    | MemErrValueNonNumeric
+    | MemErrUnknownCmd
+    | MemErrOutOfMemory
+    deriving (Eq, Show, Typeable)
+
+instance Exception MemcacheError
 
 data Response = Res {
         resOp     :: OpResponse,
