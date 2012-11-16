@@ -222,7 +222,7 @@ stats c key = do
             _           -> throwIncorrectRes r "STATS"
         case resStatus r of
             NoError | B.null k && B.null v -> return $ Just xs
-                    | otherwise            -> getAll $ (k, v):xs
+                    | otherwise            -> getAllStats $ (k, v):xs
             ErrKeyNotFound                 -> return Nothing
             _                              -> throwStatus r
 
