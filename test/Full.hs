@@ -9,7 +9,7 @@ import System.Exit
 
 main :: IO ()
 main = do
-    c <- newMemcacheClient "localhost" 11211
+    c <- newMemcacheClient "10.10.37.5" 11211
     getTest c
     exitSuccess
 
