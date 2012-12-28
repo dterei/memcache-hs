@@ -1,5 +1,5 @@
 {-# LANGUAGE CPP #-}
--- | A memcache client.
+-- | Memcache Client Representation
 module Database.Memcache.Client 
   (
    -- * Client Operations
@@ -15,9 +15,3 @@ import Database.Memcache.Win32.LClient
 #else
 import Database.Memcache.Posix.LClient
 #endif
-
-get = get
-set = set
-set' = set'
-delete = delete
-delete' = delete'
