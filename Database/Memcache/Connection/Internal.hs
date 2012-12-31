@@ -1,19 +1,20 @@
-% License:			BSD3
-% Maintainer:		Montez Fitzpatrick
-% Stability:		Alpha
-% Portability:		GHC
-
-\begin{code}
 {-# LANGUAGE CPP #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+-- License:			BSD3
+-- Maintainer:		Montez Fitzpatrick
+-- Stability:		Alpha
+-- Portability:		GHC
+
+-- | This module is the Internal module for connections made
+--   to a Memcache Node.
 module Database.Memcache.Connection.Internal
   (
    -- * Connection Datatype
     Connection(..)   
    -- * Connection Operations
-  , connect
+  , connectTo
   , disconnect
   -- * Sending and Receiving Operations
   -- ** Sending
@@ -34,9 +35,6 @@ import Data.Typeable (Typeable)
 
 import Database.Memcache.Server.Internal
 
-\end{code}
-
-\begin{code}
 -- | Connection representation to a Memcache server
 data Connection = Connection
   { cnxnSocket :: Socket
@@ -48,15 +46,15 @@ instance Show Connection where
               show (Socket.fdSocket (cnxnSocket conn)) ++ " >>"
 
 -- | To make a connection attempt with a Memcache server.  
-connect :: Server -> IO Connection
-connect Server{..} = withSocketsDo $ do
+connectTo :: Server -> IO Connection
+connectTo Server{..} = withSocketsDo $ do
   let hints = defaultHints {
                 addrFlags = [AI_ADDRCONFIG]
 			  , addrSocketType = 
 			      case transport of 
                     TCP -> Stream
                     UDP -> Datagram
-               }
+              }
 
   ais <- getAddrInfo (Just hints) (Just hostName) (Just portNumber)
   let ai = case ais of
@@ -104,4 +102,25 @@ recvNoPool = undefined
 -- | Retrieve a single Pooled response from the Memcache Server.
 recvWithPool = undefined
 
-\end{code}
+{- Moved from original Database.Memcache.Server module
+
+-- | Send a request to the memcache cluster.
+send :: Connection -> Request -> IO ()
+send c m = N.sendAll (conn c) (L.toStrict $ toLazyByteString $ szRequest m)
+
+-- | Send a receieve a single request/response pair to the memcache cluster.
+sendRecv :: Connection -> Request -> IO Response
+sendRecv c m = do
+    send c m
+    recv c
+
+-- | Retrieve a single response from the memcache cluster.
+recv :: Connection -> IO Response
+recv c = do
+    -- XXX: recv may return less.
+    header <- N.recv (conn c) mEMCACHE_HEADER_SIZE
+    let h = dzHeader' (L.fromStrict header)
+    body <- N.recv (conn c) (fromIntegral $ bodyLen h)
+    let b = dzBody' h (L.fromStrict body)
+    return b
+-}

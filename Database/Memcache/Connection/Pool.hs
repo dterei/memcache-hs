@@ -1,34 +1,36 @@
-% Stability:   experimental
-% Portability: portable
+{-# LANGUAGE DeriveDataTypeable #-}
+{-# LANGUAGE NamedFieldPuns #-}
+{-# LANGUAGE RecordWildCards #-}
+{-# LANGUAGE ScopedTypeVariables #-}
+-- Stability:   experimental
+-- Portability: portable
 
-Thin wrapper around 'Data.Pool'
-
-Borrowed heavily from 'Network.Riak.Connection.Pool' written by Bryan
-O'Sullivan and 'Data.Conduit.Pool'.
-
-\begin{code}
-{-# LANGUAGE DeriveDataTypeable, NamedFieldPuns, RecordWildCards,
-    ScopedTypeVariables #-}
-
+-- | This module is a thin wrapper around 'Data.Pool'
+--
+-- Conceptualizations are borrowed heavily from giants namely
+-- 'Network.Riak.Connection.Pool' authored by Bryan O'Sullivan 
+-- and 'Data.Conduit.Pool' penned by Michael Snoyman.
 module Database.Memcache.Connection.Pool
     (
+	-- * Connection Pool
       Pool
-    , create
-    , idleTime
-    , maxConnections
-    , numStripes
+	-- * Create Connection Pool
+    , createConnPool
+	-- * Modify Connection Pool Options
+    , PoolOptions(..)
+	, setPoolOption
+    -- * Use Connection Pool
     , withConnection
     ) where
 
 import Data.Time.Clock (NominalDiffTime)
 import Data.Typeable (Typeable)
 
-import Database.Memcache.Connection.Internal (Connection, connect, disconnect)
--- import Network.Riak (Client(clientID), Connection, connect, disconnect)
--- import Network.Riak.Connection (makeClientID)
-import qualified Data.Pool as Pool
+import Database.Memcache.Connection.Internal (Connection, connectTo, disconnect)
+import qualified Data.Pool as P
 
-import Database.Memcache.Server.Internal (Server) 
+-- import Database.Memcache.Server.Internal (Server) 
+import Database.Memcache.Server.Internal
 
 -- | A pool of connections to a Memcache server.
 --
@@ -40,7 +42,7 @@ import Database.Memcache.Server.Internal (Server)
 data Pool = Pool
     { server :: Server
 	-- ^ Server specification.
-    , pool :: Pool.Pool Connection
+    , pool :: P.Pool Connection
     } deriving (Typeable)
 
 instance Show Pool where
@@ -54,6 +56,20 @@ instance Eq Pool where
              numStripes a == numStripes b &&
              idleTime a == idleTime b && 
 			 maxConnections a == maxConnections b
+
+data PoolOption =
+  -- | Stripe Count.  The number of distinct sub-pools to maintain.
+  --   Smallest acceptable value is 1.
+	NumStripes      
+  -- | Amount of time an unused connection is kept open.
+  --   The smallest acceptable value in spec is 0.5.  This implementation uses
+  --   integers so 1 is the smallest value.
+  | IdleTime
+  -- | Maximum number of connections to keep open per stripe.
+  --   The smallest acceptable value is 1.
+  | MaxConnections
+  deriving (Show, Typeable)
+
 
 -- | Create a new connection pool.
 create :: Server
@@ -76,12 +92,30 @@ create :: Server
        -- connections available.
        -> IO Pool
 create server ns it mc =
-    Pool server `fmap` Pool.createPool (connect server) disconnect ns it mc
+    Pool server `fmap` P.createPool (connectTo server) disconnect ns it mc
+
+-- | Create a new connection pool.
+createConnPool :: Server -> IO Pool
+createConnPool srv@Server(..) =
+  Pool srv `fmap` P.createPool (connectoTo srv) disconnect 1 1 pooling
+
+type PoolOptionValue = Int
+
+-- | Set a pooling option, Int values are expected.
+setPoolOption :: Pool
+              -> PoolOption
+			  -> PoolOptionValue
+			  -> IO ()
+setPoolOption Pool(..) po v = 
+  case po of
+    NumStripes     -> numStripes v
+    IdleTime       -> idleTime v
+	MaxConnections -> maxConnections v
 
 -- | Stripe count.  The number of distinct sub-pools to maintain.  The
 -- smallest acceptable value is 1.
 numStripes :: Pool -> Int
-numStripes = Pool.numStripes . pool
+numStripes = P.numStripes . pool
 
 -- | Amount of time for which an unused connection is kept open.  The
 -- smallest acceptable value is 0.5 seconds.
@@ -89,7 +123,7 @@ numStripes = Pool.numStripes . pool
 -- The elapsed time before closing may be a little longer than
 -- requested, as the reaper thread wakes at 1-second intervals.
 idleTime :: Pool -> NominalDiffTime
-idleTime = Pool.idleTime . pool
+idleTime = P.idleTime . pool
 
 -- | Maximum number of connections to keep open per stripe.  The
 -- smallest acceptable value is 1.
@@ -98,7 +132,7 @@ idleTime = Pool.idleTime . pool
 -- single stripe, even if other stripes have idle connections
 -- available.
 maxConnections :: Pool -> Int
-maxConnections = Pool.maxResources . pool
+maxConnections = P.maxResources . pool
 
 -- | Temporarily take a connection from a 'Pool', perform an action
 -- with it, and return it to the pool afterwards.
@@ -120,6 +154,4 @@ maxConnections = Pool.maxResources . pool
 -- 'disconnect' on a connection, as doing so will cause a subsequent
 -- user (who expects the connection to be valid) to throw an exception.
 withConnection :: Pool -> (Connection -> IO a) -> IO a
-withConnection = Pool.withResource . pool
-
-\end{code}
+withConnection = P.withResource . pool
