@@ -49,16 +49,16 @@ instance Show Connection where
 
 -- | To make a connection attempt with a Memcache server.  
 connect :: Server -> IO Connection
-connect srv = withSocketsDo $ do
+connect Server{..} = withSocketsDo $ do
   let hints = defaultHints {
                 addrFlags = [AI_ADDRCONFIG]
 			  , addrSocketType = 
-			      case transport srv of 
+			      case transport of 
                     TCP -> Stream
                     UDP -> Datagram
                }
 
-  ais <- getAddrInfo (Just hints) (Just (hostName srv)) (Just (portNumber srv))
+  ais <- getAddrInfo (Just hints) (Just hostName) (Just portNumber)
   let ai = case ais of
              (a:_) -> a
 

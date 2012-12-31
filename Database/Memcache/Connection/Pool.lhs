@@ -4,7 +4,7 @@
 Thin wrapper around 'Data.Pool'
 
 Borrowed heavily from 'Network.Riak.Connection.Pool' written by Bryan
-O'Sullivan.
+O'Sullivan and 'Data.Conduit.Pool'.
 
 \begin{code}
 {-# LANGUAGE DeriveDataTypeable, NamedFieldPuns, RecordWildCards,
@@ -28,7 +28,7 @@ import Database.Memcache.Connection.Internal (Connection, connect, disconnect)
 -- import Network.Riak.Connection (makeClientID)
 import qualified Data.Pool as Pool
 
-import Database.Memcache.Server (Server) 
+import Database.Memcache.Server.Internal (Server) 
 
 -- | A pool of connections to a Memcache server.
 --
