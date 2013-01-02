@@ -17,7 +17,7 @@ module Database.Memcache.Connection.Pool
 	-- * Create Connection Pool
     , createConnPool
 	-- * Modify Connection Pool Options
-    , PoolOptions(..)
+    , PoolOption(..)
 	, setPoolOption
     -- * Use Connection Pool
     , withConnection
@@ -96,21 +96,22 @@ create server ns it mc =
 
 -- | Create a new connection pool.
 createConnPool :: Server -> IO Pool
-createConnPool srv@Server(..) =
-  Pool srv `fmap` P.createPool (connectoTo srv) disconnect 1 1 pooling
+createConnPool srv@Server{..} =
+  Pool srv `fmap` P.createPool (connectTo srv) disconnect 1 1 pooling
 
 type PoolOptionValue = Int
 
 -- | Set a pooling option, Int values are expected.
-setPoolOption :: Pool
+{- setPoolOption :: Pool
               -> PoolOption
 			  -> PoolOptionValue
 			  -> IO ()
-setPoolOption Pool(..) po v = 
+			  -}
+setPoolOption Pool{..} po v = 
   case po of
     NumStripes     -> numStripes v
-    IdleTime       -> idleTime v
-	MaxConnections -> maxConnections v
+    -- IdleTime       -> idleTime (fromIntegral v)
+    MaxConnections -> maxConnections v
 
 -- | Stripe count.  The number of distinct sub-pools to maintain.  The
 -- smallest acceptable value is 1.
