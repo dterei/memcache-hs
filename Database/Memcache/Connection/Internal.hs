@@ -86,22 +86,6 @@ bufferSize :: Integral a => a
 bufferSize = 32768 -- ^ 32K Buffer Size
 {-# INLINE bufferSize #-}
 
--- | Send Non-Pooled Request to Memcache Server
-sendNoPool = undefined
-
--- | Send Pooled Request to Memcache Server
-sendWithPool = undefined
-
--- | Send and receieve a single Non-Pooled request/response pair to the Memcache Server 
-sendRecvNoPool = undefined
--- | Send and receieve a single Pooled request/response pair to the Memcache Server 
-sendRecvWithPool = undefined
-
--- | Retrieve a single Non-Pooled response from the Memcache Server.
-recvNoPool = undefined
--- | Retrieve a single Pooled response from the Memcache Server.
-recvWithPool = undefined
-
 {- Moved from original Database.Memcache.Server module
 
 -- | Send a request to the memcache cluster.
