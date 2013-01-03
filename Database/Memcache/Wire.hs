@@ -11,7 +11,8 @@ import Control.Monad
 import Data.Binary.Get
 import qualified Data.ByteString as B
 import qualified Data.ByteString.Lazy as L
-import Data.ByteString.Builder
+-- import Data.ByteString.Builder
+import Blaze.ByteString.Builder
 import Data.Monoid
 import Data.Word
 

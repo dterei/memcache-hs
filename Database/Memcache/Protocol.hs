@@ -14,8 +14,9 @@ module Database.Memcache.Protocol (
     ) where
 
 import Database.Memcache.Errors
-import Database.Memcache.Server
+-- simport Database.Memcache.Server
 import Database.Memcache.Types
+import Database.Memcache.Connection
 
 import Control.Exception
 import Control.Monad
@@ -212,7 +213,7 @@ version c = do
 stats :: Connection -> Maybe Key -> IO (Maybe [(ByteString, ByteString)])
 stats c key = do
     let msg = emptyReq { reqOp = ReqStat key }
-    send c msg
+    sendRequest c msg
     getAllStats []
   where
     getAllStats xs = do
@@ -230,7 +231,7 @@ quit :: Connection -> IO ()
 -- XXX: close can throw, need to handle...
 quit c = flip finally (N.close $ conn c) $ do 
     let msg = emptyReq { reqOp = ReqQuit Loud }
-    send c msg
+    sendRequest c msg
     N.shutdown (conn c) N.ShutdownSend
     r <- recv c
     when (resOp r /= ResQuit Loud) $ throwIncorrectRes r "QUIT"

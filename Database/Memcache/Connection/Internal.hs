@@ -18,8 +18,11 @@ module Database.Memcache.Connection.Internal
   , disconnect
   -- * Sending and Receiving Operations
   -- ** Sending
-  -- ** Send Chaining
+  , sendRequest
+  -- ** Exchange
+  , sendRecv
   -- ** Receiving
+  , recvResponse
   ) where
 
 import Network.Socket as Socket
@@ -30,10 +33,13 @@ import Data.IORef (IORef, newIORef, readIORef, writeIORef)
 import Data.ByteString.Lazy (ByteString)
 import qualified Network.Socket.ByteString.Lazy as L
 import qualified Data.ByteString.Lazy.Char8 as L
+import Blaze.ByteString.Builder
 
 import Data.Typeable (Typeable)
 
 import Database.Memcache.Server.Internal
+import Database.Memcache.Wire
+import Database.Memcache.Types
 
 -- | Connection representation to a Memcache server
 data Connection = Connection
@@ -86,25 +92,26 @@ bufferSize :: Integral a => a
 bufferSize = 32768 -- ^ 32K Buffer Size
 {-# INLINE bufferSize #-}
 
-{- Moved from original Database.Memcache.Server module
+-- | Send Request to a Memcache server node Socket.  The Socket must
+--   be in a connected state.  Will send until there is no data left or
+--   there is an error.
+sendRequest :: (Request req) => Connection -> req -> IO ()
+sendRequest Connection{..} req = L.sendAll cnxnSocket (toLazyByteString $ szRequest req)
 
--- | Send a request to the memcache cluster.
-send :: Connection -> Request -> IO ()
-send c m = N.sendAll (conn c) (L.toStrict $ toLazyByteString $ szRequest m)
+-- | Receive Response from a Memcache server node Socket.  The socket must
+--   be in a connected state.
+--   TODO: Add some runtime checks for sanity
+recvResponse :: (Response res) => Connection -> IO res
+recvResponse Connection{..} = do
+  bs <- readIORef cnxnBuffer
+  let (hdr,body) = L.splitAt mEMCACHE_HEADER_SIZE bs
+  let h = dzHeader' (L.fromStrict hdr)
+  return $ dzBody' h (L.fromStrict body)
 
--- | Send a receieve a single request/response pair to the memcache cluster.
-sendRecv :: Connection -> Request -> IO Response
-sendRecv c m = do
-    send c m
-    recv c
-
--- | Retrieve a single response from the memcache cluster.
-recv :: Connection -> IO Response
-recv c = do
-    -- XXX: recv may return less.
-    header <- N.recv (conn c) mEMCACHE_HEADER_SIZE
-    let h = dzHeader' (L.fromStrict header)
-    body <- N.recv (conn c) (fromIntegral $ bodyLen h)
-    let b = dzBody' h (L.fromStrict body)
-    return b
--}
+-- | Send and Receive a single request/response pair from a Memcache
+--   server node Socket.  The socket must be in a connected state.
+sendRecv :: (Request req, Response res) => Connection -> req -> IO res
+sendRecv conn req = do
+  sendRequest conn req
+  recvResponse conn
+  -- Note this function may not be optimal once Async is introduced.
