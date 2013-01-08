@@ -46,7 +46,7 @@ Please report bugs via the
 
 Master [git repository](http://github.com/dterei/mc-hs):
 
-* `git clone git://github.com/bos/mc-hs.git`
+* `git clone git://github.com/dterei/mc-hs.git`
 
 # Authors
 
