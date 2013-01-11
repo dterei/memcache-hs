@@ -5,7 +5,7 @@
 -- Here, memcache is treated as a partitioned cache by using the authentication
 -- feature of a multi-tennant binary memcached cluster. We partition the cache
 -- based on the current label.
-module Database.Memcache.LClient (
+module Database.Memcache.Posix.LClient (
         get, set, set', delete, delete'
     ) where
 

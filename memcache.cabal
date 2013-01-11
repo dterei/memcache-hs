@@ -1,5 +1,5 @@
 name:           memcache
-version:        0.1.0.0
+version:        0.2.0.0
 homepage:       https://github.com/dterei/mc-hs
 bug-reports:    https://github.com/dterei/mc-hs/issues
 synopsis:       A memcached client library.
@@ -14,29 +14,46 @@ copyright:      2012 David Terei.
 category:       Database
 build-type:     Simple
 cabal-version:  >= 1.8
+
 extra-source-files:
   README.md
 
 library
   exposed-modules:
     Database.Memcache.Client
+    Database.Memcache.Connection.Internal
+    Database.Memcache.Connection.Pool
     Database.Memcache.Errors
-    Database.Memcache.LClient
     Database.Memcache.Protocol
     Database.Memcache.SASL
     Database.Memcache.Server
+    Database.Memcache.Server.Internal
     Database.Memcache.Types
     Database.Memcache.Wire
-
+  
   build-depends:
-    base < 5,
-    binary >= 0.6.2.0,
-    bytestring >= 0.10.2.0,
-    cereal > 0.3.5,
-    lio >= 0.9,
-    network >= 2.4
+      base < 5,
+	  blaze-builder > 0.3.1,
+      binary >= 0.6.2.0,
+      bytestring >= 0.9.2.1,
+      cereal > 0.3.5,
+      network >= 2.3,
+      resource-pool >= 0.2.1.0,
+      time >= 1.4
+  
+  if !os(windows)
+    build-depends:
+      lio >= 0.9
+    exposed-modules: 
+      Database.Memcache.Posix.LClient
+  else
+    exposed-modules: 
+      Database.Memcache.Win32.LClient
 
-  ghc-options: -Wall -O2
+  ghc-options: 
+    -Wall
+    -O2
+    
   if impl(ghc >= 6.8)
     ghc-options: -fwarn-tabs
 
@@ -71,3 +88,7 @@ source-repository head
   type:     git
   location: http://github.com/dterei/mc-hs
 
+source-repository this
+  type:     git
+  location: http://github.com/montezfitzpatrick/mc-hs
+  tag: 0.2.0.0
