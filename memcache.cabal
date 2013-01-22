@@ -21,7 +21,6 @@ library
   exposed-modules:
     Database.Memcache.Client
     Database.Memcache.Errors
-    Database.Memcache.LClient
     Database.Memcache.Protocol
     Database.Memcache.SASL
     Database.Memcache.Server
@@ -31,9 +30,8 @@ library
   build-depends:
     base < 5,
     binary >= 0.6.2.0,
-    bytestring >= 0.10.2.0,
-    cereal > 0.3.5,
-    lio >= 0.9,
+    blaze-builder >= 0.3.1.0,
+    bytestring >= 0.9.2.1,
     network >= 2.4
 
   ghc-options: -Wall -O2
@@ -47,6 +45,7 @@ test-suite full
 
   build-depends:
     base < 5,
+    bytestring >= 0.9.2.1,
     memcache
 
   ghc-options: -O2
@@ -60,6 +59,7 @@ benchmark parser
 
   build-depends:
     base < 5,
+    bytestring >= 0.9.2.1,
     criterion > 0.6.0.0,
     memcache
 

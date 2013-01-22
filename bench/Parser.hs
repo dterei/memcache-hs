@@ -1,4 +1,4 @@
-{-# LANGUAGE BangPatterns, OverloadedStrings #-}
+{-# LANGUAGE OverloadedStrings #-}
 
 -- | Benchmark the parsing and serialization aspects of memcache.
 module Main where
@@ -10,6 +10,7 @@ import Criterion.Main
 import Data.ByteString (ByteString)
 import qualified Data.ByteString as B
 import qualified Data.ByteString.Lazy as L
+import qualified Data.ByteString.Lazy.Char8 as LC
 import Data.Monoid
 
 main :: IO ()
@@ -26,14 +27,14 @@ main =
 
 getReqMsg :: Request
 getReqMsg = Req {
-        reqOp     = ReqGet False False "key!",
+        reqOp     = ReqGet Loud NoKey "key!",
         reqOpaque = 123,
         reqCas    = 999
     }
 
 setReqMsg :: Request
 setReqMsg = Req {
-        reqOp     = ReqSet False "key!" "hello world" (SESet 10 0),
+        reqOp     = ReqSet Loud "key!" "hello world" (SESet 10 0),
         reqOpaque = 123,
         reqCas    = 999
     }
@@ -50,9 +51,9 @@ getRespHeaderBytes =
     cas'    = [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x09]
 
 getRespBytes :: L.ByteString
-getRespBytes = getRespHeaderBytes <> L.pack extras' <> L.pack key' <> value'
+getRespBytes = getRespHeaderBytes <> extras' <> key' <> value'
   where
-    extras' = [0x00, 0x00, 0x00, 0x01] -- BE: so 1?
-    key'    = []
-    value'  = "12345678"
+    extras' = L.pack  [0x00, 0x00, 0x00, 0x01] -- BE: so 1?
+    key'    = L.pack  []
+    value'  = LC.pack "12345678"
 

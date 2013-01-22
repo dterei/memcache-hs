@@ -7,9 +7,9 @@ module Database.Memcache.Server (
 import Database.Memcache.Types
 import Database.Memcache.Wire
 
+import Blaze.ByteString.Builder
 import Control.Exception
 import qualified Data.ByteString.Lazy as L
-import Data.ByteString.Builder
 
 import Network.BSD (getProtocolNumber, getHostByName, hostAddress)
 import Network.Socket hiding (send, recv)
@@ -44,7 +44,7 @@ connectTo host port = do
 
 -- | Send a request to the memcache cluster.
 send :: Connection -> Request -> IO ()
-send c m = N.sendAll (conn c) (L.toStrict $ toLazyByteString $ szRequest m)
+send c m = N.sendAll (conn c) (toByteString $ szRequest m)
 
 -- | Send a receieve a single request/response pair to the memcache cluster.
 sendRecv :: Connection -> Request -> IO Response
@@ -57,8 +57,8 @@ recv :: Connection -> IO Response
 recv c = do
     -- XXX: recv may return less.
     header <- N.recv (conn c) mEMCACHE_HEADER_SIZE
-    let h = dzHeader' (L.fromStrict header)
+    let h = dzHeader' (L.fromChunks [header])
     body <- N.recv (conn c) (fromIntegral $ bodyLen h)
-    let b = dzBody' h (L.fromStrict body)
+    let b = dzBody' h (L.fromChunks [body])
     return b
 

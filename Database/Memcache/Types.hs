@@ -36,7 +36,7 @@ import Data.Word
 mEMCACHE_HEADER_SIZE :: Int
 mEMCACHE_HEADER_SIZE = 24
 
-data Q          = Quiet | Loud deriving (Eq, Show, Typeable)
+data Q          = Loud  | Quiet      deriving (Eq, Show, Typeable)
 data K          = NoKey | IncludeKey deriving (Eq, Show, Typeable)
 type Key        = ByteString
 type Value      = ByteString

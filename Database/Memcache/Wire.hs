@@ -8,10 +8,10 @@ import Database.Memcache.Types
 
 import Control.Exception
 import Control.Monad
+import Blaze.ByteString.Builder
 import Data.Binary.Get
 import qualified Data.ByteString as B
 import qualified Data.ByteString.Lazy as L
-import Data.ByteString.Builder
 import Data.Monoid
 import Data.Word
 
@@ -22,25 +22,25 @@ szRequest' = toLazyByteString . szRequest
 -- | Serialize a request to a ByteString Builder.
 szRequest :: Request -> Builder
 szRequest req =
-       word8 0x80
-    <> word8 c
-    <> word16BE (fromIntegral keyl)
-    <> word8 (fromIntegral extl)
-    <> word8 0
-    <> word16BE 0
-    <> word32BE (fromIntegral $ extl + keyl + vall)
-    <> word32BE (reqOpaque req)
-    <> word64BE (reqCas req)
+       fromWord8 0x80
+    <> fromWord8 c
+    <> fromWord16be (fromIntegral keyl)
+    <> fromWord8 (fromIntegral extl)
+    <> fromWord8 0
+    <> fromWord16be 0
+    <> fromWord32be (fromIntegral $ extl + keyl + vall)
+    <> fromWord32be (reqOpaque req)
+    <> fromWord64be (reqCas req)
     <> ext'
     <> key'
     <> val'
   where
     (c, k', v', ext', extl) = getCodeKeyValue (reqOp req)
     (keyl, key') = case k' of
-        Just k  -> (B.length k, byteString k)
+        Just k  -> (B.length k, fromByteString k)
         Nothing -> (0, mempty)
     (vall, val') = case v' of
-        Just v  -> (B.length v, byteString v)
+        Just v  -> (B.length v, fromByteString v)
         Nothing -> (0, mempty)
 
 -- Extract needed info from an OpRequest for serialization.
@@ -102,9 +102,9 @@ getCodeKeyValue o = case o of
     ReqSASLStep       key v    -> (0x22, Just key, Just v, mempty, 0)
 
   where
-    szSESet   (SESet    f e) = word32BE f <> word32BE e
-    szSEIncr  (SEIncr i d e) = word64BE i <> word64BE d <> word32BE e
-    szSETouch (SETouch    e) = word32BE e
+    szSESet   (SESet    f e) = fromWord32be f <> fromWord32be e
+    szSEIncr  (SEIncr i d e) = fromWord64be i <> fromWord64be d <> fromWord32be e
+    szSETouch (SETouch    e) = fromWord32be e
 
 -- | Deserialize a Response from a ByteString.
 dzResponse' :: L.ByteString -> Response

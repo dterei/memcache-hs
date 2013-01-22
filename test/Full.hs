@@ -1,10 +1,12 @@
 {-# LANGUAGE OverloadedStrings #-}
+
 module Main where
 
 import qualified Database.Memcache.Protocol as M
 import Database.Memcache.Server
 
 import Control.Monad
+import qualified Data.ByteString.Char8 as BC
 import System.Exit
 
 main :: IO ()
@@ -15,7 +17,7 @@ main = do
 
 getTest :: Connection -> IO ()
 getTest c = do
-    v <- M.set c "key" "world" 0 0
+    v <- M.set c (BC.pack "key") (BC.pack "world") 0 0
     Just (v', _, _) <- M.get c "key"
     when (v' /= "world") $ do
         putStrLn $ "bad value returned! " ++ show v'
