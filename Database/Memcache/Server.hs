@@ -44,6 +44,7 @@ connectTo host port = do
 
 -- | Send a request to the memcache cluster.
 send :: Connection -> Request -> IO ()
+-- XXX: catch errors and rethrow as MemcacheErrors?
 send c m = N.sendAll (conn c) (toByteString $ szRequest m)
 
 -- | Send a receieve a single request/response pair to the memcache cluster.

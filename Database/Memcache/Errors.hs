@@ -28,7 +28,7 @@ data MemcacheError
 instance Exception MemcacheError
 
 -- | Convert a status to an error. Note, not all status's are errors and so
--- this is not a complete function!
+-- this is a partial function!
 statusToError :: Status -> MemcacheError
 statusToError NoError            = error "statusToError: called on NoError"
 statusToError ErrKeyNotFound     = MemErrNoKey
@@ -45,7 +45,7 @@ statusToError SaslAuthContinue   = error "statusToError: called on SaslAuthConti
 -- | Convert a status to an exception. Note, not all status's are errors and so
 -- this is not a complete function!
 throwStatus :: Response -> IO a
-throwStatus r = throwIO $ statusToError $ resStatus r
+throwStatus = throwIO . statusToError . resStatus
 
 -- | Throw an IncorrectResponse exception for a wrong received response.
 throwIncorrectRes :: Response -> String -> IO a

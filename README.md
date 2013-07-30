@@ -3,11 +3,11 @@
 This library provides a client interface to a Memcache cluster. It is
 aimed at full binary protocol support, ease of use and speed.
 
-# Licensing
+## Licensing
 
 This library is BSD-licensed.
 
-# To do
+## To do
 
 * Timeouts
 * Ring / CHORD support
@@ -30,13 +30,13 @@ This library is BSD-licensed.
 * UDP
 * ASCII
 
-# Other clients
+## Other clients
 
 * [C: libmemcached](http://libmemcached.org/libMemcached.html)
 * [Java: SpyMemcached](http://code.google.com/p/spymemcached/)
 * [Ruby: Dalli](https://github.com/mperham/dalli)
 
-# Get involved!
+## Get involved!
 
 We are happy to receive bug reports, fixes, documentation enhancements,
 and other improvements.
@@ -48,7 +48,8 @@ Master [git repository](http://github.com/dterei/mc-hs):
 
 * `git clone git://github.com/dterei/mc-hs.git`
 
-# Authors
+## Authors
 
 This library is written and maintained by David Terei,
-<davidterei@gmail.com>.
+<code@davidterei.com>.
+

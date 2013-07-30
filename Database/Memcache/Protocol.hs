@@ -34,6 +34,7 @@ get c k = do
     case resStatus r of
         NoError        -> return $ Just (v, f, resCas r)
         ErrKeyNotFound -> return Nothing
+        -- XXX: Exception Vs. Either?
         _              -> throwStatus r
 
 -- XXX: Maybe collapse data structures into single...
@@ -93,6 +94,7 @@ add c k v f e = do
         ErrKeyExists -> return Nothing
         _            -> throwStatus r
 
+-- XXX: Structure Vs. Args?
 replace :: Connection -> Key -> Value -> Flags -> Expiration -> Version -> IO (Maybe Version)
 replace c k v f e ver = do
     let msg = emptyReq { reqOp = ReqReplace Loud k v (SESet f e), reqCas = ver }
