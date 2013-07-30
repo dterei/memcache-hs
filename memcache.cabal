@@ -32,7 +32,9 @@ library
     binary >= 0.6.2.0,
     blaze-builder >= 0.3.1.0,
     bytestring >= 0.9.2.1,
-    network >= 2.4
+    hashable,
+    network >= 2.4,
+    vector
 
   ghc-options: -Wall -O2
   if impl(ghc >= 6.8)
