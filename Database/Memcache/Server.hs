@@ -59,7 +59,9 @@ recv c = do
     -- XXX: recv may return less.
     header <- N.recv (conn c) mEMCACHE_HEADER_SIZE
     let h = dzHeader' (L.fromChunks [header])
-    body <- N.recv (conn c) (fromIntegral $ bodyLen h)
-    let b = dzBody' h (L.fromChunks [body])
-    return b
+    if (bodyLen h > 0) then do
+      body <- N.recv (conn c) (fromIntegral $ bodyLen h)
+      return $ dzBody' h (L.fromChunks [body])
+      else
+        return $ dzBody' h L.empty
 
