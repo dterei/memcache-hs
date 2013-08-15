@@ -13,6 +13,7 @@ module Database.Memcache.Protocol (
         flush, noop, version, stats, quit
     ) where
 
+import Control.Concurrent.MVar
 import Database.Memcache.Errors
 import Database.Memcache.Server
 import Database.Memcache.Types
@@ -212,29 +213,29 @@ version c = do
         _       -> throwStatus r
 
 stats :: Connection -> Maybe Key -> IO (Maybe [(ByteString, ByteString)])
-stats c key = do
+stats c key = withMVar (conn c) $ \s -> do
     let msg = emptyReq { reqOp = ReqStat key }
-    send c msg
-    getAllStats []
+    send s msg
+    getAllStats s []
   where
-    getAllStats xs = do
-        r <- recv c
+    getAllStats s xs = do
+        r <- recv s
         (k, v) <- case resOp r of
             ResStat k v -> return (k, v)
             _           -> throwIncorrectRes r "STATS"
         case resStatus r of
             NoError | B.null k && B.null v -> return $ Just xs
-                    | otherwise            -> getAllStats $ (k, v):xs
+                    | otherwise            -> getAllStats s $ (k, v):xs
             ErrKeyNotFound                 -> return Nothing
             _                              -> throwStatus r
 
 quit :: Connection -> IO ()
 -- XXX: close can throw, need to handle...
-quit c = flip finally (N.close $ conn c) $ do 
+quit c = withMVar (conn c) $ \s -> finally (N.close s) $ do
     let msg = emptyReq { reqOp = ReqQuit Loud }
-    send c msg
-    N.shutdown (conn c) N.ShutdownSend
-    r <- recv c
+    send s msg
+    N.shutdown s N.ShutdownSend
+    r <- recv s
     when (resOp r /= ResQuit Loud) $ throwIncorrectRes r "QUIT"
     case resStatus r of
         NoError -> return ()
