@@ -19,8 +19,9 @@ import Network.Socket (PortNumber)
 
 data Options = Options { itemSize   :: Int64
                        , totalBytes :: Int64
-                       , server  :: String
-                       , port    :: Int
+                       , server     :: String
+                       , port       :: Int
+                       , namespace  :: String
                        } deriving (Show, Eq)
 
 defaultOptions :: Options
@@ -28,6 +29,7 @@ defaultOptions = Options { itemSize = 1024
                          , totalBytes = 1024 * 1024 * 1024
                          , server = "localhost"
                          , port = 11211
+                         , namespace = ""
                          }
 
 options :: [OptDescr (Options -> Options)]
@@ -40,6 +42,8 @@ options =
         "server to connect to"
     , Option ['p'] ["port"] (ReqArg (\p o -> o { port = read p }) "PORT")
         "port to connect to server on"
+    , Option ['n'] ["namespace"] (ReqArg (\n o -> o { namespace = n}) "STRING")
+        "namespace for generated data"
     ]
 
 parseArguments :: IO Options
@@ -77,7 +81,8 @@ main = do
     children <- forM [1..n] $ \m -> async $ do
         mc <- newMemcacheClient (server opts) (toEnum $ port opts)
         forM_ [0,(itemSize opts)..myBytes] $ \i -> do
-            let key = B8.pack $ show m ++ "__" ++ show (i `quot` itemSize opts)
+            let key = B8.pack $ namespace opts ++ show m ++ "__" ++
+                                    show (i `quot` itemSize opts)
             set mc key value 0 0
 
     -- wait on them all.
