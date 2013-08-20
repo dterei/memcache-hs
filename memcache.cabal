@@ -38,9 +38,9 @@ library
   if impl(ghc >= 6.8)
     ghc-options: -fwarn-tabs
 
-executable stats
+executable opgen
   hs-source-dirs: tools
-  main-is: Stats.hs
+  main-is: OpGen.hs
   ghc-options: -threaded
   build-depends:
     async,
@@ -49,9 +49,9 @@ executable stats
     memcache,
     network
 
-executable gets
+executable load
   hs-source-dirs: tools
-  main-is: Gets.hs
+  main-is: Loader.hs
   ghc-options: -threaded
   build-depends:
     async,
