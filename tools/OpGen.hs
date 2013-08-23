@@ -18,6 +18,7 @@ import Network.Socket (PortNumber)
 data Operation = GET | STAT | NOOP deriving (Show, Eq)
 
 data Options = Options { qps     :: Int
+                       , quotum  :: Int
                        , server  :: String
                        , port    :: Int
                        , time    :: Int
@@ -27,6 +28,7 @@ data Options = Options { qps     :: Int
 
 defaultOptions :: Options
 defaultOptions = Options { qps     = 1000
+                         , quotum  = 1
                          , server  = "localhost"
                          , port    = 11211
                          , time    = 5
@@ -37,7 +39,9 @@ defaultOptions = Options { qps     = 1000
 options :: [OptDescr (Options -> Options)]
 options =
     [ Option ['q'] ["qps"] (ReqArg (\q o -> o { qps = read q}) "QPS")
-        "operations per second"
+        "operations per quotum"
+    , Option ['Q'] ["quotum"] (ReqArg (\q o -> o { quotum = read q}) "SECONDS")
+        "length of a quotum in seconds"
     , Option ['s'] ["server"] (ReqArg (\s o -> o { server = s }) "SERVER")
         "server to connect to"
     , Option ['p'] ["port"] (ReqArg (\p o -> o { port = read p }) "PORT")
@@ -76,13 +80,14 @@ main = do
     opts <- parseArguments    
     when (time opts < 1) $ error "Incorrect time value!"
     when (qps opts < 1) $ error "Incorrect qps value!"
+    when (quotum opts < 1) $ error "Incorrect quotum value!"
 
     n <- getNumCapabilities
     putStrLn $ "Running on " ++ show n ++ " cores"
     putStrLn $ "Connecting to server: " ++ server opts ++ ":" ++ show (port opts)
     putStrLn "--------"
 
-    let step   = 1000000 `quot` qps opts
+    let step   = (quotum opts * 1000000) `quot` qps opts
         events = qps opts * time opts
 
     -- global connection
