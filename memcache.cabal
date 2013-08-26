@@ -4,8 +4,8 @@ homepage:       https://github.com/dterei/memcache-hs
 bug-reports:    https://github.com/dterei/memcache-hs/issues
 synopsis:       A memcached client library.
 description:    
-  A client library for a Memcache cluster. It is aimed at full binary
-  protocol support, ease of use and speed.
+  A client library for a memcached cluster. It is aimed at full binary protocol
+  support, ease of use and speed.
 license:        BSD3
 license-file:   LICENSE
 author:         David Terei <code@davidterei.com>
