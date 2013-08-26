@@ -14,6 +14,7 @@ module Database.Memcache.Protocol (
     ) where
 
 import Control.Concurrent.MVar
+import Data.Pool
 import Database.Memcache.Errors
 import Database.Memcache.Server
 import Database.Memcache.Types
@@ -25,7 +26,7 @@ import qualified Data.ByteString as B
 import Data.Word
 import qualified Network.Socket as N
 
-get :: Connection -> Key -> IO (Maybe (Value, Flags, Version))
+get :: Server -> Key -> IO (Maybe (Value, Flags, Version))
 get c k = do
     let msg = emptyReq { reqOp = ReqGet Loud NoKey k }
     r <- sendRecv c msg
@@ -39,7 +40,7 @@ get c k = do
         _              -> throwStatus r
 
 -- XXX: Maybe collapse data structures into single...
-gat :: Connection -> Key -> Expiration -> IO (Maybe (Value, Flags, Version))
+gat :: Server -> Key -> Expiration -> IO (Maybe (Value, Flags, Version))
 gat c k e = do
     let msg = emptyReq { reqOp = ReqGAT Loud NoKey k (SETouch e) }
     r <- sendRecv c msg
@@ -51,7 +52,7 @@ gat c k e = do
         ErrKeyNotFound -> return Nothing
         _              -> throwStatus r
 
-touch :: Connection -> Key -> Expiration -> IO (Maybe Version)
+touch :: Server -> Key -> Expiration -> IO (Maybe Version)
 touch c k e = do
     let msg = emptyReq { reqOp = ReqTouch k (SETouch e) }
     r <- sendRecv c msg
@@ -63,7 +64,7 @@ touch c k e = do
 
 --
 
-set :: Connection -> Key -> Value -> Flags -> Expiration -> IO Version
+set :: Server -> Key -> Value -> Flags -> Expiration -> IO Version
 set c k v f e = do
     let msg = emptyReq { reqOp = ReqSet Loud k v (SESet f e) }
     r <- sendRecv c msg
@@ -72,7 +73,7 @@ set c k v f e = do
         NoError -> return $ resCas r
         _       -> throwStatus r
 
-set' :: Connection -> Key -> Value -> Flags -> Expiration -> Version -> IO (Maybe Version)
+set' :: Server -> Key -> Value -> Flags -> Expiration -> Version -> IO (Maybe Version)
 set' c k v f e ver = do
     let msg = emptyReq { reqOp = ReqSet Loud k v (SESet f e), reqCas = ver }
     r <- sendRecv c msg
@@ -85,7 +86,7 @@ set' c k v f e ver = do
         ErrKeyExists   -> return Nothing
         _              -> throwStatus r
 
-add :: Connection -> Key -> Value -> Flags -> Expiration -> IO (Maybe Version)
+add :: Server -> Key -> Value -> Flags -> Expiration -> IO (Maybe Version)
 add c k v f e = do
     let msg = emptyReq { reqOp = ReqAdd Loud k v (SESet f e) }
     r <- sendRecv c msg
@@ -96,7 +97,7 @@ add c k v f e = do
         _            -> throwStatus r
 
 -- XXX: Structure Vs. Args?
-replace :: Connection -> Key -> Value -> Flags -> Expiration -> Version -> IO (Maybe Version)
+replace :: Server -> Key -> Value -> Flags -> Expiration -> Version -> IO (Maybe Version)
 replace c k v f e ver = do
     let msg = emptyReq { reqOp = ReqReplace Loud k v (SESet f e), reqCas = ver }
     r <- sendRecv c msg
@@ -111,7 +112,7 @@ replace c k v f e ver = do
 
 --
 
-delete :: Connection -> Key -> Version -> IO Bool
+delete :: Server -> Key -> Version -> IO Bool
 delete c k ver = do
     let msg = emptyReq { reqOp = ReqDelete Loud k, reqCas = ver }
     r <- sendRecv c msg
@@ -126,7 +127,7 @@ delete c k ver = do
 
 --
 
-increment :: Connection -> Key -> Initial -> Delta -> Expiration -> Version -> IO (Maybe (Word64, Version))
+increment :: Server -> Key -> Initial -> Delta -> Expiration -> Version -> IO (Maybe (Word64, Version))
 increment c k i d e ver = do
     let msg = emptyReq { reqOp = ReqIncrement Loud k (SEIncr i d e), reqCas = ver }
     r <- sendRecv c msg
@@ -140,7 +141,7 @@ increment c k i d e ver = do
         -- XXX: Exception or Nothing for nonnumeric status?
         _              -> throwStatus r
 
-decrement :: Connection -> Key -> Initial -> Delta -> Expiration -> Version -> IO (Maybe (Word64, Version))
+decrement :: Server -> Key -> Initial -> Delta -> Expiration -> Version -> IO (Maybe (Word64, Version))
 decrement c k i d e ver = do
     let msg = emptyReq { reqOp = ReqDecrement Loud k (SEIncr i d e), reqCas = ver }
     r <- sendRecv c msg
@@ -158,7 +159,7 @@ decrement c k i d e ver = do
 --
 
 -- XXX: Maybe? perhaps should be either so I can indicate why...
-append :: Connection -> Key -> Value -> Version -> IO (Maybe Version)
+append :: Server -> Key -> Value -> Version -> IO (Maybe Version)
 append c k v ver = do
     let msg = emptyReq { reqOp = ReqAppend Loud k v, reqCas = ver }
     r <- sendRecv c msg
@@ -169,7 +170,7 @@ append c k v ver = do
         ErrKeyExists   -> return Nothing
         _              -> throwStatus r
 
-prepend :: Connection -> Key -> Value -> Version -> IO (Maybe Version)
+prepend :: Server -> Key -> Value -> Version -> IO (Maybe Version)
 prepend c k v ver = do
     let msg = emptyReq { reqOp = ReqPrepend Loud k v, reqCas = ver }
     r <- sendRecv c msg
@@ -182,7 +183,7 @@ prepend c k v ver = do
 
 --
 
-flush :: Connection -> Maybe Expiration -> IO ()
+flush :: Server -> Maybe Expiration -> IO ()
 flush c e = do
     let e'  = maybe Nothing (\xp -> Just (SETouch xp)) e
         msg = emptyReq { reqOp = ReqFlush Loud e' }
@@ -192,7 +193,7 @@ flush c e = do
         NoError -> return ()
         _       -> throwStatus r
 
-noop :: Connection -> IO ()
+noop :: Server -> IO ()
 noop c = do
     let msg = emptyReq { reqOp = ReqNoop }
     r <- sendRecv c msg
@@ -201,7 +202,7 @@ noop c = do
         NoError -> return ()
         _       -> throwStatus r
 
-version :: Connection -> IO ByteString
+version :: Server -> IO ByteString
 version c = do
     let msg = emptyReq { reqOp = ReqVersion }
     r <- sendRecv c msg
@@ -212,8 +213,8 @@ version c = do
         NoError -> return v
         _       -> throwStatus r
 
-stats :: Connection -> Maybe Key -> IO (Maybe [(ByteString, ByteString)])
-stats c key = withMVar (conn c) $ \s -> do
+stats :: Server -> Maybe Key -> IO (Maybe [(ByteString, ByteString)])
+stats c key =  withResource c $ \s -> do
     let msg = emptyReq { reqOp = ReqStat key }
     send s msg
     getAllStats s []
@@ -229,15 +230,20 @@ stats c key = withMVar (conn c) $ \s -> do
             ErrKeyNotFound                 -> return Nothing
             _                              -> throwStatus r
 
-quit :: Connection -> IO ()
--- XXX: close can throw, need to handle...
-quit c = withMVar (conn c) $ \s -> finally (N.close s) $ do
-    let msg = emptyReq { reqOp = ReqQuit Loud }
-    send s msg
-    N.shutdown s N.ShutdownSend
-    r <- recv s
-    when (resOp r /= ResQuit Loud) $ throwIncorrectRes r "QUIT"
-    case resStatus r of
-        NoError -> return ()
-        _       -> throwStatus r
+-- quit :: Server -> IO ()
+-- -- XXX: close can throw, need to handle...
+-- quit c = withResource c $ \s -> finally (N.close s) $ do
+--     let msg = emptyReq { reqOp = ReqQuit Loud }
+--     send s msg
+--     N.shutdown s N.ShutdownSend
+--     r <- recv s
+--     when (resOp r /= ResQuit Loud) $ throwIncorrectRes r "QUIT"
+--     case resStatus r of
+--         NoError -> return ()
+--         _       -> throwStatus r
+-- 
+
+quit :: Server -> IO ()
+-- XXX: Not clear to me how or if quit makes sense with a resource pool.
+quit = undefined
 

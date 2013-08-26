@@ -7,6 +7,18 @@ aimed at full binary protocol support, ease of use and speed.
 
 This library is BSD-licensed.
 
+## Tools
+
+This library also includes a few tools for manipulating and
+experimenting with memcached servers.
+
+* `OpGen` -- A load generator for memcached. Doesn't collect timing
+  statistics, other tools like
+  [mutilate](https://github.com/leverich/mutilate) already do that
+  very well. This tool is useful in conjunction with mutilate.
+* `Loader` -- A tool to load random data of a certain size into a
+  memcache server. Useful for priming a server for testing.
+
 ## To do
 
 * Timeouts
