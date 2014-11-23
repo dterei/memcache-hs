@@ -1,3 +1,5 @@
+{-# LANGUAGE ScopedTypeVariables #-}
+
 -- | A raw, low level interface to the memcache protocol.
 --
 -- The various operations are represented in full as they appear at the
@@ -13,18 +15,33 @@ module Database.Memcache.Protocol (
         flush, noop, version, stats, quit
     ) where
 
-import Control.Concurrent.MVar
-import Data.Pool
 import Database.Memcache.Errors
 import Database.Memcache.Server
 import Database.Memcache.Types
 
-import Control.Exception
+import qualified Control.Exception as E
 import Control.Monad
 import Data.ByteString (ByteString)
 import qualified Data.ByteString as B
 import Data.Word
 import qualified Network.Socket as N
+
+-- XXX: Structure Vs. Args?
+-- i.e., 
+-- replace :: Server -> Key -> Value -> Flags -> Expiration -> Version -> IO (Maybe Version)
+-- vs.
+-- replace :: Server -> Request -> IO (Maybe Version)
+--
+-- Request
+--  { key   :: Key
+--  , value :: Value
+--  , flags :: Flags
+--  , exp   :: Expiration
+--  , ver   :: Version
+--  }
+--
+--  Using a structure would allow easy defaults...
+--
 
 get :: Server -> Key -> IO (Maybe (Value, Flags, Version))
 get c k = do
@@ -36,10 +53,8 @@ get c k = do
     case resStatus r of
         NoError        -> return $ Just (v, f, resCas r)
         ErrKeyNotFound -> return Nothing
-        -- XXX: Exception Vs. Either?
         _              -> throwStatus r
 
--- XXX: Maybe collapse data structures into single...
 gat :: Server -> Key -> Expiration -> IO (Maybe (Value, Flags, Version))
 gat c k e = do
     let msg = emptyReq { reqOp = ReqGAT Loud NoKey k (SETouch e) }
@@ -62,8 +77,6 @@ touch c k e = do
         ErrKeyNotFound -> return Nothing
         _              -> throwStatus r
 
---
-
 set :: Server -> Key -> Value -> Flags -> Expiration -> IO Version
 set c k v f e = do
     let msg = emptyReq { reqOp = ReqSet Loud k v (SESet f e) }
@@ -73,6 +86,7 @@ set c k v f e = do
         NoError -> return $ resCas r
         _       -> throwStatus r
 
+-- XXX: Use a return type like: Return = OK Version | NotFound | NotVersion?
 set' :: Server -> Key -> Value -> Flags -> Expiration -> Version -> IO (Maybe Version)
 set' c k v f e ver = do
     let msg = emptyReq { reqOp = ReqSet Loud k v (SESet f e), reqCas = ver }
@@ -96,7 +110,6 @@ add c k v f e = do
         ErrKeyExists -> return Nothing
         _            -> throwStatus r
 
--- XXX: Structure Vs. Args?
 replace :: Server -> Key -> Value -> Flags -> Expiration -> Version -> IO (Maybe Version)
 replace c k v f e ver = do
     let msg = emptyReq { reqOp = ReqReplace Loud k v (SESet f e), reqCas = ver }
@@ -109,8 +122,6 @@ replace c k v f e ver = do
         -- version specified and doesn't match key...
         ErrKeyExists   -> return Nothing
         _              -> throwStatus r
-
---
 
 delete :: Server -> Key -> Version -> IO Bool
 delete c k ver = do
@@ -125,8 +136,6 @@ delete c k ver = do
         ErrKeyExists   -> return False
         _              -> throwStatus r
 
---
-
 increment :: Server -> Key -> Initial -> Delta -> Expiration -> Version -> IO (Maybe (Word64, Version))
 increment c k i d e ver = do
     let msg = emptyReq { reqOp = ReqIncrement Loud k (SEIncr i d e), reqCas = ver }
@@ -138,7 +147,6 @@ increment c k i d e ver = do
         NoError        -> return $ Just (n, resCas r)
         ErrKeyNotFound -> return Nothing
         ErrKeyExists   -> return Nothing
-        -- XXX: Exception or Nothing for nonnumeric status?
         _              -> throwStatus r
 
 decrement :: Server -> Key -> Initial -> Delta -> Expiration -> Version -> IO (Maybe (Word64, Version))
@@ -150,15 +158,10 @@ decrement c k i d e ver = do
         _                   -> throwIncorrectRes r "DECREMENT"
     case resStatus r of
         NoError        -> return $ Just (n, resCas r)
-        -- XXX: Should differentiate, use custom sum, NOT either.
         ErrKeyNotFound -> return Nothing
         ErrKeyExists   -> return Nothing
-        -- XXX: Exception or Nothing for nonnumeric status?
         _              -> throwStatus r
 
---
-
--- XXX: Maybe? perhaps should be either so I can indicate why...
 append :: Server -> Key -> Value -> Version -> IO (Maybe Version)
 append c k v ver = do
     let msg = emptyReq { reqOp = ReqAppend Loud k v, reqCas = ver }
@@ -167,7 +170,6 @@ append c k v ver = do
     case resStatus r of
         NoError        -> return $ Just (resCas r)
         ErrKeyNotFound -> return Nothing
-        ErrKeyExists   -> return Nothing
         _              -> throwStatus r
 
 prepend :: Server -> Key -> Value -> Version -> IO (Maybe Version)
@@ -178,10 +180,7 @@ prepend c k v ver = do
     case resStatus r of
         NoError        -> return $ Just (resCas r)
         ErrKeyNotFound -> return Nothing
-        ErrKeyExists   -> return Nothing
         _              -> throwStatus r
-
---
 
 flush :: Server -> Maybe Expiration -> IO ()
 flush c e = do
@@ -214,7 +213,7 @@ version c = do
         _       -> throwStatus r
 
 stats :: Server -> Maybe Key -> IO (Maybe [(ByteString, ByteString)])
-stats c key =  withResource c $ \s -> do
+stats c key =  withSocket c $ \s -> do
     let msg = emptyReq { reqOp = ReqStat key }
     send s msg
     getAllStats s []
@@ -230,20 +229,20 @@ stats c key =  withResource c $ \s -> do
             ErrKeyNotFound                 -> return Nothing
             _                              -> throwStatus r
 
--- quit :: Server -> IO ()
--- -- XXX: close can throw, need to handle...
--- quit c = withResource c $ \s -> finally (N.close s) $ do
---     let msg = emptyReq { reqOp = ReqQuit Loud }
---     send s msg
---     N.shutdown s N.ShutdownSend
---     r <- recv s
---     when (resOp r /= ResQuit Loud) $ throwIncorrectRes r "QUIT"
---     case resStatus r of
---         NoError -> return ()
---         _       -> throwStatus r
--- 
-
 quit :: Server -> IO ()
--- XXX: Not clear to me how or if quit makes sense with a resource pool.
-quit = undefined
+quit c = do
+  -- XXX: not clear if waiting for a reply matters
+    withSocket c $ \s -> sendClose s `E.catch` consumeError
+    close c
+  where
+    consumeError = \(_::E.SomeException) -> return ()
+    sendClose s = do
+        let msg = emptyReq { reqOp = ReqQuit Loud }
+        send s msg
+        N.shutdown s N.ShutdownSend
+        r <- recv s
+        when (resOp r /= ResQuit Loud) $ throwIncorrectRes r "QUIT"
+        case resStatus r of
+            NoError -> return ()
+            _       -> throwStatus r
 

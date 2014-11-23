@@ -5,7 +5,8 @@ module Database.Memcache.Errors (
         MemcacheError(..),
         statusToError,
         throwStatus,
-        throwIncorrectRes
+        throwIncorrectRes,
+        ClientError(..)
     ) where
 
 import Database.Memcache.Types
@@ -13,7 +14,8 @@ import Database.Memcache.Types
 import Control.Exception
 import Data.Typeable
 
--- | Exceptions that may be thrown by Memcache.
+-- | Exceptions that may be thrown by Memcache. These are expected error codes
+-- returned by a memcached server.
 data MemcacheError
     = MemErrNoKey
     | MemErrKeyExists
@@ -54,4 +56,12 @@ throwIncorrectRes r msg = throwIO $
         increspMessage = "Expected " ++ msg ++ " response! Got: " ++ show (resOp r),
         increspActual  = r
     }
+
+-- | Errors that occur between the client and server in communicating. These
+-- are unexpected exceptions, such as network failures or garbage data.
+data ClientError
+    = NotEnoughBytes
+    deriving (Eq, Show, Typeable)
+
+instance Exception ClientError
 

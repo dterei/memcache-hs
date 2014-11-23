@@ -3,7 +3,7 @@
 module Main where
 
 import qualified Database.Memcache.Protocol as M
-import Database.Memcache.Server
+import qualified Database.Memcache.Server as M
 
 import Control.Monad
 import qualified Data.ByteString.Char8 as BC
@@ -11,11 +11,11 @@ import System.Exit
 
 main :: IO ()
 main = do
-    c <- newMemcacheClient "localhost" 11211
+    c <- M.newServer "localhost" 11211
     getTest c
     exitSuccess
 
-getTest :: Connection -> IO ()
+getTest :: M.Server -> IO ()
 getTest c = do
     v <- M.set c (BC.pack "key") (BC.pack "world") 0 0
     Just (v', _, _) <- M.get c "key"
@@ -23,7 +23,7 @@ getTest c = do
         putStrLn $ "bad value returned! " ++ show v'
         exitFailure 
 
-deleteTest :: Connection -> IO ()
+deleteTest :: M.Server -> IO ()
 deleteTest c = do
     v1 <- M.set c "key" "world" 0 0
     v2 <- M.set c "key" "world22" 0 0

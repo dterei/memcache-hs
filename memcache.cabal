@@ -37,33 +37,34 @@ library
     network >= 2.4,
     resource-pool >= 0.2.1.0,
     vector >= 0.7,
-    vector-algorithms >= 0.5
+    vector-algorithms >= 0.5,
+    time >= 1.4
 
   ghc-options: -Wall
   if impl(ghc >= 6.8)
     ghc-options: -fwarn-tabs
 
-executable opgen
-  hs-source-dirs: tools
-  main-is: OpGen.hs
-  ghc-options: -threaded
-  build-depends:
-    async,
-    base < 5,
-    bytestring,
-    memcache,
-    network
-
-executable load
-  hs-source-dirs: tools
-  main-is: Loader.hs
-  ghc-options: -threaded
-  build-depends:
-    async,
-    base < 5,
-    bytestring,
-    memcache,
-    network
+-- executable opgen
+--   hs-source-dirs: tools
+--   main-is: OpGen.hs
+--   ghc-options: -threaded
+--   build-depends:
+--     async,
+--     base < 5,
+--     bytestring,
+--     memcache,
+--     network
+--
+-- executable load
+--   hs-source-dirs: tools
+--   main-is: Loader.hs
+--   ghc-options: -threaded
+--   build-depends:
+--     async,
+--     base < 5,
+--     bytestring,
+--     memcache,
+--     network
 
 test-suite full
   type:           exitcode-stdio-1.0

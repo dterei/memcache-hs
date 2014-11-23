@@ -4,6 +4,9 @@ module Database.Memcache.Wire (
         dzResponse, dzResponse', dzHeader, dzHeader', dzBody, dzBody'
     ) where
 
+-- XXX: Wire works with lazy bytestrings but we receive strict bytestrings from
+-- the network...
+
 import Database.Memcache.Types
 
 import Control.Exception
