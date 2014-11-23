@@ -34,28 +34,30 @@ connections for performance.
 
 Either way, a pool is fine for now.
 
-## To do
+## ToDo
 
+Required:
+* Multiple-server support -- mod & consistent hashing
+* Connection error handling
+* SASL
 * Timeouts
-* Ring / CHORD support
-* Thread-safe?
 
-* mutli(-get)
+Optional:
+* Multi-get
+* Generic multi operation support
 
-* Connection drop / reconnect resiliance?
-* Asynchronous support?
-* Connection pooling?
-* Tweaking? (e.g., drop in hash algorithm?, timeout, max connection
-  retries...)
-* Max value validation...?
-
-* Optimizations? http://code.google.com/p/spymemcached/wiki/Optimizations
-
-* Typeclass for serialization?
-* Monad / Typeclass for memcache?
-
+Nice-to-have:
+* Asynchronous support
+* Customizable -- timeout, max connection retries, hash algorithm
+* Max value validation
+* Optimizations --  http://code.google.com/p/spymemcached/wiki/Optimizations
 * UDP
 * ASCII
+* Server error handling mode where we return misses and ignore sets
+
+Maybe:
+* Typeclass for serialization
+* Monad / Typeclass for memcache
 
 ## Other clients
 
