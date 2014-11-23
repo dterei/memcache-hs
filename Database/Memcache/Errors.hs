@@ -14,6 +14,9 @@ import Database.Memcache.Types
 import Control.Exception
 import Data.Typeable
 
+-- XXX: What to do about ProtocolError and IncorrectResponse exceptions? Should
+-- we expose these types to user or map them to ClientError?
+
 -- | Exceptions that may be thrown by Memcache. These are expected error codes
 -- returned by a memcached server.
 data MemcacheError

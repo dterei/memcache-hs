@@ -1,6 +1,6 @@
 -- | Handles the connections between a memcache client and a single server.
 module Database.Memcache.Server (
-        Server, newServer, sendRecv,
+        Server(sid, failed), newServer, sendRecv,
         withSocket, send, recv, close
     ) where
 
@@ -30,10 +30,11 @@ sKEEPALIVE = 300
 
 -- | A memcached server connection.
 data Server = Server {
-        sid   :: {-# UNPACK #-} !Int,
-        pool  :: Pool Socket,
-        _addr :: HostName,
-        _port :: PortNumber
+        sid    :: {-# UNPACK #-} !Int,
+        pool   :: Pool Socket,
+        _addr  :: HostName,
+        _port  :: PortNumber,
+        failed :: Bool
     } deriving Show
 
 instance Eq Server where
@@ -47,7 +48,13 @@ newServer :: HostName -> PortNumber -> IO Server
 newServer host port = do
     pSock <- createPool connectSocket releaseSocket
                 sSTRIPES sKEEPALIVE sCONNECTIONS
-    return $ Server serverHash pSock host port
+    return $ Server
+        { sid = serverHash
+        , pool = pSock
+        , _addr = host
+        , _port = port
+        , failed = False
+        }
   where
     serverHash = hash (host, let PortNum p = port in p)
     connectSocket = do
