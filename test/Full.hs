@@ -1,5 +1,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 
+-- | Our testsuite, which we run expecting there to be a local memcache server
+-- running on `localhost:11211`.
 module Main where
 
 import qualified Database.Memcache.Protocol as M

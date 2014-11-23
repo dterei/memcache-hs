@@ -21,7 +21,7 @@ import Network.Socket (HostName, PortNumber(..), Socket)
 import qualified Network.Socket as S
 import qualified Network.Socket.ByteString as N
 
--- Connection pool constants
+-- Connection pool constants.
 sSTRIPES, sCONNECTIONS :: Int
 sKEEPALIVE :: NominalDiffTime
 sSTRIPES     = 1
@@ -65,7 +65,7 @@ newServer host port = do
 
     releaseSocket s = S.close s
 
--- | Send and receieve a single request/response pair to the memcached server.
+-- | Send and receive a single request/response pair to the memcached server.
 sendRecv :: Server -> Request -> IO Response
 sendRecv svr msg = withResource (pool svr) $ \s -> do
     send s msg
@@ -96,7 +96,8 @@ recv s = do
           then return buf
           else throwIO NotEnoughBytes
 
--- | Close the server connection.
+-- | Close the server connection. If you perform another operation after this,
+-- the connection will be re-established.
 close :: Server -> IO ()
 close srv = destroyAllResources (pool srv)
 

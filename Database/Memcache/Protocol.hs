@@ -3,7 +3,7 @@
 -- | A raw, low level interface to the memcache protocol.
 --
 -- The various operations are represented in full as they appear at the
--- protocol level and so aren't generaly well suited for application use.
+-- protocol level and so aren't generally well suited for application use.
 -- Instead, applications should use Database.Memcache.Client which presents a
 -- higher level API suited for application use.
 module Database.Memcache.Protocol (
@@ -231,7 +231,7 @@ stats c key =  withSocket c $ \s -> do
 
 quit :: Server -> IO ()
 quit c = do
-  -- XXX: not clear if waiting for a reply matters
+  -- TODO: not clear if waiting for a reply matters
     withSocket c $ \s -> sendClose s `E.catch` consumeError
     close c
   where
