@@ -12,7 +12,9 @@ module Database.Memcache.Protocol (
         delete,
         increment, decrement,
         append, prepend,
-        flush, noop, version, stats, quit
+        StatResults, stats,
+        flush,
+        noop, version, quit
     ) where
 
 import Database.Memcache.Errors
@@ -212,7 +214,12 @@ version c = do
         NoError -> return v
         _       -> throwStatus r
 
-stats :: Server -> Maybe Key -> IO (Maybe [(ByteString, ByteString)])
+-- | StatResults are a list of key-value pairs.
+type StatResults = [(ByteString, ByteString)]
+
+-- XXX: Should this be Maybe? Does wrong key return error or just empty
+-- results?
+stats :: Server -> Maybe Key -> IO (Maybe StatResults)
 stats c key =  withSocket c $ \s -> do
     let msg = emptyReq { reqOp = ReqStat key }
     send s msg
