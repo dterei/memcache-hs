@@ -37,7 +37,6 @@ Either way, a pool is fine for now.
 ## ToDo
 
 Required:
-* Multiple-server support -- mod & consistent hashing
 * Connection error handling
 * SASL
 * Timeouts
@@ -45,6 +44,7 @@ Required:
 Optional:
 * Multi-get
 * Generic multi operation support
+* Customizable server sharding -- mod & virtual servers
 
 Nice-to-have:
 * Asynchronous support
