@@ -1,5 +1,7 @@
 # memcache: Haskell Memcache Client
 
+[![Hackage version](https://img.shields.io/hackage/v/memcache.svg?style=flat)](https://hackage.haskell.org/package/memcache) [![Build Status](https://img.shields.io/travis/dterei/memcache-hs.svg?style=flat)](https://travis-ci.org/dterei/memcache-hs)
+
 This library provides a client interface to a Memcache cluster. It is
 aimed at full binary protocol support, ease of use and speed.
 
