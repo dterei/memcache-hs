@@ -42,7 +42,7 @@ data Server = Server {
         -- auth     :: Authentication
         -- tansport :: Transport (UDP vs. TCP)
         -- poolLim  :: Int (pooled connection limit)
-        --cnxnBuf   :: IORef ByteString
+        -- cnxnBuf   :: IORef ByteString
     } deriving Show
 
 

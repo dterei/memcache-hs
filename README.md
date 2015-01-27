@@ -40,8 +40,9 @@ Either way, a pool is fine for now.
 
 Required:
 * Connection error handling
-* SASL
+* SASL -- tie in with cluster management
 * Timeouts
+* Pull cluster and server creation into client
 
 Optional:
 * Multi-get
