@@ -6,6 +6,7 @@ module Main where
 
 import qualified Database.Memcache.Protocol as M
 import qualified Database.Memcache.Server as M
+import qualified Database.Memcache.SASL as M
 
 import Control.Monad
 import qualified Data.ByteString.Char8 as BC
@@ -14,6 +15,7 @@ import System.Exit
 main :: IO ()
 main = do
     c <- M.newServer "localhost" 11211
+    M.authenticate c "user" "pass"
     getTest c
     exitSuccess
 
