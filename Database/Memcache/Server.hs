@@ -1,4 +1,5 @@
 -- | Handles the connections between a memcache client and a single server.
+
 module Database.Memcache.Server (
         Server(sid, failed), newServer, sendRecv,
         withSocket, send, recv, close
@@ -22,6 +23,7 @@ import qualified Network.Socket as S
 import qualified Network.Socket.ByteString as N
 
 -- Connection pool constants.
+-- TODO: make configurable
 sSTRIPES, sCONNECTIONS :: Int
 sKEEPALIVE :: NominalDiffTime
 sSTRIPES     = 1
@@ -35,7 +37,14 @@ data Server = Server {
         _addr  :: HostName,
         _port  :: PortNumber,
         failed :: Bool
+        -- TODO: 
+        -- weight   :: Double
+        -- auth     :: Authentication
+        -- tansport :: Transport (UDP vs. TCP)
+        -- poolLim  :: Int (pooled connection limit)
+        --cnxnBuf   :: IORef ByteString
     } deriving Show
+
 
 instance Eq Server where
     (==) x y = (sid x) == (sid y)
@@ -88,6 +97,7 @@ send :: Socket -> Request -> IO ()
 send s m = N.sendAll s (toByteString $ szRequest m)
 
 -- | Retrieve a single response from the memcached server.
+-- TODO: read into buffer to minimize read syscalls
 recv :: Socket -> IO Response
 recv s = do
     header <- recvAll mEMCACHE_HEADER_SIZE
