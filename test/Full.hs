@@ -15,7 +15,7 @@ import System.Exit
 main :: IO ()
 main = do
     c <- M.newServer "localhost" 11211
-    M.authenticate c "user" "pass"
+    -- M.authenticate c "user" "pass"
     getTest c
     exitSuccess
 
