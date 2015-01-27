@@ -12,7 +12,6 @@ import Database.Memcache.Types
 
 import Control.Monad
 import Data.ByteString
-import qualified Data.ByteString.Char8 as BC
 import Data.Monoid
 
 -- | Username for authentication.
@@ -32,7 +31,7 @@ authenticate = saslAuthPlain
 saslAuthPlain :: Server -> Username -> Password -> IO Bool
 saslAuthPlain c u p = do
     let credentials = singleton 0 <> u <> singleton 0 <> p
-        msg = emptyReq { reqOp = ReqSASLStart (BC.pack "PLAIN") credentials }
+        msg = emptyReq { reqOp = ReqSASLStart "PLAIN" credentials }
     r <- sendRecv c msg
     when (resOp r /= ResSASLStart) $ throwIncorrectRes r "SASL_START"
     case resStatus r of
