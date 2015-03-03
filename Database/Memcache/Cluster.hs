@@ -1,8 +1,10 @@
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE RecordWildCards #-}
 
 -- | Handles a group of connections to different memcache servers.
 module Database.Memcache.Cluster (
-        Cluster, newMemcacheCluster, keyedOp, anyOp, allOp
+        Cluster, newMemcacheCluster, Options(..), defaultOptions, keyedOp,
+        anyOp, allOp
     ) where
 
 import Database.Memcache.Errors
@@ -12,23 +14,40 @@ import Database.Memcache.Types (Key)
 import qualified Control.Exception as E
 
 import Data.Hashable (hash)
+import Data.Maybe (fromMaybe)
 import Data.List (sort)
 import qualified Data.Vector as V
+import qualified Data.Vector.Mutable as MV
 
 import Network.Socket (HostName, PortNumber)
 
+data Options = Options {
+        optsCmdFailure    :: !FailureMode,
+        optsServerFailure :: !FailureMode,
+        optsServerRetries :: !Int
+    }
+
+defaultOptions :: Options
+defaultOptions = Options {
+        optsCmdFailure    = FailToError,
+        optsServerFailure = FailToError,
+        optsServerRetries = 2
+    }
+
 -- | A memcached cluster.
 data Cluster = Cluster {
-        servers           :: V.Vector Server,
-        cmdFailureMode    :: FailureMode,
-        _serverFailureMode :: FailureMode
+        servers            :: V.Vector Server,
+        cmdFailureMode     :: !FailureMode,
+        _serverFailureMode :: !FailureMode,
+        serverRetries      :: {-# UNPACK #-} !Int
     } deriving Show
 
 -- | Establish a new connection to a group of memcached servers.
-newMemcacheCluster :: [(HostName, PortNumber)] -> IO Cluster
-newMemcacheCluster hosts = do
+newMemcacheCluster :: [(HostName, PortNumber)] -> Options -> IO Cluster
+newMemcacheCluster hosts Options{..} = do
     s <- mapM (uncurry newServer) hosts
-    return $ Cluster (V.fromList $ sort s) FailToError FailToError
+    return $ Cluster (V.fromList $ sort s) optsCmdFailure optsServerFailure
+      optsServerRetries
 
 -- | Figure out which server to talk to for this key. I.e., the distribution
 -- method. We use consistent hashing based on the CHORD approach.
@@ -36,18 +55,16 @@ getServerForKey :: Cluster -> Key -> Server
 getServerForKey c k =
     let hashedKey = hash k
         searchFun svr = sid svr < hashedKey
-    in case V.find searchFun (servers c) of
-            Nothing -> V.last (servers c)
-            Just s  -> s
+    in fromMaybe (V.last $ servers c) $ V.find searchFun (servers c)
 
 -- | Run a memcache operation against a server that maps to the key given in
 -- the cluster.
 keyedOp :: forall a. Maybe a -> Cluster -> Key -> (Server -> IO a) -> IO a
-keyedOp def c k m = serverOp def c (getServerForKey c k) m
+keyedOp def c k = serverOp def c (getServerForKey c k)
 
 -- | Run a memcache operation against any single server in the cluster.
 anyOp :: forall a. Maybe a -> Cluster -> (Server -> IO a) -> IO a
-anyOp def c m = serverOp def c (V.head . servers $ c) m
+anyOp def c = serverOp def c (V.head . servers $ c)
 
 -- | Run a memcache operation against all servers in the cluster.
 allOp :: forall a. Maybe a -> Cluster -> (Server -> IO a) -> IO [(Server, a)]
@@ -82,16 +99,13 @@ allOp def c m = do
 data FailureMode = FailSilent | FailToBackup | FailToError
     deriving (Eq, Show)
 
-cATTEMPTS :: Int
-cATTEMPTS = 2
-
 -- | Run a memcache operation against a particular server, handling any
 -- failures that occur.
 serverOp :: forall a. Maybe a -> Cluster -> Server -> (Server -> IO a) -> IO a
-serverOp def c s m = go cATTEMPTS
+serverOp def c s m = go $ serverRetries c
   where
 
-    go attempt = do
+    go attempt =
         m s `E.catches`
             [ E.Handler $ handleMemErrors      (attempt - 1)
             , E.Handler $ handleAllErrors      (attempt - 1)
