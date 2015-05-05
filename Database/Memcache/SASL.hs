@@ -1,4 +1,3 @@
-{-# LANGUAGE OverloadedStrings #-}
 {-# OPTIONS_GHC -fno-warn-unused-binds #-}
 
 -- | SASL authentication support for memcached.
@@ -11,14 +10,14 @@ import Database.Memcache.Server
 import Database.Memcache.Types
 
 import Control.Monad
-import Data.ByteString
+import Data.ByteString.Char8 as B8 (ByteString, pack, singleton)
 import Data.Monoid
 
 -- | Username for authentication.
-type Username = ByteString
+type Username = B8.ByteString
 
 -- | Password for authentication.
-type Password = ByteString
+type Password = B8.ByteString
 
 -- | Perform SASL authentication with the server.
 authenticate :: Server -> Username -> Password -> IO Bool
@@ -30,8 +29,8 @@ authenticate = saslAuthPlain
 -- | Perform SASL PLAIN authentication.
 saslAuthPlain :: Server -> Username -> Password -> IO Bool
 saslAuthPlain c u p = do
-    let credentials = singleton 0 <> u <> singleton 0 <> p
-        msg = emptyReq { reqOp = ReqSASLStart "PLAIN" credentials }
+    let credentials = singleton '\0' <> u <> singleton '\0' <> p
+        msg = emptyReq { reqOp = ReqSASLStart (B8.pack "PLAIN") credentials }
     r <- sendRecv c msg
     when (resOp r /= ResSASLStart) $ throwIncorrectRes r "SASL_START"
     case resStatus r of
@@ -42,7 +41,7 @@ saslAuthPlain c u p = do
 -- | List available SASL authentication methods. We could call this but as we
 -- only support PLAIN as does the memcached server, we simply assume PLAIN
 -- authentication is supprted and try that.
-saslListMechs :: Server -> IO ByteString
+saslListMechs :: Server -> IO B8.ByteString
 saslListMechs c = do
     let msg = emptyReq { reqOp = ReqSASLList }
     r <- sendRecv c msg
