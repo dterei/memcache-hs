@@ -1,5 +1,5 @@
 name:           memcache
-version:        0.0.0
+version:        0.0.1
 homepage:       https://github.com/dterei/memcache-hs
 bug-reports:    https://github.com/dterei/memcache-hs/issues
 synopsis:       A memcached client library.
@@ -10,7 +10,7 @@ license:        BSD3
 license-file:   LICENSE
 author:         David Terei <code@davidterei.com>
 maintainer:     David Terei <code@davidterei.com>
-copyright:      2013 David Terei.
+copyright:      2015 David Terei.
 category:       Database
 build-type:     Simple
 cabal-version:  >= 1.8
