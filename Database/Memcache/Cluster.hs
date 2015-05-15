@@ -3,8 +3,10 @@
 
 -- | Handles a group of connections to different memcache servers.
 module Database.Memcache.Cluster (
-        Cluster, newMemcacheCluster, Options(..), defaultOptions, keyedOp,
-        anyOp, allOp
+        Cluster, newMemcacheCluster,
+        ServerSpec(..), defaultServerSpec,
+        Options(..), defaultOptions,
+        keyedOp, anyOp, allOp
     ) where
 
 import Database.Memcache.Errors
@@ -21,12 +23,29 @@ import qualified Data.Vector.Mutable as MV
 
 import Network.Socket (HostName, PortNumber)
 
+-- | ServerSpec specifies a server configuration to connect to.
+data ServerSpec = ServerSpec {
+        ssHost :: HostName,
+        ssPort :: PortNumber,
+        ssAuth :: Maybe Authentication
+    }
+
+-- | Provides a default value for a server cconnection config.
+defaultServerSpec :: ServerSpec
+defaultServerSpec = ServerSpec {
+        ssHost = "localhost",
+        ssPort = 11211,
+        ssAuth = Nothing
+    }
+
+-- | Options specifies how a memcache cluster should be configured.
 data Options = Options {
         optsCmdFailure    :: !FailureMode,
         optsServerFailure :: !FailureMode,
         optsServerRetries :: !Int
     }
 
+-- | Provides recommended default for a cluster Options.
 defaultOptions :: Options
 defaultOptions = Options {
         optsCmdFailure    = FailToError,
@@ -34,7 +53,7 @@ defaultOptions = Options {
         optsServerRetries = 2
     }
 
--- | A memcached cluster.
+-- | A memcached cluster client.
 data Cluster = Cluster {
         servers            :: V.Vector Server,
         cmdFailureMode     :: !FailureMode,
@@ -43,10 +62,9 @@ data Cluster = Cluster {
     } deriving Show
 
 -- | Establish a new connection to a group of memcached servers.
-newMemcacheCluster :: [(HostName, PortNumber, Maybe Authentication)] -> Options
-                   -> IO Cluster
+newMemcacheCluster :: [ServerSpec] -> Options -> IO Cluster
 newMemcacheCluster hosts Options{..} = do
-    s <- mapM (\(x, y, z) -> newServer x y z) hosts
+    s <- mapM (\ServerSpec{..} -> newServer ssHost ssPort ssAuth) hosts
     return $ Cluster (V.fromList $ sort s) optsCmdFailure optsServerFailure
       optsServerRetries
 

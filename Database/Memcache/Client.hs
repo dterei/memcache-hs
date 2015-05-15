@@ -5,7 +5,8 @@ module Database.Memcache.Client (
         delete,
         increment, decrement,
         append, prepend,
-        flush, version, stats, quit
+        flush, version, stats, quit,
+        P.StatResults
     ) where
 
 import Database.Memcache.Cluster
