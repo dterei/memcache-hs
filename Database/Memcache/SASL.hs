@@ -15,14 +15,14 @@ import Data.Monoid
 import Network.Socket (Socket)
 
 -- | Perform SASL authentication with the server.
-authenticate :: Socket -> Username -> Password -> IO Bool
+authenticate :: Socket -> Username -> Password -> IO ()
 -- NOTE: For correctness really should check that PLAIN auth is supported first
 -- but we'll just assume it is as that's all mainline and other implementations
 -- support and one exception is nearly as good as another.
 authenticate = saslAuthPlain
 
 -- | Perform SASL PLAIN authentication.
-saslAuthPlain :: Socket -> Username -> Password -> IO Bool
+saslAuthPlain :: Socket -> Username -> Password -> IO ()
 saslAuthPlain s u p = do
     let credentials = singleton '\0' <> u <> singleton '\0' <> p
         msg = emptyReq { reqOp = ReqSASLStart (B8.pack "PLAIN") credentials }
@@ -30,9 +30,8 @@ saslAuthPlain s u p = do
     r <- recv s
     when (resOp r /= ResSASLStart) $ throwIncorrectRes r "SASL_START"
     case resStatus r of
-        NoError      -> return True
-        SaslAuthFail -> return False
-        _            -> throwStatus r
+        NoError -> return ()
+        _       -> throwStatus r
 
 -- | List available SASL authentication methods. We could call this but as we
 -- only support PLAIN as does the memcached server, we simply assume PLAIN

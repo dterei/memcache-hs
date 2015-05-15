@@ -74,8 +74,7 @@ newServer host port auth = do
                 S.connect s (S.SockAddrInet port $ hostAddress h)
                 S.setSocketOption s S.KeepAlive 1
                 S.setSocketOption s S.NoDelay 1
-                _ <- maybe (return True) (uncurry $ authenticate s) auth
-                -- TODO: Check auth result
+                maybe (return ()) (uncurry $ authenticate s) auth
                 return s
             )
 

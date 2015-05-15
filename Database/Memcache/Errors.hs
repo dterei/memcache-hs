@@ -28,6 +28,7 @@ data MemcacheError
     | MemErrValueNonNumeric
     | MemErrUnknownCmd
     | MemErrOutOfMemory
+    | MemErrAuthFail
     deriving (Eq, Show, Typeable)
 
 instance Exception MemcacheError
@@ -44,7 +45,7 @@ statusToError ErrItemNotStored   = MemErrStoreFailed
 statusToError ErrValueNonNumeric = MemErrValueNonNumeric
 statusToError ErrUnknownCommand  = MemErrUnknownCmd
 statusToError ErrOutOfMemory     = MemErrOutOfMemory
-statusToError SaslAuthFail       = error "statusToError: called on SaslAuthFail"
+statusToError SaslAuthFail       = MemErrAuthFail
 statusToError SaslAuthContinue   = error "statusToError: called on SaslAuthContinue"
 
 -- | Convert a status to an exception. Note, not all status's are errors and so
