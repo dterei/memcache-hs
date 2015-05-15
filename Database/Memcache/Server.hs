@@ -1,7 +1,7 @@
 -- | Handles the connections between a memcache client and a single server.
 
 module Database.Memcache.Server (
-        Server(sid, failed), newServer, sendRecv, withSocket, close
+        Server(sid), newServer, sendRecv, withSocket, close
     ) where
 
 import Database.Memcache.SASL
