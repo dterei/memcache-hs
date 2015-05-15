@@ -187,7 +187,7 @@ prepend c k v ver = do
 
 flush :: Server -> Maybe Expiration -> IO ()
 flush c e = do
-    let e'  = SETouch <$> e
+    let e'  = SETouch `fmap` e
         msg = emptyReq { reqOp = ReqFlush Loud e' }
     r <- sendRecv c msg
     when (resOp r /= ResFlush Loud) $ throwIncorrectRes r "FLUSH"
