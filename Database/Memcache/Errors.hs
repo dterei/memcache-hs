@@ -55,7 +55,7 @@ throwStatus = throwIO . statusToError . resStatus
 
 -- | Throw an IncorrectResponse exception for a wrong received response.
 throwIncorrectRes :: Response -> String -> IO a
-throwIncorrectRes r msg = throwIO $
+throwIncorrectRes r msg = throwIO
     IncorrectResponse {
         increspMessage = "Expected " ++ msg ++ " response! Got: " ++ show (resOp r),
         increspActual  = r

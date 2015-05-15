@@ -187,7 +187,7 @@ prepend c k v ver = do
 
 flush :: Server -> Maybe Expiration -> IO ()
 flush c e = do
-    let e'  = maybe Nothing (\xp -> Just (SETouch xp)) e
+    let e'  = SETouch <$> e
         msg = emptyReq { reqOp = ReqFlush Loud e' }
     r <- sendRecv c msg
     when (resOp r /= ResFlush Loud) $ throwIncorrectRes r "FLUSH"
@@ -243,7 +243,7 @@ quit c = do
     withSocket c $ \s -> sendClose s `E.catch` consumeError
     close c
   where
-    consumeError = \(_::E.SomeException) -> return ()
+    consumeError (_ ::E.SomeException) = return ()
     sendClose s = do
         let msg = emptyReq { reqOp = ReqQuit Loud }
         send s msg

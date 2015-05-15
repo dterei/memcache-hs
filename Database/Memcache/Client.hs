@@ -59,9 +59,8 @@ prepend c k v ver = keyedOp' c k $ \s -> P.prepend s k v ver
 flush :: Cluster -> Maybe Expiration -> IO ()
 flush c e = void $ allOp (Just ()) c $ \s -> P.flush s e
 
-stats :: Cluster -> Maybe Key -> IO ([(Server, Maybe P.StatResults)])
-stats c key = do
-    allOp Nothing c $ \s -> P.stats s key
+stats :: Cluster -> Maybe Key -> IO [(Server, Maybe P.StatResults)]
+stats c key = allOp Nothing c $ \s -> P.stats s key
 
 quit :: Cluster -> IO ()
 quit c = void $ allOp (Just ()) c $ \s -> P.quit s

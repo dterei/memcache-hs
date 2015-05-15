@@ -32,7 +32,7 @@ recv :: Socket -> IO Response
 recv s = do
     header <- recvAll mEMCACHE_HEADER_SIZE
     let h = dzHeader' (L.fromChunks [header])
-    if (bodyLen h > 0)
+    if bodyLen h > 0
         then do body <- recvAll (fromIntegral $ bodyLen h)
                 return $ dzBody' h (L.fromChunks [body])
         else return $ dzBody' h L.empty
@@ -156,7 +156,7 @@ dzHeader = do
         ProtocolError {
             protocolMessage = "Bad magic value for a response packet",
             protocolHeader  = Nothing,
-            protocolParams  = [show $ m]
+            protocolParams  = [show m]
         }
     o   <- getWord8
     kl  <- getWord16be
@@ -182,7 +182,7 @@ dzBody' h = runGet (dzBody h)
 
 -- | Deserialize a Response body.
 dzBody :: Header -> Get Response
-dzBody h = do
+dzBody h =
     case op h of
         0x00 -> dzGetResponse h $ ResGet Loud
         0x09 -> dzGetResponse h $ ResGet Quiet
@@ -208,7 +208,7 @@ dzBody h = do
         0x19 -> dzGenericResponse h $ ResAppend Quiet
         0x0F -> dzGenericResponse h $ ResPrepend Loud
         0x1A -> dzGenericResponse h $ ResPrepend Quiet
-        0x1C -> dzGenericResponse h $ ResTouch
+        0x1C -> dzGenericResponse h ResTouch
         0x07 -> dzGenericResponse h $ ResQuit Loud
         0x17 -> dzGenericResponse h $ ResQuit Quiet
         0x08 -> dzGenericResponse h $ ResFlush Loud
@@ -221,7 +221,7 @@ dzBody h = do
         0x21 -> dzGenericResponse h ResSASLStart
         0x22 -> dzGenericResponse h ResSASLStep
 
-        _    -> throw $ ProtocolError {
+        _    -> throw ProtocolError {
                     protocolMessage = "Unknown operation type",
                     protocolHeader  = Just h,
                     protocolParams  = [show $ op h]
@@ -344,7 +344,7 @@ dzStatus = do
         0x82 -> ErrOutOfMemory
         0x20 -> SaslAuthFail
         0x21 -> SaslAuthContinue
-        _    -> throw $ ProtocolError {
+        _    -> throw ProtocolError {
                     protocolMessage = "Unknown status type",
                     protocolHeader  = Nothing,
                     protocolParams  = [show st]

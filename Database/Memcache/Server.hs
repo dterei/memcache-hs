@@ -43,7 +43,7 @@ data Server = Server {
 
 
 instance Eq Server where
-    (==) x y = (sid x) == (sid y)
+    (==) x y = sid x == sid y
 
 instance Ord Server where
     compare x y = compare (sid x) (sid y)
@@ -53,7 +53,7 @@ newServer :: HostName -> PortNumber -> Maybe Authentication -> IO Server
 newServer host port auth = do
     pSock <- createPool connectSocket releaseSocket
                 sSTRIPES sKEEPALIVE sCONNECTIONS
-    return $ Server
+    return Server
         { sid = serverHash
         , pool = pSock
         , _addr = host
@@ -68,7 +68,7 @@ newServer host port auth = do
         proto <- getProtocolNumber "tcp"
         bracketOnError
             (S.socket S.AF_INET S.Stream proto)
-            (releaseSocket)
+            releaseSocket
             (\s -> do
                 h <- getHostByName host
                 S.connect s (S.SockAddrInet port $ hostAddress h)
@@ -78,7 +78,7 @@ newServer host port auth = do
                 return s
             )
 
-    releaseSocket s = S.close s
+    releaseSocket = S.close
 
 -- | Send and receive a single request/response pair to the memcached server.
 sendRecv :: Server -> Request -> IO Response
@@ -89,10 +89,10 @@ sendRecv svr msg = withResource (pool svr) $ \s -> do
 -- | Run a function with access to an server socket for using 'send' and
 -- 'recv'.
 withSocket :: Server -> (Socket -> IO a) -> IO a
-withSocket svr = withResource (pool svr)
+withSocket svr = withResource $ pool svr
 
 -- | Close the server connection. If you perform another operation after this,
 -- the connection will be re-established.
 close :: Server -> IO ()
-close srv = destroyAllResources (pool srv)
+close srv = destroyAllResources $ pool srv
 
