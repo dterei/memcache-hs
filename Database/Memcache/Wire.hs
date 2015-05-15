@@ -1,5 +1,6 @@
 -- | Deals with serializing and parsing memcached requests and responses.
 module Database.Memcache.Wire (
+        send, recv,
         szRequest, szRequest',
         dzResponse, dzResponse', dzHeader, dzHeader', dzBody, dzBody'
     ) where
@@ -7,6 +8,7 @@ module Database.Memcache.Wire (
 -- XXX: Wire works with lazy bytestrings but we receive strict bytestrings from
 -- the network...
 
+import Database.Memcache.Errors
 import Database.Memcache.Types
 
 import Control.Exception
@@ -17,6 +19,29 @@ import qualified Data.ByteString as B
 import qualified Data.ByteString.Lazy as L
 import Data.Monoid
 import Data.Word
+import Network.Socket (Socket)
+import qualified Network.Socket.ByteString as N
+
+-- | Send a request to the memcached server.
+send :: Socket -> Request -> IO ()
+send s m = N.sendAll s (toByteString $ szRequest m)
+
+-- | Retrieve a single response from the memcached server.
+-- TODO: read into buffer to minimize read syscalls
+recv :: Socket -> IO Response
+recv s = do
+    header <- recvAll mEMCACHE_HEADER_SIZE
+    let h = dzHeader' (L.fromChunks [header])
+    if (bodyLen h > 0)
+        then do body <- recvAll (fromIntegral $ bodyLen h)
+                return $ dzBody' h (L.fromChunks [body])
+        else return $ dzBody' h L.empty
+  where
+    recvAll n = do
+        buf <- N.recv s n
+        if B.length buf == n
+          then return buf
+          else throwIO NotEnoughBytes
 
 -- | Serialize a request to a ByteString.
 szRequest' :: Request -> L.ByteString

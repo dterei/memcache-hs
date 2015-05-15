@@ -20,6 +20,7 @@ module Database.Memcache.Protocol (
 import Database.Memcache.Errors
 import Database.Memcache.Server
 import Database.Memcache.Types
+import Database.Memcache.Wire
 
 import qualified Control.Exception as E
 import Control.Monad

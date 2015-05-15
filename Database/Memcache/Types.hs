@@ -3,6 +3,7 @@
 -- | Stores the various types needed by memcache. Mostly concerned with the
 -- representation of the protocol.
 module Database.Memcache.Types (
+        Authentication, Username, Password,
         Q(..), K(..), Key, Value, Extras, Initial, Delta, Expiration, Flags, Version,
         mEMCACHE_HEADER_SIZE, Header(..),
         Request(..), OpRequest(..), SESet(..), SEIncr(..), SETouch(..), emptyReq,
@@ -14,6 +15,15 @@ import Control.Exception
 import Data.ByteString (ByteString)
 import Data.Typeable
 import Data.Word
+
+-- | SASL Authentication information for a server.
+type Authentication = (Username, Password)
+
+-- | Username for authentication.
+type Username = ByteString
+
+-- | Password for authentication.
+type Password = ByteString
 
 {- MEMCACHE MESSAGE:
 

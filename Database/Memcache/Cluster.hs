@@ -9,7 +9,7 @@ module Database.Memcache.Cluster (
 
 import Database.Memcache.Errors
 import Database.Memcache.Server (Server(..), newServer)
-import Database.Memcache.Types (Key)
+import Database.Memcache.Types (Authentication, Key)
 
 import qualified Control.Exception as E
 
@@ -43,9 +43,10 @@ data Cluster = Cluster {
     } deriving Show
 
 -- | Establish a new connection to a group of memcached servers.
-newMemcacheCluster :: [(HostName, PortNumber)] -> Options -> IO Cluster
+newMemcacheCluster :: [(HostName, PortNumber, Maybe Authentication)] -> Options
+                   -> IO Cluster
 newMemcacheCluster hosts Options{..} = do
-    s <- mapM (uncurry newServer) hosts
+    s <- mapM (\(x, y, z) -> newServer x y z) hosts
     return $ Cluster (V.fromList $ sort s) optsCmdFailure optsServerFailure
       optsServerRetries
 

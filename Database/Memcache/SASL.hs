@@ -6,32 +6,28 @@ module Database.Memcache.SASL (
     ) where
 
 import Database.Memcache.Errors
-import Database.Memcache.Server
 import Database.Memcache.Types
+import Database.Memcache.Wire
 
 import Control.Monad
 import Data.ByteString.Char8 as B8 (ByteString, pack, singleton)
 import Data.Monoid
-
--- | Username for authentication.
-type Username = B8.ByteString
-
--- | Password for authentication.
-type Password = B8.ByteString
+import Network.Socket (Socket)
 
 -- | Perform SASL authentication with the server.
-authenticate :: Server -> Username -> Password -> IO Bool
+authenticate :: Socket -> Username -> Password -> IO Bool
 -- NOTE: For correctness really should check that PLAIN auth is supported first
 -- but we'll just assume it is as that's all mainline and other implementations
 -- support and one exception is nearly as good as another.
 authenticate = saslAuthPlain
 
 -- | Perform SASL PLAIN authentication.
-saslAuthPlain :: Server -> Username -> Password -> IO Bool
-saslAuthPlain c u p = do
+saslAuthPlain :: Socket -> Username -> Password -> IO Bool
+saslAuthPlain s u p = do
     let credentials = singleton '\0' <> u <> singleton '\0' <> p
         msg = emptyReq { reqOp = ReqSASLStart (B8.pack "PLAIN") credentials }
-    r <- sendRecv c msg
+    send s msg
+    r <- recv s
     when (resOp r /= ResSASLStart) $ throwIncorrectRes r "SASL_START"
     case resStatus r of
         NoError      -> return True
@@ -41,10 +37,11 @@ saslAuthPlain c u p = do
 -- | List available SASL authentication methods. We could call this but as we
 -- only support PLAIN as does the memcached server, we simply assume PLAIN
 -- authentication is supprted and try that.
-saslListMechs :: Server -> IO B8.ByteString
-saslListMechs c = do
+saslListMechs :: Socket -> IO B8.ByteString
+saslListMechs s = do
     let msg = emptyReq { reqOp = ReqSASLList }
-    r <- sendRecv c msg
+    send s msg
+    r <- recv s
     v <- case resOp r of
         ResSASLList v -> return v
         _             -> throwIncorrectRes r "SASL_LIST"
