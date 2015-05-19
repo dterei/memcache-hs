@@ -15,6 +15,7 @@ description:
   and other pipelined operations.
   .
   Basic usage is:
+  .
   > import qualified Database.Memcache.Client as M
   > 
   > mc <- M.newClient [M.ServerSpec "localhost" 11211 M.NoAuth] M.defaultOptions
