@@ -18,7 +18,7 @@ main = do
 
 getTest :: M.Client -> IO ()
 getTest c = do
-    v <- M.set c (BC.pack "key") (BC.pack "world") 0 0
+    void $ M.set c (BC.pack "key") (BC.pack "world") 0 0
     Just (v', _, _) <- M.get c "key"
     when (v' /= "world") $ do
         putStrLn $ "bad value returned! " ++ show v'
