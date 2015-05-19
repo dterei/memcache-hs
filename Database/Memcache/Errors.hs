@@ -36,6 +36,7 @@ instance Exception MemcacheError
 -- | Convert a status to an error. Note, not all status's are errors and so
 -- this is a partial function!
 statusToError :: Status -> MemcacheError
+{-# INLINE statusToError #-}
 statusToError NoError            = error "statusToError: called on NoError"
 statusToError ErrKeyNotFound     = MemErrNoKey
 statusToError ErrKeyExists       = MemErrKeyExists
@@ -50,11 +51,13 @@ statusToError SaslAuthContinue   = error "statusToError: called on SaslAuthConti
 
 -- | Convert a status to an exception. Note, not all status's are errors and so
 -- this is not a complete function!
-throwStatus :: Response -> IO a
-throwStatus = throwIO . statusToError . resStatus
+throwStatus :: Status -> IO a
+{-# INLINE throwStatus #-}
+throwStatus = throwIO . statusToError
 
 -- | Throw an IncorrectResponse exception for a wrong received response.
 throwIncorrectRes :: Response -> String -> IO a
+{-# INLINE throwIncorrectRes #-}
 throwIncorrectRes r msg = throwIO
     IncorrectResponse {
         increspMessage = "Expected " ++ msg ++ " response! Got: " ++ show (resOp r),

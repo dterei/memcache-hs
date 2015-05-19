@@ -3,7 +3,7 @@
 
 -- | Handles a group of connections to different memcache servers.
 module Database.Memcache.Cluster (
-        Cluster, newMemcacheCluster,
+        Cluster, newCluster,
         ServerSpec(..), defaultServerSpec,
         Options(..), defaultOptions,
         keyedOp, anyOp, allOp
@@ -11,7 +11,7 @@ module Database.Memcache.Cluster (
 
 import Database.Memcache.Errors
 import Database.Memcache.Server (Server(..), newServer)
-import Database.Memcache.Types (Authentication, Key)
+import Database.Memcache.Types (Authentication(..), Key)
 
 import qualified Control.Exception as E
 
@@ -27,7 +27,7 @@ import Network.Socket (HostName, PortNumber)
 data ServerSpec = ServerSpec {
         ssHost :: HostName,
         ssPort :: PortNumber,
-        ssAuth :: Maybe Authentication
+        ssAuth :: Authentication
     }
 
 -- | Provides a default value for a server cconnection config.
@@ -35,7 +35,7 @@ defaultServerSpec :: ServerSpec
 defaultServerSpec = ServerSpec {
         ssHost = "localhost",
         ssPort = 11211,
-        ssAuth = Nothing
+        ssAuth = NoAuth
     }
 
 -- | Options specifies how a memcache cluster should be configured.
@@ -62,8 +62,8 @@ data Cluster = Cluster {
     } deriving Show
 
 -- | Establish a new connection to a group of memcached servers.
-newMemcacheCluster :: [ServerSpec] -> Options -> IO Cluster
-newMemcacheCluster hosts Options{..} = do
+newCluster :: [ServerSpec] -> Options -> IO Cluster
+newCluster hosts Options{..} = do
     s <- mapM (\ServerSpec{..} -> newServer ssHost ssPort ssAuth) hosts
     return $ Cluster (V.fromList $ sort s) optsCmdFailure optsServerFailure
       optsServerRetries

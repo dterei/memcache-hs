@@ -56,7 +56,7 @@ get c k = do
     case resStatus r of
         NoError        -> return $ Just (v, f, resCas r)
         ErrKeyNotFound -> return Nothing
-        _              -> throwStatus r
+        rs             -> throwStatus rs
 
 gat :: Server -> Key -> Expiration -> IO (Maybe (Value, Flags, Version))
 gat c k e = do
@@ -68,7 +68,7 @@ gat c k e = do
     case resStatus r of
         NoError        -> return $ Just (v, f, resCas r)
         ErrKeyNotFound -> return Nothing
-        _              -> throwStatus r
+        rs             -> throwStatus rs
 
 touch :: Server -> Key -> Expiration -> IO (Maybe Version)
 touch c k e = do
@@ -78,7 +78,7 @@ touch c k e = do
     case resStatus r of
         NoError        -> return $ Just (resCas r)
         ErrKeyNotFound -> return Nothing
-        _              -> throwStatus r
+        rs             -> throwStatus rs
 
 set :: Server -> Key -> Value -> Flags -> Expiration -> IO Version
 set c k v f e = do
@@ -87,7 +87,7 @@ set c k v f e = do
     when (resOp r /= ResSet Loud) $ throwIncorrectRes r "SET"
     case resStatus r of
         NoError -> return $ resCas r
-        _       -> throwStatus r
+        rs      -> throwStatus rs
 
 -- XXX: Use a return type like: Return = OK Version | NotFound | NotVersion?
 set' :: Server -> Key -> Value -> Flags -> Expiration -> Version -> IO (Maybe Version)
@@ -101,7 +101,7 @@ set' c k v f e ver = do
         ErrKeyNotFound -> return Nothing
         -- version specified and doesn't match key...
         ErrKeyExists   -> return Nothing
-        _              -> throwStatus r
+        rs             -> throwStatus rs
 
 add :: Server -> Key -> Value -> Flags -> Expiration -> IO (Maybe Version)
 add c k v f e = do
@@ -111,7 +111,7 @@ add c k v f e = do
     case resStatus r of
         NoError      -> return $ Just (resCas r)
         ErrKeyExists -> return Nothing
-        _            -> throwStatus r
+        rs           -> throwStatus rs
 
 replace :: Server -> Key -> Value -> Flags -> Expiration -> Version -> IO (Maybe Version)
 replace c k v f e ver = do
@@ -124,7 +124,7 @@ replace c k v f e ver = do
         ErrKeyNotFound -> return Nothing
         -- version specified and doesn't match key...
         ErrKeyExists   -> return Nothing
-        _              -> throwStatus r
+        rs             -> throwStatus rs
 
 delete :: Server -> Key -> Version -> IO Bool
 delete c k ver = do
@@ -137,7 +137,7 @@ delete c k ver = do
         ErrKeyNotFound -> return False
         -- version specified and doesn't match key...
         ErrKeyExists   -> return False
-        _              -> throwStatus r
+        rs             -> throwStatus rs
 
 increment :: Server -> Key -> Initial -> Delta -> Expiration -> Version -> IO (Maybe (Word64, Version))
 increment c k i d e ver = do
@@ -150,7 +150,7 @@ increment c k i d e ver = do
         NoError        -> return $ Just (n, resCas r)
         ErrKeyNotFound -> return Nothing
         ErrKeyExists   -> return Nothing
-        _              -> throwStatus r
+        rs             -> throwStatus rs
 
 decrement :: Server -> Key -> Initial -> Delta -> Expiration -> Version -> IO (Maybe (Word64, Version))
 decrement c k i d e ver = do
@@ -163,7 +163,7 @@ decrement c k i d e ver = do
         NoError        -> return $ Just (n, resCas r)
         ErrKeyNotFound -> return Nothing
         ErrKeyExists   -> return Nothing
-        _              -> throwStatus r
+        rs             -> throwStatus rs
 
 append :: Server -> Key -> Value -> Version -> IO (Maybe Version)
 append c k v ver = do
@@ -173,7 +173,7 @@ append c k v ver = do
     case resStatus r of
         NoError        -> return $ Just (resCas r)
         ErrKeyNotFound -> return Nothing
-        _              -> throwStatus r
+        rs             -> throwStatus rs
 
 prepend :: Server -> Key -> Value -> Version -> IO (Maybe Version)
 prepend c k v ver = do
@@ -183,7 +183,7 @@ prepend c k v ver = do
     case resStatus r of
         NoError        -> return $ Just (resCas r)
         ErrKeyNotFound -> return Nothing
-        _              -> throwStatus r
+        rs             -> throwStatus rs
 
 flush :: Server -> Maybe Expiration -> IO ()
 flush c e = do
@@ -193,7 +193,7 @@ flush c e = do
     when (resOp r /= ResFlush Loud) $ throwIncorrectRes r "FLUSH"
     case resStatus r of
         NoError -> return ()
-        _       -> throwStatus r
+        rs      -> throwStatus rs
 
 noop :: Server -> IO ()
 noop c = do
@@ -202,7 +202,7 @@ noop c = do
     when (resOp r /= ResNoop) $ throwIncorrectRes r "NOOP"
     case resStatus r of
         NoError -> return ()
-        _       -> throwStatus r
+        rs      -> throwStatus rs
 
 version :: Server -> IO ByteString
 version c = do
@@ -213,7 +213,7 @@ version c = do
         _            -> throwIncorrectRes r "VERSION"
     case resStatus r of
         NoError -> return v
-        _       -> throwStatus r
+        rs      -> throwStatus rs
 
 -- | StatResults are a list of key-value pairs.
 type StatResults = [(ByteString, ByteString)]
@@ -235,7 +235,7 @@ stats c key =  withSocket c $ \s -> do
             NoError | B.null k && B.null v -> return $ Just xs
                     | otherwise            -> getAllStats s $ (k, v):xs
             ErrKeyNotFound                 -> return Nothing
-            _                              -> throwStatus r
+            rs                             -> throwStatus rs
 
 quit :: Server -> IO ()
 quit c = do
@@ -252,5 +252,5 @@ quit c = do
         when (resOp r /= ResQuit Loud) $ throwIncorrectRes r "QUIT"
         case resStatus r of
             NoError -> return ()
-            _       -> throwStatus r
+            rs      -> throwStatus rs
 

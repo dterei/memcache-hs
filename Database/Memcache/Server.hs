@@ -1,5 +1,5 @@
+{-# LANGUAGE CPP #-}
 -- | Handles the connections between a memcache client and a single server.
-
 module Database.Memcache.Server (
         Server(sid), newServer, sendRecv, withSocket, close
     ) where
@@ -29,10 +29,10 @@ sKEEPALIVE = 300
 data Server = Server {
         sid    :: {-# UNPACK #-} !Int,
         pool   :: Pool Socket,
-        _addr  :: HostName,
-        _port  :: PortNumber,
-        _auth  :: Maybe Authentication,
-        failed :: Bool
+        _addr  :: !HostName,
+        _port  :: !PortNumber,
+        _auth  :: !Authentication,
+        failed :: !Bool
 
         -- TODO: 
         -- weight   :: Double
@@ -49,7 +49,7 @@ instance Ord Server where
     compare x y = compare (sid x) (sid y)
 
 -- | Create a new memcached connection.
-newServer :: HostName -> PortNumber -> Maybe Authentication -> IO Server
+newServer :: HostName -> PortNumber -> Authentication -> IO Server
 newServer host port auth = do
     pSock <- createPool connectSocket releaseSocket
                 sSTRIPES sKEEPALIVE sCONNECTIONS
@@ -74,7 +74,7 @@ newServer host port auth = do
                 S.connect s (S.SockAddrInet port $ hostAddress h)
                 S.setSocketOption s S.KeepAlive 1
                 S.setSocketOption s S.NoDelay 1
-                maybe (return ()) (uncurry $ authenticate s) auth
+                authenticate s auth
                 return s
             )
 
