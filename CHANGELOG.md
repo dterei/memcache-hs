@@ -1,3 +1,7 @@
+# 0.1.X.X
+
+* Consistent usage of 'memcached' instead of 'memcache'.
+
 # 0.1.0.0
 
 * First proper release (although still lots of rough edges!)

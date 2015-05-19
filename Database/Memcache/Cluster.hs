@@ -1,7 +1,7 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE RecordWildCards #-}
 
--- | Handles a group of connections to different memcache servers.
+-- | Handles a group of connections to different memcached servers.
 module Database.Memcache.Cluster (
         Cluster, newCluster,
         ServerSpec(..), defaultServerSpec,
@@ -38,7 +38,7 @@ defaultServerSpec = ServerSpec {
         ssAuth = NoAuth
     }
 
--- | Options specifies how a memcache cluster should be configured.
+-- | Options specifies how a memcached cluster should be configured.
 data Options = Options {
         optsCmdFailure    :: !FailureMode,
         optsServerFailure :: !FailureMode,
@@ -76,16 +76,16 @@ getServerForKey c k =
         searchFun svr = sid svr < hashedKey
     in fromMaybe (V.last $ servers c) $ V.find searchFun (servers c)
 
--- | Run a memcache operation against a server that maps to the key given in
+-- | Run a memcached operation against a server that maps to the key given in
 -- the cluster.
 keyedOp :: forall a. Maybe a -> Cluster -> Key -> (Server -> IO a) -> IO a
 keyedOp def c k = serverOp def c (getServerForKey c k)
 
--- | Run a memcache operation against any single server in the cluster.
+-- | Run a memcached operation against any single server in the cluster.
 anyOp :: forall a. Maybe a -> Cluster -> (Server -> IO a) -> IO a
 anyOp def c = serverOp def c (V.head . servers $ c)
 
--- | Run a memcache operation against all servers in the cluster.
+-- | Run a memcached operation against all servers in the cluster.
 allOp :: forall a. Maybe a -> Cluster -> (Server -> IO a) -> IO [(Server, a)]
 allOp def c m = do
     res <- V.forM (servers c) (\s -> serverOp def c s m)
@@ -118,7 +118,7 @@ allOp def c m = do
 data FailureMode = FailSilent | FailToBackup | FailToError
     deriving (Eq, Show)
 
--- | Run a memcache operation against a particular server, handling any
+-- | Run a memcached operation against a particular server, handling any
 -- failures that occur.
 serverOp :: forall a. Maybe a -> Cluster -> Server -> (Server -> IO a) -> IO a
 serverOp def c s m = go $ serverRetries c

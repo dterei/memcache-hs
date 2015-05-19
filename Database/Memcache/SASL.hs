@@ -1,6 +1,6 @@
 {-# OPTIONS_GHC -fno-warn-unused-binds #-}
 
--- | SASL authentication support for memcached.
+-- | SASL authentication support for memcache.
 module Database.Memcache.SASL (
         authenticate, Authentication(..), Username, Password
     ) where

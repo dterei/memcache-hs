@@ -1,12 +1,12 @@
--- | A memcache client. Supports the binary protocol (only) and SASL
+-- | A memcached client. Supports the binary protocol (only) and SASL
 -- authentication.
 --
--- A client can connect to a single memcache server or a cluster of them. In
+-- A client can connect to a single memcached server or a cluster of them. In
 -- the later case, consistent hashing is used to route requests to the
 -- appropriate server.
 --
--- Expected return values (like misses) are returned as part of
--- the return type, while unexpected errors are thrown as exceptions.
+-- Expected return values (like misses) are returned as part of the return
+-- type, while unexpected errors are thrown as exceptions.
 module Database.Memcache.Client (
         -- * Cluster and connection handling
         newClient, Client, ServerSpec(..), defaultServerSpec, Options(..),
@@ -41,16 +41,21 @@ import Control.Monad
 import Data.Word
 import Data.ByteString (ByteString)
 
+-- | A memcached client, connected to a collection of memcached servers.
 type Client = Cluster
 
+-- | Establish a new connection to a group of memcached servers.
 newClient :: [ServerSpec] -> Options -> IO Client
 newClient = newCluster
 
 keyedOp' :: Cluster -> Key -> (Server -> IO (Maybe a)) -> IO (Maybe a)
 keyedOp' = keyedOp (Just Nothing)
+{-# INLINE keyedOp' #-}
 
+-- | Retrieve the value for the given key from memcache.
 get :: Cluster -> Key -> IO (Maybe (Value, Flags, Version))
 get c k = keyedOp' c k $ \s -> P.get s k
+{-# INLINE get #-}
 
 gat :: Cluster -> Key -> Expiration -> IO (Maybe (Value, Flags, Version))
 gat c k e = keyedOp' c k $ \s -> P.gat s k e

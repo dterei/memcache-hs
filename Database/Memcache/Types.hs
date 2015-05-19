@@ -28,7 +28,7 @@ type Username = ByteString
 -- | Password for authentication.
 type Password = ByteString
 
-{- MEMCACHE MESSAGE:
+{- MEMCACHED MESSAGE:
 
     header {
         magic    :: Word8

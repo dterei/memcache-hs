@@ -1,6 +1,6 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 
--- | A raw, low level interface to the memcache protocol.
+-- | A raw, low level interface to the memcached protocol.
 --
 -- The various operations are represented in full as they appear at the
 -- protocol level and so aren't generally well suited for application use.

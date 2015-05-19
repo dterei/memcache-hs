@@ -1,4 +1,4 @@
-# memcache: Haskell Memcache Client
+# memcache: Haskell Memcached Client
 
 [![Hackage version](https://img.shields.io/hackage/v/memcache.svg?style=flat)](https://hackage.haskell.org/package/memcache) [![Build Status](https://img.shields.io/travis/dterei/memcache-hs.svg?style=flat)](https://travis-ci.org/dterei/memcache-hs)
 
@@ -26,7 +26,7 @@ experimenting with memcached servers.
   [mutilate](https://github.com/leverich/mutilate) already do that
   very well. This tool is useful in conjunction with mutilate.
 * `Loader` -- A tool to load random data of a certain size into a
-  memcache server. Useful for priming a server for testing.
+  memcached server. Useful for priming a server for testing.
 
 ## Architecture Notes
 

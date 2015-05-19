@@ -1,6 +1,6 @@
 {-# LANGUAGE DeriveDataTypeable #-}
 
--- | Memcache related errors and exception handling.
+-- | Memcached related errors and exception handling.
 module Database.Memcache.Errors (
         MemcacheError(..),
         statusToError,

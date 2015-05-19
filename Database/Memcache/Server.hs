@@ -1,4 +1,4 @@
--- | Handles the connections between a memcache client and a single server.
+-- | Handles the connections between a memcached client and a single server.
 module Database.Memcache.Server (
         Server(sid), newServer, sendRecv, withSocket, close
     ) where
@@ -40,7 +40,6 @@ data Server = Server {
         -- cnxnBuf   :: IORef ByteString
     } deriving Show
 
-
 instance Eq Server where
     (==) x y = sid x == sid y
 
@@ -53,11 +52,11 @@ newServer host port auth = do
     pSock <- createPool connectSocket releaseSocket
                 sSTRIPES sKEEPALIVE sCONNECTIONS
     return Server
-        { sid = serverHash
-        , pool = pSock
-        , _addr = host
-        , _port = port
-        , _auth = auth
+        { sid    = serverHash
+        , pool   = pSock
+        , _addr  = host
+        , _port  = port
+        , _auth  = auth
         , failed = False
         }
   where
