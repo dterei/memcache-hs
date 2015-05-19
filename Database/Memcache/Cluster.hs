@@ -19,7 +19,7 @@ import Data.Hashable (hash)
 import Data.Maybe (fromMaybe)
 import Data.List (sort)
 import qualified Data.Vector as V
-import qualified Data.Vector.Mutable as MV
+-- import qualified Data.Vector.Mutable as MV
 
 import Network.Socket (HostName, PortNumber)
 

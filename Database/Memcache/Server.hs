@@ -1,4 +1,3 @@
-{-# LANGUAGE CPP #-}
 -- | Handles the connections between a memcache client and a single server.
 module Database.Memcache.Server (
         Server(sid), newServer, sendRecv, withSocket, close
@@ -62,7 +61,7 @@ newServer host port auth = do
         , failed = False
         }
   where
-    serverHash = hash (host, let PortNum p = port in p)
+    serverHash = hash (host, fromEnum port)
 
     connectSocket = do
         proto <- getProtocolNumber "tcp"
