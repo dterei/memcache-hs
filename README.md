@@ -2,8 +2,15 @@
 
 [![Hackage version](https://img.shields.io/hackage/v/memcache.svg?style=flat)](https://hackage.haskell.org/package/memcache) [![Build Status](https://img.shields.io/travis/dterei/memcache-hs.svg?style=flat)](https://travis-ci.org/dterei/memcache-hs)
 
-This library provides a client interface to a Memcache cluster. It is
-aimed at full binary protocol support, ease of use and speed.
+A client library for a memcached cluster.
+
+It supports the binary memcached protocol and SASL authentication. No support
+for the ASCII protocol is provided. It supports connecting to a single, or a
+cluster of memcached servers. When connecting to a cluser, consistent hashing
+is used for routing requests to the appropriate server.
+
+Complete coverage of the memcached protocol is provided except for multi-get
+and other pipelined operations.
 
 ## Licensing
 
@@ -36,32 +43,6 @@ connections for performance.
 
 Either way, a pool is fine for now.
 
-## ToDo
-
-Required:
-* Connection error handling
-* SASL -- tie in with cluster management
-* Timeouts
-* Pull cluster and server creation into client
-
-Optional:
-* Multi-get
-* Generic multi operation support
-* Customizable server sharding -- mod & virtual servers
-
-Nice-to-have:
-* Asynchronous support
-* Customizable -- timeout, max connection retries, hash algorithm
-* Max value validation
-* Optimizations --  http://code.google.com/p/spymemcached/wiki/Optimizations
-* UDP
-* ASCII
-* Server error handling mode where we return misses and ignore sets
-
-Maybe:
-* Typeclass for serialization
-* Monad / Typeclass for memcache
-
 ## Other clients
 
 * [C: libmemcached](http://libmemcached.org/libMemcached.html)
@@ -74,11 +55,11 @@ We are happy to receive bug reports, fixes, documentation enhancements,
 and other improvements.
 
 Please report bugs via the
-[github issue tracker](http://github.com/dterei/mc-hs/issues).
+[github issue tracker](http://github.com/dterei/memcache-hs/issues).
 
-Master [git repository](http://github.com/dterei/mc-hs):
+Master [git repository](http://github.com/dterei/memcache-hs):
 
-* `git clone git://github.com/dterei/mc-hs.git`
+* `git clone https://github.com/dterei/memcache-hs.git`
 
 ## Authors
 
