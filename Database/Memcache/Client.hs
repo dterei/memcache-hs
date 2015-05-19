@@ -1,15 +1,38 @@
--- | A memcache client.
+-- | A memcache client. Supports the binary protocol (only) and SASL
+-- authentication.
+--
+-- A client can connect to a single memcache server or a cluster of them. In
+-- the later case, consistent hashing is used to route requests to the
+-- appropriate server.
+--
+-- Expected return values (like misses) are returned as part of
+-- the return type, while unexpected errors are thrown as exceptions.
 module Database.Memcache.Client (
+        -- * Cluster and connection handling
+        newClient, Client, ServerSpec(..), defaultServerSpec, Options(..),
+        defaultOptions, Authentication(..), Username, Password,
+
+        -- * Get operations
         get, gat, touch,
+
+        -- * Set operations
         set, set', add, replace,
-        delete,
-        increment, decrement,
-        append, prepend,
-        flush, version, stats, quit,
-        P.StatResults
+        
+        -- * Delete operations
+        delete, flush,
+        
+        -- * Modify operations
+        increment, decrement, append, prepend,
+
+        -- * Information operations
+        version, stats, P.StatResults, quit,
+
+        -- * Error handling
+        MemcacheError(..), ClientError(..)
     ) where
 
 import Database.Memcache.Cluster
+import Database.Memcache.Errors
 import qualified Database.Memcache.Protocol as P
 import Database.Memcache.Server
 import Database.Memcache.Types
@@ -17,6 +40,11 @@ import Database.Memcache.Types
 import Control.Monad
 import Data.Word
 import Data.ByteString (ByteString)
+
+type Client = Cluster
+
+newClient :: [ServerSpec] -> Options -> IO Client
+newClient = newCluster
 
 keyedOp' :: Cluster -> Key -> (Server -> IO (Maybe a)) -> IO (Maybe a)
 keyedOp' = keyedOp (Just Nothing)
