@@ -1,6 +1,8 @@
 # 0.1.X.X
 
 * Consistent usage of 'memcached' instead of 'memcache'.
+* Document `Database.Memcache.Client`
+* Add inline pragmas in appropriate places.
 
 # 0.1.0.0
 
