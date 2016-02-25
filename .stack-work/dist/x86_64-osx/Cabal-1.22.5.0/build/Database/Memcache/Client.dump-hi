@@ -1,0 +1,853 @@
+
+==================== FINAL INTERFACE ====================
+2016-02-25 11:05:45.625378 UTC
+
+interface memca_3Z8qUpsEDiC53dYw3oq6HZ:Database.Memcache.Client 7103
+  interface hash: 38cb43f9b3b0f93e7722729cbdab22c4
+  ABI hash: aabc887a58a617998355751926cb5f46
+  export-list hash: 6d6a7476129525e7346afd299319fdf9
+  orphan hash: 0606921105f0b2ebd8ebadb45d44841a
+  flag hash: e603fd4216aaa758bc4cd8b012d60987
+  sig of: Nothing
+  used TH splices: False
+  where
+exports:
+  Database.Memcache.Client.add
+  Database.Memcache.Client.append
+  Database.Memcache.Client.decrement
+  Database.Memcache.Client.delete
+  Database.Memcache.Client.flush
+  Database.Memcache.Client.gat
+  Database.Memcache.Client.get
+  Database.Memcache.Client.increment
+  Database.Memcache.Client.newClient
+  Database.Memcache.Client.prepend
+  Database.Memcache.Client.quit
+  Database.Memcache.Client.replace
+  Database.Memcache.Client.set
+  Database.Memcache.Client.set'
+  Database.Memcache.Client.stats
+  Database.Memcache.Client.touch
+  Database.Memcache.Client.version
+  Database.Memcache.Cluster.defaultOptions
+  Database.Memcache.Cluster.defaultServerSpec
+  Database.Memcache.Client.Client
+  Database.Memcache.Cluster.Options{Database.Memcache.Cluster.Options Database.Memcache.Cluster.optsCmdFailure Database.Memcache.Cluster.optsServerFailure Database.Memcache.Cluster.optsServerRetries}
+  Database.Memcache.Cluster.ServerSpec{Database.Memcache.Cluster.ServerSpec Database.Memcache.Cluster.ssAuth Database.Memcache.Cluster.ssHost Database.Memcache.Cluster.ssPort}
+  Database.Memcache.Errors.ClientError{Database.Memcache.Errors.NotEnoughBytes}
+  Database.Memcache.Errors.MemcacheError{Database.Memcache.Errors.MemErrAuthFail Database.Memcache.Errors.MemErrInvalidArgs Database.Memcache.Errors.MemErrKeyExists Database.Memcache.Errors.MemErrNoKey Database.Memcache.Errors.MemErrOutOfMemory Database.Memcache.Errors.MemErrStoreFailed Database.Memcache.Errors.MemErrUnknownCmd Database.Memcache.Errors.MemErrValueNonNumeric Database.Memcache.Errors.MemErrValueTooLarge}
+  Database.Memcache.Protocol.StatResults
+  Database.Memcache.Types.Authentication{Database.Memcache.Types.Auth Database.Memcache.Types.NoAuth Database.Memcache.Types.password Database.Memcache.Types.username}
+  Database.Memcache.Types.Password
+  Database.Memcache.Types.Username
+module dependencies: Database.Memcache.Cluster
+                     Database.Memcache.Errors Database.Memcache.Protocol
+                     Database.Memcache.SASL Database.Memcache.Server
+                     Database.Memcache.Types Database.Memcache.Wire
+package dependencies: array-0.5.1.0@array_67iodizgJQIIxYVTp4emlA
+                      base-4.8.2.0 binary-0.7.5.0@binar_3uXFWMoAGBg0xKP9MHKRwi
+                      blaze-builder-0.4.0.1@blaze_GoSGMrJXTmeEBoF3sgxwrM
+                      bytestring-0.10.6.0@bytes_6VWy06pWzJq9evDvK2d4w6
+                      containers-0.5.6.2@conta_2C3ZI8RgPO2LBMidXKTvIU
+                      deepseq-1.4.1.1@deeps_6vMKxt5sPFR0XsbRWvvq59 ghc-prim-0.4.0.0
+                      hashable-1.2.4.0@hasha_8GjadD03dR57AKCJdr90LD integer-gmp-1.0.0.0
+                      monad-control-1.0.0.5@monad_0V0Z5ArSaI68lPP0A0bpaP
+                      network-2.6.2.1@netwo_A6pE0dLgMEk2GtUa1JtTJQ
+                      primitive-0.6.1.0@primi_EphY2c7CCxSCBKjAN0YTR3
+                      resource-pool-0.2.3.2@resou_IPeOzEJlakZ6oei4wPpERj
+                      stm-2.4.4.1@stm_EyxFXFfnfY05IrjGaqCxeD
+                      text-1.2.2.0@text_5c7VCmRXJenGcMPs3kwpkI
+                      time-1.5.0.1@time_FTheb6LSxyX1UABIbBXRfn
+                      transformers-base-0.4.4@trans_74WedXVmfaHHDJItmBRTVp
+                      transformers-0.4.2.0@trans_GZTjP9K5WFq01xC9BAGQpF
+                      vector-0.11.0.0@vecto_LmZ3LQW4ivu8MsQuVgukln
+orphans: base-4.8.2.0:GHC.Base base-4.8.2.0:GHC.Float
+         binary-0.7.5.0@binar_3uXFWMoAGBg0xKP9MHKRwi:Data.Binary.Generic
+         bytestring-0.10.6.0@bytes_6VWy06pWzJq9evDvK2d4w6:Data.ByteString.Builder
+         hashable-1.2.4.0@hasha_8GjadD03dR57AKCJdr90LD:Data.Hashable.Generic
+         network-2.6.2.1@netwo_A6pE0dLgMEk2GtUa1JtTJQ:Network.Socket
+         network-2.6.2.1@netwo_A6pE0dLgMEk2GtUa1JtTJQ:Network.Socket.Types
+         stm-2.4.4.1@stm_EyxFXFfnfY05IrjGaqCxeD:Control.Monad.STM
+         text-1.2.2.0@text_5c7VCmRXJenGcMPs3kwpkI:Data.Text
+         text-1.2.2.0@text_5c7VCmRXJenGcMPs3kwpkI:Data.Text.Lazy
+         text-1.2.2.0@text_5c7VCmRXJenGcMPs3kwpkI:Data.Text.Show
+         transformers-0.4.2.0@trans_GZTjP9K5WFq01xC9BAGQpF:Control.Monad.Trans.Error
+         vector-0.11.0.0@vecto_LmZ3LQW4ivu8MsQuVgukln:Data.Vector.Fusion.Bundle
+family instance modules: base-4.8.2.0:Control.Applicative
+                         base-4.8.2.0:Data.Either base-4.8.2.0:Data.Functor.Identity
+                         base-4.8.2.0:Data.Monoid base-4.8.2.0:Data.Type.Equality
+                         base-4.8.2.0:Data.Void base-4.8.2.0:GHC.Exts
+                         base-4.8.2.0:GHC.Generics
+                         containers-0.5.6.2@conta_2C3ZI8RgPO2LBMidXKTvIU:Data.IntMap.Base
+                         containers-0.5.6.2@conta_2C3ZI8RgPO2LBMidXKTvIU:Data.IntSet.Base
+                         containers-0.5.6.2@conta_2C3ZI8RgPO2LBMidXKTvIU:Data.Map.Base
+                         containers-0.5.6.2@conta_2C3ZI8RgPO2LBMidXKTvIU:Data.Sequence
+                         containers-0.5.6.2@conta_2C3ZI8RgPO2LBMidXKTvIU:Data.Set.Base
+                         monad-control-1.0.0.5@monad_0V0Z5ArSaI68lPP0A0bpaP:Control.Monad.Trans.Control
+                         primitive-0.6.1.0@primi_EphY2c7CCxSCBKjAN0YTR3:Control.Monad.Primitive
+                         text-1.2.2.0@text_5c7VCmRXJenGcMPs3kwpkI:Data.Text
+                         text-1.2.2.0@text_5c7VCmRXJenGcMPs3kwpkI:Data.Text.Lazy
+                         vector-0.11.0.0@vecto_LmZ3LQW4ivu8MsQuVgukln:Data.Vector
+import  -/  base-4.8.2.0:Control.Monad 480c5067477275068c9b98be08410df9
+import  -/  base-4.8.2.0:Data.Functor 5c701b0af1708f0192a25dfe14ce6274
+import  -/  base-4.8.2.0:Data.Word ec8deb535202352cc8b509b14004bcbd
+import  -/  base-4.8.2.0:GHC.Base 1db77db5dae73d8c424c85b09fbadb89
+import  -/  base-4.8.2.0:GHC.Word 10dc88543d98000abab9695a1019767d
+import  -/  base-4.8.2.0:Prelude 694dcaf039efe62df1c44834e2dbd2fb
+import  -/  bytestring-0.10.6.0@bytes_6VWy06pWzJq9evDvK2d4w6:Data.ByteString db2e56635ed30ff269e1492b64605a38
+import  -/  bytestring-0.10.6.0@bytes_6VWy06pWzJq9evDvK2d4w6:Data.ByteString.Internal b99858e89f19feddd3dcb9e9d523065e
+import  -/  ghc-prim-0.4.0.0:GHC.Types 6b27fb3fdbd0e3f0925a4496c66513bb
+import  -/  Database.Memcache.Cluster 69d36a3983aee9ce8deacc84cec5a09b
+  exports: b6eacf84f8e43a614e1d0147693ef59a
+  Cluster 81936693186238b83f78cd265848a1d7
+  Options 801cb98bf435f1dfb4da7345d9a43160
+  Options fc18d622617f251e044e3992911eadf1
+  ServerSpec f0f8aa10ea855fccd19edab101beecc3
+  ServerSpec a08578e0995ed5745bba893eff005b7f
+  allOp 4f1b168e06753a2aa2d3ac698045db06
+  anyOp 1a6c0b17a57f337bc45d28812f93aad4
+  defaultOptions 5d89e570331746c0795c5afaf5a08d0c
+  defaultServerSpec 9fe13e86ebc816fbfb6a2f3405bb7092
+  keyedOp 9155453f008c446f003d20c6725ed240
+  newCluster 77712560a371e0e694fb1efa7b62daa1
+  optsCmdFailure 1417a3accf1d8081254be3a5bdc9859d
+  optsServerFailure 0545a6ab23080a1aa0af2dd25fdca71b
+  optsServerRetries 55d38b380f8f6c6e8bc1d170cfebd2f7
+  ssAuth 730ad39525437778c5ad44a3f889648d
+  ssHost 1b56fc0e698a23c251498f6fe8ad65b3
+  ssPort d00e80e6373671182a3cf8abfe9038e0
+import  -/  Database.Memcache.Errors f8f7d6f9d99620e8545ec26851698f07
+  exports: a3cc4d4a1d68c42bd6d48dd70317f453
+  ClientError fe05b8b9d6c9f7cff2e94ac63b9e5990
+  MemErrAuthFail 16a5b60834e3f3e1841b44ca790e821b
+  MemErrInvalidArgs 94018fde16fd9eada271f24b2a2a9e58
+  MemErrKeyExists 8fd8c4f4a04035ba1cd4b3714639e812
+  MemErrNoKey 907dbbec12a81c991904ad03ea6e25e6
+  MemErrOutOfMemory 4b46b8ec8c4efd6d640682b5f3429576
+  MemErrStoreFailed c311e101b207583c079539987663b425
+  MemErrUnknownCmd 4c055e4ea255d408a8ddd6ebe4982c50
+  MemErrValueNonNumeric 1b9ec371b4aaed402c89786df7ba0070
+  MemErrValueTooLarge 3a63b685aaacf6eaadd235d6d1c8ba99
+  MemcacheError b7291049f3eecbbd1edd21fd38d153d3
+  NotEnoughBytes 6d5d57c4a72dcb80046bb31a3ef87190
+import  -/  Database.Memcache.Protocol bc4fd50b2fed65552f36d5a5e2f07c5a
+  exports: 969edc630ff2215978f3cd21fe44e77c
+  StatResults b90589af8532425fc2203022602724aa
+  add 89df1c8afb3b7596117041ae15ec0a57
+  append 1e13f9408413d3175352cf055203fd4a
+  decrement 80d4c39c76afa58bb39ae68c90ef14fd
+  delete e071edc9d783ab9b43bcf42adb955bf3
+  flush 6de9ec37ad2902425eda18decc9cb6fa
+  gat 7611444457dd365c429dafa04c94ca7d
+  get 8a1d91a99dd7912ec06dae256a5e7ca5
+  increment cde3f153242ae4e96fdf826019493d93
+  prepend 4b00cd9780bfe6531ecdd1200d8f6f7c
+  quit 911655f3d782c38f14a90d03b15517fc
+  replace b578e506c0636c6298cb5edef4a7180e
+  set ec87a84c5714e04758e7c568f9b10623
+  set' ef813f73a526fc133db303b39067c836
+  stats c0f559e72443d268c7b649042fa06a29
+  touch 9bb9dcde010d4b8fec3a45abb0b63009
+  version 9de97ec71daa69ae6e648b0de1da6fff
+import  -/  Database.Memcache.Server 7935f876b3050e69916f6708b334cea7
+  exports: 4b4f03728680b2d70aa3fff298403484
+  Server 0e49d261e0c691d9caf4b6f494d266da
+import  -/  Database.Memcache.Types 1ca9931bda88d72b9d7d6f6ee335bcb6
+  exports: b2f7697915662eeadb8e65de002e666b
+  Auth 7dbfbe3e270fd0e08f4ce878fcecc886
+  Authentication 8ea464ac72c68def1a36ff30f351146e
+  Delta 08f5e98b33234ca73b9435764a872254
+  Expiration eee7d8eb89d1f5e08ca98b4e528cdfa6
+  Flags cfdbf9ee7e2e6dd714d9bba65e0caaea
+  Initial fe5c2baac87c95b22c30e272241ceb7f
+  Key b20ddb86e07e28f2bf61f4be3964ff74
+  NoAuth 00a22d74bae31b8e51e3c522680047a8
+  Password 7121270c1aa14355cd6bfae6b9012f71
+  Username 638424c217dded13aadf320cefed8218
+  Value 07b472038339627c113b5956ea6bb2a4
+  Version 58806aff1405372220ddeb47e508949f
+  password fea82a05786f16436b3f439f2275017f
+  username 4cc4f32fe77b70fee1c117fa7a375c8c
+cfa7d0fbf8c670756fa92a455f6fb8f0
+  $svoid :: GHC.Types.IO a -> GHC.Types.IO ()
+  {- Arity: 2, HasNoCafRefs, Strictness: <C(S),1*C1(U(U,A))><L,U>,
+     Unfolding: InlineRule (1, True, False)
+                (\ @ a16
+                   x :: GHC.Types.IO a16
+                   eta :: GHC.Prim.State# GHC.Prim.RealWorld[OneShot] ->
+                 (GHC.Base.$fFunctorIO_$c<$ @ () @ a16 GHC.Tuple.() x)
+                   `cast`
+                 (GHC.Types.NTCo:IO[0] <()>_R)
+                   eta)
+                  `cast`
+                (forall a16.
+                 <GHC.Types.IO a16>_R ->_R Sym (GHC.Types.NTCo:IO[0] <()>_R)) -}
+a3470efcee656ee2439fb014b9707912
+  type Client = Database.Memcache.Cluster.Cluster
+545e0a76215a3d22b28dbbde1256ac18
+  add ::
+    Database.Memcache.Cluster.Cluster
+    -> Database.Memcache.Types.Key
+    -> Database.Memcache.Types.Value
+    -> Database.Memcache.Types.Flags
+    -> Database.Memcache.Types.Expiration
+    -> GHC.Types.IO (GHC.Base.Maybe Database.Memcache.Types.Version)
+  {- Arity: 5,
+     Strictness: <L,U(U(U,U,U),U,H,U)><L,U(U,U,U,U)><L,U><L,U><L,U>,
+     Inline: INLINE (sat-args=5),
+     Unfolding: InlineRule (5, False, False)
+                (\ c :: Database.Memcache.Cluster.Cluster
+                   k :: Database.Memcache.Types.Key
+                   v :: Database.Memcache.Types.Value
+                   f :: Database.Memcache.Types.Flags
+                   e :: Database.Memcache.Types.Expiration ->
+                 GHC.Base.$
+                   @ (Database.Memcache.Server.Server
+                      -> GHC.Types.IO (GHC.Base.Maybe Database.Memcache.Types.Version))
+                   @ (GHC.Types.IO (GHC.Base.Maybe Database.Memcache.Types.Version))
+                   (Database.Memcache.Cluster.keyedOp
+                      @ (GHC.Base.Maybe Database.Memcache.Types.Version)
+                      (GHC.Base.Just
+                         @ (GHC.Base.Maybe Database.Memcache.Types.Version)
+                         (GHC.Base.Nothing @ Database.Memcache.Types.Version))
+                      c
+                      k)
+                   (\ s :: Database.Memcache.Server.Server
+                      eta :: GHC.Prim.State# GHC.Prim.RealWorld[OneShot] ->
+                    (Database.Memcache.Protocol.add s k v f e)
+                      `cast`
+                    (GHC.Types.NTCo:IO[0]
+                         <GHC.Base.Maybe Database.Memcache.Types.Version>_R)
+                      eta)
+                     `cast`
+                   (<Database.Memcache.Server.Server>_R
+                    ->_R Sym (GHC.Types.NTCo:IO[0]
+                                  <GHC.Base.Maybe Database.Memcache.Types.Version>_R))) -}
+3ca3647671726dafd63d010d8c5d3045
+  append ::
+    Database.Memcache.Cluster.Cluster
+    -> Database.Memcache.Types.Key
+    -> Database.Memcache.Types.Value
+    -> Database.Memcache.Types.Version
+    -> GHC.Types.IO (GHC.Base.Maybe Database.Memcache.Types.Version)
+  {- Arity: 4,
+     Strictness: <L,U(U(U,U,U),U,H,U)><L,U(U,U,U,U)><L,U><L,U(U)>,
+     Inline: INLINE (sat-args=4),
+     Unfolding: InlineRule (4, False, False)
+                (\ c :: Database.Memcache.Cluster.Cluster
+                   k :: Database.Memcache.Types.Key
+                   v :: Database.Memcache.Types.Value
+                   ver :: Database.Memcache.Types.Version ->
+                 GHC.Base.$
+                   @ (Database.Memcache.Server.Server
+                      -> GHC.Types.IO (GHC.Base.Maybe Database.Memcache.Types.Version))
+                   @ (GHC.Types.IO (GHC.Base.Maybe Database.Memcache.Types.Version))
+                   (Database.Memcache.Cluster.keyedOp
+                      @ (GHC.Base.Maybe Database.Memcache.Types.Version)
+                      (GHC.Base.Just
+                         @ (GHC.Base.Maybe Database.Memcache.Types.Version)
+                         (GHC.Base.Nothing @ Database.Memcache.Types.Version))
+                      c
+                      k)
+                   (\ s :: Database.Memcache.Server.Server
+                      eta :: GHC.Prim.State# GHC.Prim.RealWorld[OneShot] ->
+                    (Database.Memcache.Protocol.append s k v ver)
+                      `cast`
+                    (GHC.Types.NTCo:IO[0]
+                         <GHC.Base.Maybe Database.Memcache.Types.Version>_R)
+                      eta)
+                     `cast`
+                   (<Database.Memcache.Server.Server>_R
+                    ->_R Sym (GHC.Types.NTCo:IO[0]
+                                  <GHC.Base.Maybe Database.Memcache.Types.Version>_R))) -}
+e5f19b772a90caf7574dc7f9a29a4417
+  decrement ::
+    Database.Memcache.Cluster.Cluster
+    -> Database.Memcache.Types.Key
+    -> Database.Memcache.Types.Initial
+    -> Database.Memcache.Types.Delta
+    -> Database.Memcache.Types.Expiration
+    -> Database.Memcache.Types.Version
+    -> GHC.Types.IO
+         (GHC.Base.Maybe (GHC.Word.Word64, Database.Memcache.Types.Version))
+  {- Arity: 6,
+     Strictness: <L,U(U(U,U,U),U,H,U)><L,U(U,U,U,U)><L,U><L,U><L,U><L,U(U)>,
+     Inline: INLINE (sat-args=6),
+     Unfolding: InlineRule (6, False, False)
+                (\ c :: Database.Memcache.Cluster.Cluster
+                   k :: Database.Memcache.Types.Key
+                   i :: Database.Memcache.Types.Initial
+                   d :: Database.Memcache.Types.Delta
+                   e :: Database.Memcache.Types.Expiration
+                   ver :: Database.Memcache.Types.Version ->
+                 GHC.Base.$
+                   @ (Database.Memcache.Server.Server
+                      -> GHC.Types.IO
+                           (GHC.Base.Maybe
+                              (GHC.Word.Word64, Database.Memcache.Types.Version)))
+                   @ (GHC.Types.IO
+                        (GHC.Base.Maybe
+                           (GHC.Word.Word64, Database.Memcache.Types.Version)))
+                   (Database.Memcache.Cluster.keyedOp
+                      @ (GHC.Base.Maybe
+                           (GHC.Word.Word64, Database.Memcache.Types.Version))
+                      (GHC.Base.Just
+                         @ (GHC.Base.Maybe
+                              (GHC.Word.Word64, Database.Memcache.Types.Version))
+                         (GHC.Base.Nothing
+                            @ (GHC.Word.Word64, Database.Memcache.Types.Version)))
+                      c
+                      k)
+                   (\ s :: Database.Memcache.Server.Server
+                      eta :: GHC.Prim.State# GHC.Prim.RealWorld[OneShot] ->
+                    (Database.Memcache.Protocol.decrement s k i d e ver)
+                      `cast`
+                    (GHC.Types.NTCo:IO[0]
+                         <GHC.Base.Maybe
+                            (GHC.Word.Word64, Database.Memcache.Types.Version)>_R)
+                      eta)
+                     `cast`
+                   (<Database.Memcache.Server.Server>_R
+                    ->_R Sym (GHC.Types.NTCo:IO[0]
+                                  <GHC.Base.Maybe
+                                     (GHC.Word.Word64, Database.Memcache.Types.Version)>_R))) -}
+5882e3b711bf629267b2e91acdf11b5c
+  delete ::
+    Database.Memcache.Cluster.Cluster
+    -> Database.Memcache.Types.Key
+    -> Database.Memcache.Types.Version
+    -> GHC.Types.IO GHC.Types.Bool
+  {- Arity: 3,
+     Strictness: <L,U(U(U,U,U),U,H,U)><L,U(U,U,U,U)><L,U(U)>,
+     Inline: INLINE (sat-args=3),
+     Unfolding: InlineRule (3, False, False)
+                (\ c :: Database.Memcache.Cluster.Cluster
+                   k :: Database.Memcache.Types.Key
+                   ver :: Database.Memcache.Types.Version ->
+                 GHC.Base.$
+                   @ (Database.Memcache.Server.Server -> GHC.Types.IO GHC.Types.Bool)
+                   @ (GHC.Types.IO GHC.Types.Bool)
+                   (Database.Memcache.Cluster.keyedOp
+                      @ GHC.Types.Bool
+                      (GHC.Base.Just @ GHC.Types.Bool GHC.Types.False)
+                      c
+                      k)
+                   (\ s :: Database.Memcache.Server.Server
+                      eta :: GHC.Prim.State# GHC.Prim.RealWorld[OneShot] ->
+                    (Database.Memcache.Protocol.delete s k ver)
+                      `cast`
+                    (GHC.Types.NTCo:IO[0] <GHC.Types.Bool>_R)
+                      eta)
+                     `cast`
+                   (<Database.Memcache.Server.Server>_R
+                    ->_R Sym (GHC.Types.NTCo:IO[0] <GHC.Types.Bool>_R))) -}
+a1bb1a951a197a6dbce383928d1db9ac
+  flush ::
+    Database.Memcache.Cluster.Cluster
+    -> GHC.Base.Maybe Database.Memcache.Types.Expiration
+    -> GHC.Types.IO ()
+  {- Arity: 3, Strictness: <S(SSSL),1*U(1*U(U,U,U),U,H,U)><L,U><L,U>,
+     Inline: INLINE (sat-args=2),
+     Unfolding: InlineRule (2, False, False)
+                (\ c :: Database.Memcache.Cluster.Cluster
+                   e :: GHC.Base.Maybe Database.Memcache.Types.Expiration ->
+                 GHC.Base.$
+                   @ (GHC.Types.IO [(Database.Memcache.Server.Server, ())])
+                   @ (GHC.Types.IO ())
+                   (Database.Memcache.Client.$svoid
+                      @ [(Database.Memcache.Server.Server, ())])
+                   (GHC.Base.$
+                      @ (Database.Memcache.Server.Server -> GHC.Types.IO ())
+                      @ (GHC.Types.IO [(Database.Memcache.Server.Server, ())])
+                      (Database.Memcache.Cluster.allOp
+                         @ ()
+                         (GHC.Base.Just @ () GHC.Tuple.())
+                         c)
+                      (\ s :: Database.Memcache.Server.Server
+                         eta :: GHC.Prim.State# GHC.Prim.RealWorld[OneShot] ->
+                       (Database.Memcache.Protocol.flush s e)
+                         `cast`
+                       (GHC.Types.NTCo:IO[0] <()>_R)
+                         eta)
+                        `cast`
+                      (<Database.Memcache.Server.Server>_R
+                       ->_R Sym (GHC.Types.NTCo:IO[0] <()>_R)))) -}
+8bffbec4d60eac54f1c3aa5ade4e05dd
+  gat ::
+    Database.Memcache.Cluster.Cluster
+    -> Database.Memcache.Types.Key
+    -> Database.Memcache.Types.Expiration
+    -> GHC.Types.IO
+         (GHC.Base.Maybe
+            (Database.Memcache.Types.Value,
+             Database.Memcache.Types.Flags,
+             Database.Memcache.Types.Version))
+  {- Arity: 3, Strictness: <L,U(U(U,U,U),U,H,U)><L,U(U,U,U,U)><L,U>,
+     Inline: INLINE (sat-args=3),
+     Unfolding: InlineRule (3, False, False)
+                (\ c :: Database.Memcache.Cluster.Cluster
+                   k :: Database.Memcache.Types.Key
+                   e :: Database.Memcache.Types.Expiration ->
+                 GHC.Base.$
+                   @ (Database.Memcache.Server.Server
+                      -> GHC.Types.IO
+                           (GHC.Base.Maybe
+                              (Database.Memcache.Types.Value,
+                               Database.Memcache.Types.Flags,
+                               Database.Memcache.Types.Version)))
+                   @ (GHC.Types.IO
+                        (GHC.Base.Maybe
+                           (Database.Memcache.Types.Value,
+                            Database.Memcache.Types.Flags,
+                            Database.Memcache.Types.Version)))
+                   (Database.Memcache.Cluster.keyedOp
+                      @ (GHC.Base.Maybe
+                           (Database.Memcache.Types.Value,
+                            Database.Memcache.Types.Flags,
+                            Database.Memcache.Types.Version))
+                      (GHC.Base.Just
+                         @ (GHC.Base.Maybe
+                              (Database.Memcache.Types.Value,
+                               Database.Memcache.Types.Flags,
+                               Database.Memcache.Types.Version))
+                         (GHC.Base.Nothing
+                            @ (Database.Memcache.Types.Value,
+                               Database.Memcache.Types.Flags,
+                               Database.Memcache.Types.Version)))
+                      c
+                      k)
+                   (\ s :: Database.Memcache.Server.Server
+                      eta :: GHC.Prim.State# GHC.Prim.RealWorld[OneShot] ->
+                    (Database.Memcache.Protocol.gat s k e)
+                      `cast`
+                    (GHC.Types.NTCo:IO[0]
+                         <GHC.Base.Maybe
+                            (Database.Memcache.Types.Value,
+                             Database.Memcache.Types.Flags,
+                             Database.Memcache.Types.Version)>_R)
+                      eta)
+                     `cast`
+                   (<Database.Memcache.Server.Server>_R
+                    ->_R Sym (GHC.Types.NTCo:IO[0]
+                                  <GHC.Base.Maybe
+                                     (Database.Memcache.Types.Value,
+                                      Database.Memcache.Types.Flags,
+                                      Database.Memcache.Types.Version)>_R))) -}
+cab50c02b61a7b0a372a1d505cb4ae3f
+  get ::
+    Database.Memcache.Cluster.Cluster
+    -> Database.Memcache.Types.Key
+    -> GHC.Types.IO
+         (GHC.Base.Maybe
+            (Database.Memcache.Types.Value,
+             Database.Memcache.Types.Flags,
+             Database.Memcache.Types.Version))
+  {- Arity: 2, Strictness: <L,U(U(U,U,U),U,H,U)><L,U(U,U,U,U)>,
+     Inline: INLINE (sat-args=2),
+     Unfolding: InlineRule (2, False, False)
+                (\ c :: Database.Memcache.Cluster.Cluster
+                   k :: Database.Memcache.Types.Key ->
+                 GHC.Base.$
+                   @ (Database.Memcache.Server.Server
+                      -> GHC.Types.IO
+                           (GHC.Base.Maybe
+                              (Database.Memcache.Types.Value,
+                               Database.Memcache.Types.Flags,
+                               Database.Memcache.Types.Version)))
+                   @ (GHC.Types.IO
+                        (GHC.Base.Maybe
+                           (Database.Memcache.Types.Value,
+                            Database.Memcache.Types.Flags,
+                            Database.Memcache.Types.Version)))
+                   (Database.Memcache.Cluster.keyedOp
+                      @ (GHC.Base.Maybe
+                           (Database.Memcache.Types.Value,
+                            Database.Memcache.Types.Flags,
+                            Database.Memcache.Types.Version))
+                      (GHC.Base.Just
+                         @ (GHC.Base.Maybe
+                              (Database.Memcache.Types.Value,
+                               Database.Memcache.Types.Flags,
+                               Database.Memcache.Types.Version))
+                         (GHC.Base.Nothing
+                            @ (Database.Memcache.Types.Value,
+                               Database.Memcache.Types.Flags,
+                               Database.Memcache.Types.Version)))
+                      c
+                      k)
+                   (\ s :: Database.Memcache.Server.Server
+                      eta :: GHC.Prim.State# GHC.Prim.RealWorld[OneShot] ->
+                    (Database.Memcache.Protocol.get s k)
+                      `cast`
+                    (GHC.Types.NTCo:IO[0]
+                         <GHC.Base.Maybe
+                            (Database.Memcache.Types.Value,
+                             Database.Memcache.Types.Flags,
+                             Database.Memcache.Types.Version)>_R)
+                      eta)
+                     `cast`
+                   (<Database.Memcache.Server.Server>_R
+                    ->_R Sym (GHC.Types.NTCo:IO[0]
+                                  <GHC.Base.Maybe
+                                     (Database.Memcache.Types.Value,
+                                      Database.Memcache.Types.Flags,
+                                      Database.Memcache.Types.Version)>_R))) -}
+3074715052a1515894a9954032a40044
+  increment ::
+    Database.Memcache.Cluster.Cluster
+    -> Database.Memcache.Types.Key
+    -> Database.Memcache.Types.Initial
+    -> Database.Memcache.Types.Delta
+    -> Database.Memcache.Types.Expiration
+    -> Database.Memcache.Types.Version
+    -> GHC.Types.IO
+         (GHC.Base.Maybe (GHC.Word.Word64, Database.Memcache.Types.Version))
+  {- Arity: 6,
+     Strictness: <L,U(U(U,U,U),U,H,U)><L,U(U,U,U,U)><L,U><L,U><L,U><L,U(U)>,
+     Inline: INLINE (sat-args=6),
+     Unfolding: InlineRule (6, False, False)
+                (\ c :: Database.Memcache.Cluster.Cluster
+                   k :: Database.Memcache.Types.Key
+                   i :: Database.Memcache.Types.Initial
+                   d :: Database.Memcache.Types.Delta
+                   e :: Database.Memcache.Types.Expiration
+                   ver :: Database.Memcache.Types.Version ->
+                 GHC.Base.$
+                   @ (Database.Memcache.Server.Server
+                      -> GHC.Types.IO
+                           (GHC.Base.Maybe
+                              (GHC.Word.Word64, Database.Memcache.Types.Version)))
+                   @ (GHC.Types.IO
+                        (GHC.Base.Maybe
+                           (GHC.Word.Word64, Database.Memcache.Types.Version)))
+                   (Database.Memcache.Cluster.keyedOp
+                      @ (GHC.Base.Maybe
+                           (GHC.Word.Word64, Database.Memcache.Types.Version))
+                      (GHC.Base.Just
+                         @ (GHC.Base.Maybe
+                              (GHC.Word.Word64, Database.Memcache.Types.Version))
+                         (GHC.Base.Nothing
+                            @ (GHC.Word.Word64, Database.Memcache.Types.Version)))
+                      c
+                      k)
+                   (\ s :: Database.Memcache.Server.Server
+                      eta :: GHC.Prim.State# GHC.Prim.RealWorld[OneShot] ->
+                    (Database.Memcache.Protocol.increment s k i d e ver)
+                      `cast`
+                    (GHC.Types.NTCo:IO[0]
+                         <GHC.Base.Maybe
+                            (GHC.Word.Word64, Database.Memcache.Types.Version)>_R)
+                      eta)
+                     `cast`
+                   (<Database.Memcache.Server.Server>_R
+                    ->_R Sym (GHC.Types.NTCo:IO[0]
+                                  <GHC.Base.Maybe
+                                     (GHC.Word.Word64, Database.Memcache.Types.Version)>_R))) -}
+c0c27ccc17a7e70d669da10bfe401170
+  newClient ::
+    [Database.Memcache.Cluster.ServerSpec]
+    -> Database.Memcache.Cluster.Options
+    -> GHC.Types.IO Database.Memcache.Client.Client
+  {- Arity: 3, Strictness: <S,1*U><S(SSL),1*U(U,U,U)><L,U>,
+     Unfolding: InlineRule (0, True, True)
+                Database.Memcache.Cluster.newCluster1
+                  `cast`
+                (<[Database.Memcache.Cluster.ServerSpec]>_R
+                 ->_R <Database.Memcache.Cluster.Options>_R
+                 ->_R Sym (GHC.Types.NTCo:IO[0]
+                               <Database.Memcache.Cluster.Cluster>_R)) -}
+236c9e45c77116ea577a32cd0bc3a694
+  prepend ::
+    Database.Memcache.Cluster.Cluster
+    -> Database.Memcache.Types.Key
+    -> Database.Memcache.Types.Value
+    -> Database.Memcache.Types.Version
+    -> GHC.Types.IO (GHC.Base.Maybe Database.Memcache.Types.Version)
+  {- Arity: 4,
+     Strictness: <L,U(U(U,U,U),U,H,U)><L,U(U,U,U,U)><L,U><L,U(U)>,
+     Inline: INLINE (sat-args=4),
+     Unfolding: InlineRule (4, False, False)
+                (\ c :: Database.Memcache.Cluster.Cluster
+                   k :: Database.Memcache.Types.Key
+                   v :: Database.Memcache.Types.Value
+                   ver :: Database.Memcache.Types.Version ->
+                 GHC.Base.$
+                   @ (Database.Memcache.Server.Server
+                      -> GHC.Types.IO (GHC.Base.Maybe Database.Memcache.Types.Version))
+                   @ (GHC.Types.IO (GHC.Base.Maybe Database.Memcache.Types.Version))
+                   (Database.Memcache.Cluster.keyedOp
+                      @ (GHC.Base.Maybe Database.Memcache.Types.Version)
+                      (GHC.Base.Just
+                         @ (GHC.Base.Maybe Database.Memcache.Types.Version)
+                         (GHC.Base.Nothing @ Database.Memcache.Types.Version))
+                      c
+                      k)
+                   (\ s :: Database.Memcache.Server.Server
+                      eta :: GHC.Prim.State# GHC.Prim.RealWorld[OneShot] ->
+                    (Database.Memcache.Protocol.prepend s k v ver)
+                      `cast`
+                    (GHC.Types.NTCo:IO[0]
+                         <GHC.Base.Maybe Database.Memcache.Types.Version>_R)
+                      eta)
+                     `cast`
+                   (<Database.Memcache.Server.Server>_R
+                    ->_R Sym (GHC.Types.NTCo:IO[0]
+                                  <GHC.Base.Maybe Database.Memcache.Types.Version>_R))) -}
+6f1cb54319a532245045a30e2c32f613
+  quit :: Database.Memcache.Cluster.Cluster -> GHC.Types.IO ()
+  {- Arity: 2, Strictness: <S(SSSL),1*U(1*U(U,U,U),U,H,U)><L,U>,
+     Unfolding: InlineRule (0, True, True)
+                Database.Memcache.Client.quit1
+                  `cast`
+                (<Database.Memcache.Cluster.Cluster>_R
+                 ->_R Sym (GHC.Types.NTCo:IO[0] <()>_R)) -}
+bc43297a36c3cd78943893843b0a7d45
+  quit1 ::
+    Database.Memcache.Cluster.Cluster
+    -> GHC.Prim.State# GHC.Prim.RealWorld
+    -> (# GHC.Prim.State# GHC.Prim.RealWorld, () #)
+  {- Arity: 2, Strictness: <S(SSSL),1*U(1*U(U,U,U),U,H,U)><L,U>,
+     Inline: INLINE[0],
+     Unfolding: InlineRule (2, True, False)
+                (\ w :: Database.Memcache.Cluster.Cluster
+                   w1 :: GHC.Prim.State# GHC.Prim.RealWorld[OneShot] ->
+                 case w of ww { Database.Memcache.Cluster.Cluster ww1 ww2 ww3 ww4 ->
+                 case ww1 of ww5 { Data.Vector.Vector ww6 ww7 ww8 ->
+                 case Database.Memcache.Cluster.$wa
+                        @ ()
+                        Database.Memcache.Client.quit2
+                        ww6
+                        ww7
+                        ww8
+                        ww2
+                        ww3
+                        ww4
+                        Database.Memcache.Protocol.quit1
+                          `cast`
+                        (<Database.Memcache.Server.Server>_R
+                         ->_R Sym (GHC.Types.NTCo:IO[0] <()>_R))
+                        w1 of ds { (#,#) ipv ipv1 ->
+                 (# ipv, GHC.Tuple.() #) } } }) -}
+c4f705cb966c9adde7b7d2b729428a5d
+  quit2 :: GHC.Base.Maybe ()
+  {- HasNoCafRefs, Strictness: m2,
+     Unfolding: (GHC.Base.Just @ () GHC.Tuple.()) -}
+3aa5f36db8299c25ca6a7ea50b4b96df
+  replace ::
+    Database.Memcache.Cluster.Cluster
+    -> Database.Memcache.Types.Key
+    -> Database.Memcache.Types.Value
+    -> Database.Memcache.Types.Flags
+    -> Database.Memcache.Types.Expiration
+    -> Database.Memcache.Types.Version
+    -> GHC.Types.IO (GHC.Base.Maybe Database.Memcache.Types.Version)
+  {- Arity: 6,
+     Strictness: <L,U(U(U,U,U),U,H,U)><L,U(U,U,U,U)><L,U><L,U><L,U><L,U(U)>,
+     Inline: INLINE (sat-args=6),
+     Unfolding: InlineRule (6, False, False)
+                (\ c :: Database.Memcache.Cluster.Cluster
+                   k :: Database.Memcache.Types.Key
+                   v :: Database.Memcache.Types.Value
+                   f :: Database.Memcache.Types.Flags
+                   e :: Database.Memcache.Types.Expiration
+                   ver :: Database.Memcache.Types.Version ->
+                 GHC.Base.$
+                   @ (Database.Memcache.Server.Server
+                      -> GHC.Types.IO (GHC.Base.Maybe Database.Memcache.Types.Version))
+                   @ (GHC.Types.IO (GHC.Base.Maybe Database.Memcache.Types.Version))
+                   (Database.Memcache.Cluster.keyedOp
+                      @ (GHC.Base.Maybe Database.Memcache.Types.Version)
+                      (GHC.Base.Just
+                         @ (GHC.Base.Maybe Database.Memcache.Types.Version)
+                         (GHC.Base.Nothing @ Database.Memcache.Types.Version))
+                      c
+                      k)
+                   (\ s :: Database.Memcache.Server.Server
+                      eta :: GHC.Prim.State# GHC.Prim.RealWorld[OneShot] ->
+                    (Database.Memcache.Protocol.replace s k v f e ver)
+                      `cast`
+                    (GHC.Types.NTCo:IO[0]
+                         <GHC.Base.Maybe Database.Memcache.Types.Version>_R)
+                      eta)
+                     `cast`
+                   (<Database.Memcache.Server.Server>_R
+                    ->_R Sym (GHC.Types.NTCo:IO[0]
+                                  <GHC.Base.Maybe Database.Memcache.Types.Version>_R))) -}
+53366c02425183a150b01842711fd3b9
+  set ::
+    Database.Memcache.Cluster.Cluster
+    -> Database.Memcache.Types.Key
+    -> Database.Memcache.Types.Value
+    -> Database.Memcache.Types.Flags
+    -> Database.Memcache.Types.Expiration
+    -> GHC.Types.IO Database.Memcache.Types.Version
+  {- Arity: 5,
+     Strictness: <L,U(U(U,U,U),U,H,U)><L,U(U,U,U,U)><L,U><L,U><L,U>,
+     Inline: INLINE (sat-args=5),
+     Unfolding: InlineRule (5, False, False)
+                (\ c :: Database.Memcache.Cluster.Cluster
+                   k :: Database.Memcache.Types.Key
+                   v :: Database.Memcache.Types.Value
+                   f :: Database.Memcache.Types.Flags
+                   e :: Database.Memcache.Types.Expiration ->
+                 GHC.Base.$
+                   @ (Database.Memcache.Server.Server
+                      -> GHC.Types.IO Database.Memcache.Types.Version)
+                   @ (GHC.Types.IO Database.Memcache.Types.Version)
+                   (Database.Memcache.Cluster.keyedOp
+                      @ Database.Memcache.Types.Version
+                      (GHC.Base.Just
+                         @ Database.Memcache.Types.Version
+                         (GHC.Word.$fBitsWord64_$cfromInteger __integer 0))
+                      c
+                      k)
+                   (\ s :: Database.Memcache.Server.Server
+                      eta :: GHC.Prim.State# GHC.Prim.RealWorld[OneShot] ->
+                    (Database.Memcache.Protocol.set s k v f e)
+                      `cast`
+                    (GHC.Types.NTCo:IO[0] <Database.Memcache.Types.Version>_R)
+                      eta)
+                     `cast`
+                   (<Database.Memcache.Server.Server>_R
+                    ->_R Sym (GHC.Types.NTCo:IO[0]
+                                  <Database.Memcache.Types.Version>_R))) -}
+3f3da04e634c78f4b68161ec8003c97d
+  set' ::
+    Database.Memcache.Cluster.Cluster
+    -> Database.Memcache.Types.Key
+    -> Database.Memcache.Types.Value
+    -> Database.Memcache.Types.Flags
+    -> Database.Memcache.Types.Expiration
+    -> Database.Memcache.Types.Version
+    -> GHC.Types.IO (GHC.Base.Maybe Database.Memcache.Types.Version)
+  {- Arity: 6,
+     Strictness: <L,U(U(U,U,U),U,H,U)><L,U(U,U,U,U)><L,U><L,U><L,U><L,U(U)>,
+     Inline: INLINE (sat-args=6),
+     Unfolding: InlineRule (6, False, False)
+                (\ c :: Database.Memcache.Cluster.Cluster
+                   k :: Database.Memcache.Types.Key
+                   v :: Database.Memcache.Types.Value
+                   f :: Database.Memcache.Types.Flags
+                   e :: Database.Memcache.Types.Expiration
+                   ver :: Database.Memcache.Types.Version ->
+                 GHC.Base.$
+                   @ (Database.Memcache.Server.Server
+                      -> GHC.Types.IO (GHC.Base.Maybe Database.Memcache.Types.Version))
+                   @ (GHC.Types.IO (GHC.Base.Maybe Database.Memcache.Types.Version))
+                   (Database.Memcache.Cluster.keyedOp
+                      @ (GHC.Base.Maybe Database.Memcache.Types.Version)
+                      (GHC.Base.Just
+                         @ (GHC.Base.Maybe Database.Memcache.Types.Version)
+                         (GHC.Base.Nothing @ Database.Memcache.Types.Version))
+                      c
+                      k)
+                   (\ s :: Database.Memcache.Server.Server
+                      eta :: GHC.Prim.State# GHC.Prim.RealWorld[OneShot] ->
+                    (Database.Memcache.Protocol.set' s k v f e ver)
+                      `cast`
+                    (GHC.Types.NTCo:IO[0]
+                         <GHC.Base.Maybe Database.Memcache.Types.Version>_R)
+                      eta)
+                     `cast`
+                   (<Database.Memcache.Server.Server>_R
+                    ->_R Sym (GHC.Types.NTCo:IO[0]
+                                  <GHC.Base.Maybe Database.Memcache.Types.Version>_R))) -}
+61f45f68eee71fd0a3e01a8d41c34cb2
+  stats ::
+    Database.Memcache.Cluster.Cluster
+    -> GHC.Base.Maybe Database.Memcache.Types.Key
+    -> GHC.Types.IO
+         [(Database.Memcache.Server.Server,
+           GHC.Base.Maybe Database.Memcache.Protocol.StatResults)]
+  {- Arity: 3, Strictness: <S(SSSL),1*U(1*U(U,U,U),U,H,U)><L,U><L,U>,
+     Inline: INLINE (sat-args=2),
+     Unfolding: InlineRule (2, False, False)
+                (\ c :: Database.Memcache.Cluster.Cluster
+                   key :: GHC.Base.Maybe Database.Memcache.Types.Key ->
+                 GHC.Base.$
+                   @ (Database.Memcache.Server.Server
+                      -> GHC.Types.IO
+                           (GHC.Base.Maybe Database.Memcache.Protocol.StatResults))
+                   @ (GHC.Types.IO
+                        [(Database.Memcache.Server.Server,
+                          GHC.Base.Maybe Database.Memcache.Protocol.StatResults)])
+                   (Database.Memcache.Cluster.allOp
+                      @ (GHC.Base.Maybe Database.Memcache.Protocol.StatResults)
+                      (GHC.Base.Nothing
+                         @ (GHC.Base.Maybe Database.Memcache.Protocol.StatResults))
+                      c)
+                   (\ s :: Database.Memcache.Server.Server
+                      eta :: GHC.Prim.State# GHC.Prim.RealWorld[OneShot] ->
+                    (Database.Memcache.Protocol.stats s key)
+                      `cast`
+                    (GHC.Types.NTCo:IO[0]
+                         <GHC.Base.Maybe Database.Memcache.Protocol.StatResults>_R)
+                      eta)
+                     `cast`
+                   (<Database.Memcache.Server.Server>_R
+                    ->_R Sym (GHC.Types.NTCo:IO[0]
+                                  <GHC.Base.Maybe Database.Memcache.Protocol.StatResults>_R))) -}
+85ef93b4a7fa685e49d7037374470da4
+  touch ::
+    Database.Memcache.Cluster.Cluster
+    -> Database.Memcache.Types.Key
+    -> Database.Memcache.Types.Expiration
+    -> GHC.Types.IO (GHC.Base.Maybe Database.Memcache.Types.Version)
+  {- Arity: 3, Strictness: <L,U(U(U,U,U),U,H,U)><L,U(U,U,U,U)><L,U>,
+     Inline: INLINE (sat-args=3),
+     Unfolding: InlineRule (3, False, False)
+                (\ c :: Database.Memcache.Cluster.Cluster
+                   k :: Database.Memcache.Types.Key
+                   e :: Database.Memcache.Types.Expiration ->
+                 GHC.Base.$
+                   @ (Database.Memcache.Server.Server
+                      -> GHC.Types.IO (GHC.Base.Maybe Database.Memcache.Types.Version))
+                   @ (GHC.Types.IO (GHC.Base.Maybe Database.Memcache.Types.Version))
+                   (Database.Memcache.Cluster.keyedOp
+                      @ (GHC.Base.Maybe Database.Memcache.Types.Version)
+                      (GHC.Base.Just
+                         @ (GHC.Base.Maybe Database.Memcache.Types.Version)
+                         (GHC.Base.Nothing @ Database.Memcache.Types.Version))
+                      c
+                      k)
+                   (\ s :: Database.Memcache.Server.Server
+                      eta :: GHC.Prim.State# GHC.Prim.RealWorld[OneShot] ->
+                    (Database.Memcache.Protocol.touch s k e)
+                      `cast`
+                    (GHC.Types.NTCo:IO[0]
+                         <GHC.Base.Maybe Database.Memcache.Types.Version>_R)
+                      eta)
+                     `cast`
+                   (<Database.Memcache.Server.Server>_R
+                    ->_R Sym (GHC.Types.NTCo:IO[0]
+                                  <GHC.Base.Maybe Database.Memcache.Types.Version>_R))) -}
+dba09413bf98a497eddbbc3f02b9e7e0
+  version ::
+    Database.Memcache.Cluster.Cluster
+    -> GHC.Types.IO Data.ByteString.Internal.ByteString
+  {- Arity: 1, Strictness: <L,U(U(U,U,U),U,H,U)>,
+     Inline: INLINE (sat-args=1),
+     Unfolding: InlineRule (1, False, False)
+                (\ c :: Database.Memcache.Cluster.Cluster ->
+                 GHC.Base.$
+                   @ (Database.Memcache.Server.Server
+                      -> GHC.Types.IO Data.ByteString.Internal.ByteString)
+                   @ (GHC.Types.IO Data.ByteString.Internal.ByteString)
+                   (Database.Memcache.Cluster.anyOp
+                      @ Data.ByteString.Internal.ByteString
+                      (GHC.Base.Nothing @ Data.ByteString.Internal.ByteString)
+                      c)
+                   Database.Memcache.Protocol.version) -}
+"SPEC/Database.Memcache.Client void @ IO _" [ALWAYS] forall @ a16
+                                                            $dFunctor :: GHC.Base.Functor
+                                                                           GHC.Types.IO
+  Data.Functor.void @ GHC.Types.IO @ a16 $dFunctor
+  = Database.Memcache.Client.$svoid @ a16
+vectorised variables:
+vectorised tycons:
+vectorised reused tycons:
+parallel variables:
+parallel tycons:
+trusted: none
+require own pkg trusted: False
+

@@ -1,0 +1,100 @@
+
+==================== FINAL INTERFACE ====================
+2016-02-25 11:05:43.315388 UTC
+
+interface memca_3Z8qUpsEDiC53dYw3oq6HZ:Database.Memcache.SASL 7103
+  interface hash: a19c60e3b98d4b2c31e7b705a0d4edd7
+  ABI hash: 8c06d13688d34b1f5fac6f290fb2a701
+  export-list hash: 117dc2fa2bdf46e3e98dd760055636d4
+  orphan hash: 693e9af84d3dfcc71e640e005bdc5e2e
+  flag hash: e603fd4216aaa758bc4cd8b012d60987
+  sig of: Nothing
+  used TH splices: False
+  where
+exports:
+  Database.Memcache.SASL.authenticate
+  Database.Memcache.Types.Authentication{Database.Memcache.Types.Auth Database.Memcache.Types.NoAuth Database.Memcache.Types.password Database.Memcache.Types.username}
+  Database.Memcache.Types.Password
+  Database.Memcache.Types.Username
+module dependencies: Database.Memcache.Errors
+                     Database.Memcache.Types Database.Memcache.Wire
+package dependencies: array-0.5.1.0@array_67iodizgJQIIxYVTp4emlA
+                      base-4.8.2.0 binary-0.7.5.0@binar_3uXFWMoAGBg0xKP9MHKRwi
+                      blaze-builder-0.4.0.1@blaze_GoSGMrJXTmeEBoF3sgxwrM
+                      bytestring-0.10.6.0@bytes_6VWy06pWzJq9evDvK2d4w6
+                      deepseq-1.4.1.1@deeps_6vMKxt5sPFR0XsbRWvvq59 ghc-prim-0.4.0.0
+                      integer-gmp-1.0.0.0 network-2.6.2.1@netwo_A6pE0dLgMEk2GtUa1JtTJQ
+orphans: base-4.8.2.0:GHC.Base base-4.8.2.0:GHC.Float
+         bytestring-0.10.6.0@bytes_6VWy06pWzJq9evDvK2d4w6:Data.ByteString.Builder
+         network-2.6.2.1@netwo_A6pE0dLgMEk2GtUa1JtTJQ:Network.Socket
+         network-2.6.2.1@netwo_A6pE0dLgMEk2GtUa1JtTJQ:Network.Socket.Types
+family instance modules: base-4.8.2.0:Control.Applicative
+                         base-4.8.2.0:Data.Either base-4.8.2.0:Data.Functor.Identity
+                         base-4.8.2.0:Data.Monoid base-4.8.2.0:Data.Type.Equality
+                         base-4.8.2.0:Data.Void base-4.8.2.0:GHC.Exts
+                         base-4.8.2.0:GHC.Generics
+import  -/  base-4.8.2.0:Control.Exception e9090e246fba030faecf7b81b3e8e320
+import  -/  base-4.8.2.0:Control.Exception.Base b99410eaf0cc6bb119b1d45a497c1b10
+import  -/  base-4.8.2.0:Control.Monad 480c5067477275068c9b98be08410df9
+import  -/  base-4.8.2.0:Data.Monoid 85b292b52bfd80ed619cddb767d638d3
+import  -/  base-4.8.2.0:GHC.Base 1db77db5dae73d8c424c85b09fbadb89
+import  -/  base-4.8.2.0:Prelude 694dcaf039efe62df1c44834e2dbd2fb
+import  -/  bytestring-0.10.6.0@bytes_6VWy06pWzJq9evDvK2d4w6:Data.ByteString.Char8 14b30f113ad3d6d944ffa749b1c915e8
+import  -/  bytestring-0.10.6.0@bytes_6VWy06pWzJq9evDvK2d4w6:Data.ByteString.Internal b99858e89f19feddd3dcb9e9d523065e
+import  -/  ghc-prim-0.4.0.0:GHC.Classes e1f4ff80f7b5262008a595d29986fb18
+import  -/  ghc-prim-0.4.0.0:GHC.Types 6b27fb3fdbd0e3f0925a4496c66513bb
+import  -/  Database.Memcache.Errors f8f7d6f9d99620e8545ec26851698f07
+  exports: a3cc4d4a1d68c42bd6d48dd70317f453
+  throwIncorrectRes f478ead1e2d71f13c62ecfb231779cc1
+  throwStatus e89ca9d8ac3aeb028ace78d7f4e97e7e
+import  -/  Database.Memcache.Types 1ca9931bda88d72b9d7d6f6ee335bcb6
+  exports: b2f7697915662eeadb8e65de002e666b
+  Auth 7dbfbe3e270fd0e08f4ce878fcecc886
+  Authentication 8ea464ac72c68def1a36ff30f351146e
+  NoAuth 00a22d74bae31b8e51e3c522680047a8
+  NoError ec1b5aef072751e44f93fec6d161ed3d
+  Password 7121270c1aa14355cd6bfae6b9012f71
+  ReqSASLList d47dbe8a27eab70c80ce0cfe2511abc7
+  ReqSASLStart e19ad0c20212f4fd67b2130a9aed2b97
+  ResSASLList 14d70e1694ec47cc3002488e0a374b97
+  ResSASLStart bc1b9f33740d3f958963453af5725ee4
+  SaslAuthFail a3090c32869bcc5e7ae6e3d4d5acdde5
+  Username 638424c217dded13aadf320cefed8218
+  emptyReq 5d795e57cb58c7b51e50a20ade00edba
+  password fea82a05786f16436b3f439f2275017f
+  reqOp 0186d62f830ab3c946d7b95ffedfda3b
+  resOp ab0836dc5e0d6b259d4d7b4ced85fd46
+  resStatus 97abb3ce97d2701aa229b493f0acf5c5
+  username 4cc4f32fe77b70fee1c117fa7a375c8c
+import  -/  Database.Memcache.Wire b9c0413f04d6ed449b906738485bee6f
+  exports: c3c576dab15c3e91d5a4630c80e279e4
+  recv 302e26b1b4927d798cf7479cc865b7b2
+  send a9beebe72f375b15f7f3e22325124ac1
+import  -/  network-2.6.2.1@netwo_A6pE0dLgMEk2GtUa1JtTJQ:Network.Socket 1c584aab086538b6f7ab7390a01794f4
+import  -/  network-2.6.2.1@netwo_A6pE0dLgMEk2GtUa1JtTJQ:Network.Socket.Types c793d129fc346c1acee134cf761972a9
+e5ee299f98656dbdfff8d417a65f887d
+  authenticate ::
+    Network.Socket.Types.Socket
+    -> Database.Memcache.Types.Authentication -> GHC.Types.IO ()
+  {- Arity: 3, Strictness: <L,1*U(U(U),A,A,A,A)><S,1*U><L,U>,
+     Unfolding: InlineRule (0, True, True)
+                Database.Memcache.SASL.authenticate1
+                  `cast`
+                (<Network.Socket.Types.Socket>_R
+                 ->_R <Database.Memcache.Types.Authentication>_R
+                 ->_R Sym (GHC.Types.NTCo:IO[0] <()>_R)) -}
+1b07e30b386516f00878da29dd7241ab
+  authenticate1 ::
+    Network.Socket.Types.Socket
+    -> Database.Memcache.Types.Authentication
+    -> GHC.Prim.State# GHC.Prim.RealWorld
+    -> (# GHC.Prim.State# GHC.Prim.RealWorld, () #)
+  {- Arity: 3, Strictness: <L,1*U(U(U),A,A,A,A)><S,1*U><L,U> -}
+vectorised variables:
+vectorised tycons:
+vectorised reused tycons:
+parallel variables:
+parallel tycons:
+trusted: none
+require own pkg trusted: False
+

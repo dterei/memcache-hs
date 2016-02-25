@@ -8,18 +8,18 @@ module Database.Memcache.Wire (
 -- XXX: Wire works with lazy bytestrings but we receive strict bytestrings from
 -- the network...
 
-import Database.Memcache.Errors
-import Database.Memcache.Types
+import           Database.Memcache.Errors
+import           Database.Memcache.Types
 
-import Control.Exception
-import Control.Monad
-import Blaze.ByteString.Builder
-import Data.Binary.Get
+import           Blaze.ByteString.Builder
+import           Control.Exception
+import           Control.Monad
+import           Data.Binary.Get
 import qualified Data.ByteString as B
 import qualified Data.ByteString.Lazy as L
-import Data.Monoid
-import Data.Word
-import Network.Socket (Socket)
+import           Data.Monoid
+import           Data.Word
+import           Network.Socket (Socket)
 import qualified Network.Socket.ByteString as N
 
 -- | Send a request to the memcached server.
@@ -33,10 +33,13 @@ recv s = do
     header <- recvAll mEMCACHE_HEADER_SIZE
     let h = dzHeader' (L.fromChunks [header])
     if bodyLen h > 0
-        then do body <- recvAll (fromIntegral $ bodyLen h)
-                return $ dzBody' h (L.fromChunks [body])
+        then do
+          let bytesToRead = fromIntegral $ bodyLen h
+          body <- recvAll bytesToRead
+          return $ dzBody' h (L.fromChunks [body])
         else return $ dzBody' h L.empty
   where
+    recvAll :: Int -> IO B.ByteString
     recvAll n = do
         buf <- N.recv s n
         if B.length buf == n

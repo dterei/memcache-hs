@@ -1,0 +1,681 @@
+
+==================== FINAL INTERFACE ====================
+2016-02-25 11:05:50.496817 UTC
+
+interface memca_3Z8qUpsEDiC53dYw3oq6HZ:Database.Memcache.Wire 7103
+  interface hash: 1181098f6947125cd83faf54e5eae5fe
+  ABI hash: b9c0413f04d6ed449b906738485bee6f
+  export-list hash: c3c576dab15c3e91d5a4630c80e279e4
+  orphan hash: 693e9af84d3dfcc71e640e005bdc5e2e
+  flag hash: e603fd4216aaa758bc4cd8b012d60987
+  sig of: Nothing
+  used TH splices: False
+  where
+exports:
+  Database.Memcache.Wire.dzBody
+  Database.Memcache.Wire.dzBody'
+  Database.Memcache.Wire.dzHeader
+  Database.Memcache.Wire.dzHeader'
+  Database.Memcache.Wire.dzResponse
+  Database.Memcache.Wire.dzResponse'
+  Database.Memcache.Wire.recv
+  Database.Memcache.Wire.send
+  Database.Memcache.Wire.szRequest
+  Database.Memcache.Wire.szRequest'
+module dependencies: Database.Memcache.Errors
+                     Database.Memcache.Types
+package dependencies: array-0.5.1.0@array_67iodizgJQIIxYVTp4emlA
+                      base-4.8.2.0 binary-0.7.5.0@binar_3uXFWMoAGBg0xKP9MHKRwi
+                      blaze-builder-0.4.0.1@blaze_GoSGMrJXTmeEBoF3sgxwrM
+                      bytestring-0.10.6.0@bytes_6VWy06pWzJq9evDvK2d4w6
+                      deepseq-1.4.1.1@deeps_6vMKxt5sPFR0XsbRWvvq59 ghc-prim-0.4.0.0
+                      integer-gmp-1.0.0.0 network-2.6.2.1@netwo_A6pE0dLgMEk2GtUa1JtTJQ
+orphans: base-4.8.2.0:GHC.Base base-4.8.2.0:GHC.Float
+         bytestring-0.10.6.0@bytes_6VWy06pWzJq9evDvK2d4w6:Data.ByteString.Builder
+         network-2.6.2.1@netwo_A6pE0dLgMEk2GtUa1JtTJQ:Network.Socket
+         network-2.6.2.1@netwo_A6pE0dLgMEk2GtUa1JtTJQ:Network.Socket.Types
+family instance modules: base-4.8.2.0:Control.Applicative
+                         base-4.8.2.0:Data.Either base-4.8.2.0:Data.Functor.Identity
+                         base-4.8.2.0:Data.Monoid base-4.8.2.0:Data.Type.Equality
+                         base-4.8.2.0:Data.Void base-4.8.2.0:GHC.Exts
+                         base-4.8.2.0:GHC.Generics
+import  -/  base-4.8.2.0:Control.Exception e9090e246fba030faecf7b81b3e8e320
+import  -/  base-4.8.2.0:Control.Monad 480c5067477275068c9b98be08410df9
+import  -/  base-4.8.2.0:Data.Monoid 85b292b52bfd80ed619cddb767d638d3
+import  -/  base-4.8.2.0:Data.Word ec8deb535202352cc8b509b14004bcbd
+import  -/  base-4.8.2.0:GHC.Base 1db77db5dae73d8c424c85b09fbadb89
+import  -/  base-4.8.2.0:GHC.Exception 18c46fe9c5c0c3a120035f264ef32d41
+import  -/  base-4.8.2.0:GHC.IO bb5b81adcea33b14bd4abe16d7dde45f
+import  -/  base-4.8.2.0:GHC.Num 9f42750c866f5832ca565146bd660c60
+import  -/  base-4.8.2.0:GHC.Real 1281efa9baf803bc7859d7efb89a38b3
+import  -/  base-4.8.2.0:GHC.Show 0e1d8380a8fb0cfb07ebeda3b70cbf38
+import  -/  base-4.8.2.0:GHC.Word 10dc88543d98000abab9695a1019767d
+import  -/  base-4.8.2.0:Prelude 694dcaf039efe62df1c44834e2dbd2fb
+import  -/  binary-0.7.5.0@binar_3uXFWMoAGBg0xKP9MHKRwi:Data.Binary.Get 4aca7417d50d373ce242739ce3bcda19
+import  -/  binary-0.7.5.0@binar_3uXFWMoAGBg0xKP9MHKRwi:Data.Binary.Get.Internal fba968d75712c0d10e05d9472c50d7dd
+import  -/  blaze-builder-0.4.0.1@blaze_GoSGMrJXTmeEBoF3sgxwrM:Blaze.ByteString.Builder 9bc4729b2e496752770f8523b8716c88
+import  -/  blaze-builder-0.4.0.1@blaze_GoSGMrJXTmeEBoF3sgxwrM:Blaze.ByteString.Builder.ByteString 44d328b1affe9428fe2215759affd2a8
+import  -/  blaze-builder-0.4.0.1@blaze_GoSGMrJXTmeEBoF3sgxwrM:Blaze.ByteString.Builder.Word 15b80dc58c3611cc398285dba3244527
+import  -/  bytestring-0.10.6.0@bytes_6VWy06pWzJq9evDvK2d4w6:Data.ByteString db2e56635ed30ff269e1492b64605a38
+import  -/  bytestring-0.10.6.0@bytes_6VWy06pWzJq9evDvK2d4w6:Data.ByteString.Builder a0df0840a3321d999de1efe2daeebd74
+import  -/  bytestring-0.10.6.0@bytes_6VWy06pWzJq9evDvK2d4w6:Data.ByteString.Builder.Internal f61d5d4e198e7888b8b1c5c6be1e6f30
+import  -/  bytestring-0.10.6.0@bytes_6VWy06pWzJq9evDvK2d4w6:Data.ByteString.Internal b99858e89f19feddd3dcb9e9d523065e
+import  -/  bytestring-0.10.6.0@bytes_6VWy06pWzJq9evDvK2d4w6:Data.ByteString.Lazy 7b1dd178b3666e14ba91381002b4b4e3
+import  -/  bytestring-0.10.6.0@bytes_6VWy06pWzJq9evDvK2d4w6:Data.ByteString.Lazy.Internal 372874e1a7c751c0cb07b7dc746f232b
+import  -/  ghc-prim-0.4.0.0:GHC.Classes e1f4ff80f7b5262008a595d29986fb18
+import  -/  ghc-prim-0.4.0.0:GHC.Types 6b27fb3fdbd0e3f0925a4496c66513bb
+import  -/  Database.Memcache.Errors f8f7d6f9d99620e8545ec26851698f07
+  exports: a3cc4d4a1d68c42bd6d48dd70317f453
+  NotEnoughBytes 6d5d57c4a72dcb80046bb31a3ef87190
+import  -/  Database.Memcache.Types 1ca9931bda88d72b9d7d6f6ee335bcb6
+  exports: b2f7697915662eeadb8e65de002e666b
+  ErrInvalidArgs 6e9b1b49b055d1802a3d750175599397
+  ErrItemNotStored adebb0d55034ae5028bffa5ebbda4473
+  ErrKeyExists 5231ffa983e267e4412dffb55a559f27
+  ErrKeyNotFound 04a096dd54702e9cc95efe88e1001002
+  ErrOutOfMemory 7ad701efe6c7472406b2b5f9fc2d9f79
+  ErrUnknownCommand 1e9d8a62649ecd6b23f30fbce44b4678
+  ErrValueNonNumeric cae9ef3d6c799554de20936eb097d5f6
+  ErrValueTooLarge 546742e025ef5eb7b5be609e62bb11e6
+  Flags cfdbf9ee7e2e6dd714d9bba65e0caaea
+  Header 72f57b0421578a0355d382fd49993a46
+  Header 47fc59a5a05b162f38cd94795863eb39
+  IncludeKey c1a0234518d6094a8a68f85379add4e8
+  Key b20ddb86e07e28f2bf61f4be3964ff74
+  Loud c7c2c72b46cf295508516503158127bf
+  NoError ec1b5aef072751e44f93fec6d161ed3d
+  NoKey 70097a776b034a795b64a5853343a01c
+  OpRequest c5b4f9fcb9c0519776d09b0b646373b0
+  OpResponse cf3a3a0f90f9c2f75ebba016c93bc71e
+  ProtocolError 75f2023938f33846a8ee8a8abf24e101
+  Quiet e5692b5f3be9232eb2d9f1128cd9fa55
+  ReqAdd 295d2a59c576b254ca89113c75c0389d
+  ReqAppend 2bbc92be0589cbd5f75ca9fc258bb2c6
+  ReqDecrement 9f6bd46c2fe50f6c10b0c2259dac7e7d
+  ReqDelete f065caf591624cb83d7c974927c2aabc
+  ReqFlush 4f97b1e2923a81539d81ccfb6b8cdb73
+  ReqGAT 49eccfcc2c4612057ec291c44340a660
+  ReqGet 7bf602816afc4e8d5ca28240a52393b7
+  ReqIncrement c6ecdf70ae4c314dcb0d72f6fcd56272
+  ReqNoop f6e8d1d5e82f5d5e093b35406776f721
+  ReqPrepend 86ede568ed5be269ad64a8a76f538838
+  ReqQuit 23b3f1cee88752a12d200812c7c55e86
+  ReqReplace 54700e66733fdf4ecca42d6bed5d5b99
+  ReqSASLList d47dbe8a27eab70c80ce0cfe2511abc7
+  ReqSASLStart e19ad0c20212f4fd67b2130a9aed2b97
+  ReqSASLStep 1844be567220aab9b78fc87edf6f7319
+  ReqSet 5e3099a7ea74214d38fe2429afac663a
+  ReqStat aa59e97a53867ff8e6843708dbd523d2
+  ReqTouch 7fc82e70f82f8f18d3551da32a2b170f
+  ReqVersion b1e2505a55b2ba608195b2c4590be0d1
+  Request ea22f4eb312eac51b3d37628818241fd
+  Res 7003154109f93bbdce4779331a6f75ad
+  ResAdd fee7d37cbdbfa94466f18a7c1e9cad2a
+  ResAppend 166b3d6d5fab7e177da446dd9fa5ba46
+  ResDecrement a679411c0e6bfa1232ba3a8dfaa3622b
+  ResDelete 0bd431d7db122b394b69ec9d79cff852
+  ResFlush 4d2f1bbe818b09f1d2092db4c4c4a8f5
+  ResGAT 51f25446742122ba4953bb31a1b1bc72
+  ResGATK c5c6fc4d4243a7b6c8e19f1592f27462
+  ResGet ef4688130b659552e0bf40d15c2d1e69
+  ResGetK e7327871770fe92110cf1f1b3c2c4aa3
+  ResIncrement a05bf234f22688b10eb5f53601c2632c
+  ResNoop b7478055431275b4d2119be9edf4c351
+  ResPrepend c2f7fc98a7d9f306ee5d85d17f1ec6d3
+  ResQuit c31b44d4fdb991cee7afb23d7307734b
+  ResReplace 1173c16c084b26355e46a01c407abaca
+  ResSASLList 14d70e1694ec47cc3002488e0a374b97
+  ResSASLStart bc1b9f33740d3f958963453af5725ee4
+  ResSASLStep fbb7eac903c6792f2ca3d66fae4a41b1
+  ResSet 909bce851d49a27818a9510a162da063
+  ResStat 905037257369caa5b4b1c97c5e69bbf2
+  ResTouch 8955d2e06bf035c9c1d214228e4a77b6
+  ResVersion d95a13a4e704e7bacff9adcdf9345278
+  Response 900e0e3188debaef4afb10615d76a76e
+  SEIncr 7b4cc81ff71b0954880e71f07e810a98
+  SESet 536b4acf68c4663d3ec6bb3fcda5c399
+  SETouch dc0f9fefa062bb0e4bee28624a801dd8
+  SaslAuthContinue b5095cf6e4fafc0a442a3d5eb86aec09
+  SaslAuthFail a3090c32869bcc5e7ae6e3d4d5acdde5
+  Status f71e7ee459bd0dad4eebf489e8fa8742
+  Value 07b472038339627c113b5956ea6bb2a4
+  bodyLen f325570cfae82ef32daaf31c40135356
+  cas 875d01859f0948872599069a9f6569a1
+  extraLen 7b188eb58e9098d7769dffe47cbeaba2
+  keyLen 75a39ac321a9b695d5dd9e168b68e8a3
+  mEMCACHE_HEADER_SIZE e650c0dbad52d1aa03fa1f9b34814921
+  op a7c978dffd1e022beb3721a5537c84e0
+  opaque e8fc55b69841df478be4328601821e7d
+  protocolHeader 5e8093f874d940f659f981dabb0c7d8d
+  protocolMessage bd8e737e00a44540c2c174e145a1de17
+  protocolParams 0691dee6336cdf72ef0c0f094faf5595
+  reqCas 2ee23fd42bcc376c3d6a0d0fe4a933fa
+  reqOp 0186d62f830ab3c946d7b95ffedfda3b
+  reqOpaque 707c4da822ba4c38439009083124b9d6
+  resCas c2e2db5893b041ff735965fe41df879a
+  resOp ab0836dc5e0d6b259d4d7b4ced85fd46
+  resOpaque 09b4e76c4f41ba4dc555dfb3a0d1a16c
+  resStatus 97abb3ce97d2701aa229b493f0acf5c5
+  status 64b92e9124beaf0284143e02011645b8
+import  -/  network-2.6.2.1@netwo_A6pE0dLgMEk2GtUa1JtTJQ:Network.Socket 1c584aab086538b6f7ab7390a01794f4
+import  -/  network-2.6.2.1@netwo_A6pE0dLgMEk2GtUa1JtTJQ:Network.Socket.ByteString 5e300a7e510974791682467a5355b232
+import  -/  network-2.6.2.1@netwo_A6pE0dLgMEk2GtUa1JtTJQ:Network.Socket.Types c793d129fc346c1acee134cf761972a9
+9f851dad2fe4e8f68ff44e330376d33e
+  $wa ::
+    GHC.Prim.Word#
+    -> GHC.Word.Word16
+    -> GHC.Word.Word8
+    -> Database.Memcache.Types.Status
+    -> GHC.Word.Word32
+    -> GHC.Word.Word32
+    -> Database.Memcache.Types.Version
+    -> forall r.
+       Data.ByteString.Internal.ByteString
+       -> Data.Binary.Get.Internal.Success
+            Database.Memcache.Types.Response r
+       -> Data.Binary.Get.Internal.Decoder r
+  {- Arity: 9,
+     Strictness: <S,U><L,U(U)><L,U(U)><L,U><L,U(U)><L,U(U)><L,U(U)><L,U(U,U,U,U)><L,C(C1(U))>,
+     Inline: [0] -}
+734cd454a2da96fd44e3234c36514860
+  $wa1 ::
+    GHC.Prim.Word#
+    -> forall r.
+       GHC.Prim.Addr#
+       -> GHC.ForeignPtr.ForeignPtrContents
+       -> GHC.Prim.Int#
+       -> GHC.Prim.Int#
+       -> Data.Binary.Get.Internal.Success
+            Database.Memcache.Types.Header r
+       -> Data.Binary.Get.Internal.Decoder r
+  {- Arity: 6, Strictness: <S,U><L,U><L,U><L,U><L,U><L,C(C1(U))>,
+     Inline: [0] -}
+4050067af1ed3fb1f97180d33e1600c5
+  $wa2 ::
+    GHC.Prim.Addr#
+    -> GHC.ForeignPtr.ForeignPtrContents
+    -> GHC.Prim.Int#
+    -> GHC.Prim.Int#
+    -> Data.Binary.Get.Internal.Success GHC.Word.Word8 r
+    -> Data.Binary.Get.Internal.Decoder r
+  {- Arity: 5, Strictness: <L,U><L,U><L,U><L,U><L,C(C1(U))>,
+     Inline: [0],
+     Unfolding: (\ @ r
+                   ww :: GHC.Prim.Addr#
+                   ww1 :: GHC.ForeignPtr.ForeignPtrContents
+                   ww2 :: GHC.Prim.Int#
+                   ww3 :: GHC.Prim.Int#
+                   w :: Data.Binary.Get.Internal.Success GHC.Word.Word8 r ->
+                 case GHC.Prim.tagToEnum#
+                        @ GHC.Types.Bool
+                        (GHC.Prim.>=# ww3 1) of wild1 {
+                   GHC.Types.False
+                   -> Data.Binary.Get.Internal.readN1
+                        @ GHC.Types.Int
+                        @ Data.ByteString.Internal.ByteString
+                        Database.Memcache.Wire.dzHeader7
+                        Database.Memcache.Wire.dzHeader6
+                        Data.ByteString.Internal.$fMonoidByteString_$cmconcat
+                        Database.Memcache.Wire.dzHeader4
+                          `cast`
+                        (<[Data.ByteString.Internal.ByteString]>_R
+                         ->_R Sym (Data.Binary.Get.Internal.NTCo:Get[0]
+                                       <Data.ByteString.Internal.ByteString>_R))
+                        @ r
+                        (Data.ByteString.Internal.PS ww ww1 ww2 ww3)
+                        (\ i' :: Data.ByteString.Internal.ByteString
+                           a14 :: Data.ByteString.Internal.ByteString ->
+                         case a14 of wild { Data.ByteString.Internal.PS dt dt1 dt2 dt3 ->
+                         case GHC.Prim.readWord8OffAddr#
+                                @ GHC.Prim.RealWorld
+                                (GHC.Prim.plusAddr# dt dt2)
+                                0
+                                GHC.Prim.realWorld# of ds2 { (#,#) ipv ipv1 ->
+                         case GHC.Prim.touch#
+                                @ GHC.ForeignPtr.ForeignPtrContents
+                                dt1
+                                ipv of s' { DEFAULT ->
+                         w (Data.ByteString.Internal.PS
+                              dt
+                              dt1
+                              (GHC.Prim.+# dt2 1)
+                              (GHC.Prim.-# dt3 1))
+                           (GHC.Word.W8# ipv1) } } })
+                   GHC.Types.True
+                   -> case GHC.Prim.readWord8OffAddr#
+                             @ GHC.Prim.RealWorld
+                             (GHC.Prim.plusAddr# ww ww2)
+                             0
+                             GHC.Prim.realWorld# of ds2 { (#,#) ipv ipv1 ->
+                      case GHC.Prim.touch#
+                             @ GHC.ForeignPtr.ForeignPtrContents
+                             ww1
+                             ipv of s' { DEFAULT ->
+                      w (Data.ByteString.Internal.PS
+                           ww
+                           ww1
+                           (GHC.Prim.+# ww2 1)
+                           (GHC.Prim.-# ww3 1))
+                        (GHC.Word.W8# ipv1) } } }) -}
+3f7d132b86ad6f9c5089ffacfba8e09d
+  $wa3 ::
+    GHC.Prim.Addr#
+    -> GHC.ForeignPtr.ForeignPtrContents
+    -> GHC.Prim.Int#
+    -> GHC.Prim.Int#
+    -> Data.Binary.Get.Internal.Success
+         Database.Memcache.Types.Response r
+    -> Data.Binary.Get.Internal.Decoder r
+  {- Arity: 5, Strictness: <L,U><L,U><L,U><L,U><L,C(C1(U))>,
+     Inline: [0] -}
+78f27e0fe3f8ad4ce2c90d385225d0b5
+  $wa4 ::
+    Foreign.C.Types.CInt
+    -> Database.Memcache.Types.Request
+    -> GHC.Prim.State# GHC.Prim.RealWorld
+    -> (# GHC.Prim.State# GHC.Prim.RealWorld, () #)
+  {- Arity: 3, Strictness: <L,U(U)><L,U(U,U(U),U(U))><L,U>,
+     Inline: [0],
+     Unfolding: (\ ww :: Foreign.C.Types.CInt
+                   w :: Database.Memcache.Types.Request
+                   w1 :: GHC.Prim.State# GHC.Prim.RealWorld[OneShot] ->
+                 case Blaze.ByteString.Builder.toByteString
+                        (Database.Memcache.Wire.szRequest
+                           w) of ww6 { Data.ByteString.Internal.PS ww7 ww8 ww9 ww10 ->
+                 Network.Socket.ByteString.$wa3 ww ww7 ww8 ww9 ww10 w1 }) -}
+d7182e81aa515447e26efcc91db3a0de
+  $wdzBody' ::
+    GHC.Prim.Word#
+    -> GHC.Word.Word16
+    -> GHC.Word.Word8
+    -> Database.Memcache.Types.Status
+    -> GHC.Word.Word32
+    -> GHC.Word.Word32
+    -> Database.Memcache.Types.Version
+    -> Data.ByteString.Lazy.Internal.ByteString
+    -> Database.Memcache.Types.Response
+  {- Arity: 8,
+     Strictness: <S,U><L,U(U)><L,U(U)><L,U><L,U(U)><L,U(U)><L,U(U)><L,U>,
+     Inline: [0],
+     Unfolding: (\ ww :: GHC.Prim.Word#
+                   ww1 :: GHC.Word.Word16
+                   ww2 :: GHC.Word.Word8
+                   ww3 :: Database.Memcache.Types.Status
+                   ww4 :: GHC.Word.Word32
+                   ww5 :: GHC.Word.Word32
+                   ww6 :: Database.Memcache.Types.Version
+                   w :: Data.ByteString.Lazy.Internal.ByteString ->
+                 Data.Binary.Get.runGet1
+                   @ Database.Memcache.Types.Response
+                   (Data.Binary.Get.$wpoly_go
+                      @ Database.Memcache.Types.Response
+                      (Data.Binary.Get.Internal.runGetIncremental1
+                         @ Database.Memcache.Types.Response
+                         (Database.Memcache.Wire.$wa
+                            ww
+                            ww1
+                            ww2
+                            ww3
+                            ww4
+                            ww5
+                            ww6
+                            @ Database.Memcache.Types.Response
+                            Data.ByteString.empty
+                            (Data.Binary.Get.Internal.$WDone
+                               @ Database.Memcache.Types.Response)))
+                      0)
+                   w) -}
+b78a8fe25e5fae688b22377bd5b41a91
+  dzBody ::
+    Database.Memcache.Types.Header
+    -> Data.Binary.Get.Internal.Get Database.Memcache.Types.Response
+  {- Arity: 3,
+     Strictness: <S(S(S)LLLLLL),1*U(U(U),U(U),U(U),U,U(U),U(U),U(U))><L,U(U,U,U,U)><L,C(C1(U))>,
+     Unfolding: InlineRule (0, True, True)
+                Database.Memcache.Wire.dzBody1
+                  `cast`
+                (<Database.Memcache.Types.Header>_R
+                 ->_R Sym (Data.Binary.Get.Internal.NTCo:Get[0]
+                               <Database.Memcache.Types.Response>_R)) -}
+2623fcf9688c6cd56cd21c809843f340
+  dzBody' ::
+    Database.Memcache.Types.Header
+    -> Data.ByteString.Lazy.Internal.ByteString
+    -> Database.Memcache.Types.Response
+  {- Arity: 2,
+     Strictness: <S(S(S)LLLLLL),1*U(U(U),U(U),U(U),U,U(U),U(U),U(U))><L,U>,
+     Inline: INLINE[0],
+     Unfolding: InlineRule (2, True, False)
+                (\ w :: Database.Memcache.Types.Header
+                   w1 :: Data.ByteString.Lazy.Internal.ByteString ->
+                 case w of ww { Database.Memcache.Types.Header ww1 ww2 ww3 ww4 ww5 ww6 ww7 ->
+                 case ww1 of ww8 { GHC.Word.W8# ww9 ->
+                 Database.Memcache.Wire.$wdzBody'
+                   ww9
+                   ww2
+                   ww3
+                   ww4
+                   ww5
+                   ww6
+                   ww7
+                   w1 } }) -}
+839816bf1bed3eceaa95e4149168c118
+  dzBody1 ::
+    Database.Memcache.Types.Header
+    -> forall r.
+       Data.ByteString.Internal.ByteString
+       -> Data.Binary.Get.Internal.Success
+            Database.Memcache.Types.Response r
+       -> Data.Binary.Get.Internal.Decoder r
+  {- Arity: 3,
+     Strictness: <S(S(S)LLLLLL),1*U(U(U),U(U),U(U),U,U(U),U(U),U(U))><L,U(U,U,U,U)><L,C(C1(U))>,
+     Inline: INLINE[0],
+     Unfolding: InlineRule (3, True, False)
+                (\ w :: Database.Memcache.Types.Header
+                   @ r
+                   w1 :: Data.ByteString.Internal.ByteString
+                   w2 :: Data.Binary.Get.Internal.Success
+                           Database.Memcache.Types.Response r ->
+                 case w of ww { Database.Memcache.Types.Header ww1 ww2 ww3 ww4 ww5 ww6 ww7 ->
+                 case ww1 of ww8 { GHC.Word.W8# ww9 ->
+                 Database.Memcache.Wire.$wa
+                   ww9
+                   ww2
+                   ww3
+                   ww4
+                   ww5
+                   ww6
+                   ww7
+                   @ r
+                   w1
+                   w2 } }) -}
+0691090b5d36192105ff3da6f095a063
+  dzHeader ::
+    Data.Binary.Get.Internal.Get Database.Memcache.Types.Header
+  {- Arity: 2, Strictness: <S,1*U(U,U,U,U)><L,C(C1(U))>,
+     Unfolding: InlineRule (0, True, True)
+                Database.Memcache.Wire.dzHeader1
+                  `cast`
+                (Sym (Data.Binary.Get.Internal.NTCo:Get[0]
+                          <Database.Memcache.Types.Header>_R)) -}
+80ad02caf0e21864f7c16d470c4390f1
+  dzHeader' ::
+    Data.ByteString.Lazy.Internal.ByteString
+    -> Database.Memcache.Types.Header
+  {- Arity: 1, Strictness: <L,U>,
+     Unfolding: (\ lbs0 :: Data.ByteString.Lazy.Internal.ByteString ->
+                 Data.Binary.Get.runGet1
+                   @ Database.Memcache.Types.Header
+                   Database.Memcache.Wire.dzHeader'1
+                   lbs0) -}
+e0a608b32cb1e2795faae862c86b4df1
+  dzHeader'1 ::
+    Data.Binary.Get.Decoder Database.Memcache.Types.Header
+  {- Unfolding: (Data.Binary.Get.$wpoly_go
+                   @ Database.Memcache.Types.Header
+                   Database.Memcache.Wire.dzHeader'2
+                   0) -}
+6fbba078b4e628039295f5a356c10272
+  dzHeader'2 ::
+    Data.Binary.Get.Internal.Decoder Database.Memcache.Types.Header
+  {- Unfolding: (Data.Binary.Get.Internal.runGetIncremental1
+                   @ Database.Memcache.Types.Header
+                   Database.Memcache.Wire.dzHeader'3) -}
+b17b9b51a0d2cf57ac5c82c05a6014a1
+  dzHeader'3 ::
+    Data.Binary.Get.Internal.Decoder Database.Memcache.Types.Header
+  {- Unfolding: (Database.Memcache.Wire.$wa2
+                   @ Database.Memcache.Types.Header
+                   __NULL
+                   Data.ByteString.Internal.$fMonoidByteString3
+                   0
+                   0
+                   Database.Memcache.Wire.dzHeader'4) -}
+5f1f06e3fcab7c405c045fe99599632c
+  dzHeader'4 ::
+    Data.ByteString.Internal.ByteString
+    -> GHC.Word.Word8
+    -> Data.Binary.Get.Internal.Decoder Database.Memcache.Types.Header
+  {- Arity: 2,
+     Unfolding: (\ i' :: Data.ByteString.Internal.ByteString
+                   a14 :: GHC.Word.Word8[OneShot] ->
+                 case a14 of ww { GHC.Word.W8# ww1 ->
+                 case i' of ww2 { Data.ByteString.Internal.PS ww3 ww4 ww5 ww6 ->
+                 Database.Memcache.Wire.$wa1
+                   ww1
+                   @ Database.Memcache.Types.Header
+                   ww3
+                   ww4
+                   ww5
+                   ww6
+                   (Data.Binary.Get.Internal.$WDone
+                      @ Database.Memcache.Types.Header) } }) -}
+190731082b567005a525c644952a1b68
+  dzHeader1 ::
+    Data.ByteString.Internal.ByteString
+    -> Data.Binary.Get.Internal.Success
+         Database.Memcache.Types.Header r
+    -> Data.Binary.Get.Internal.Decoder r
+  {- Arity: 2, Strictness: <S,1*U(U,U,U,U)><L,C(C1(U))>,
+     Unfolding: InlineRule (2, True, False)
+                (\ @ r
+                   i :: Data.ByteString.Internal.ByteString
+                   ks :: Data.Binary.Get.Internal.Success
+                           Database.Memcache.Types.Header r ->
+                 Database.Memcache.Wire.dzHeader3
+                   @ r
+                   i
+                   (\ i' :: Data.ByteString.Internal.ByteString
+                      a14 :: GHC.Word.Word8[OneShot] ->
+                    Database.Memcache.Wire.dzHeader2 a14 @ r i' ks)) -}
+62f80b0f63f6b0e886744dc5f6c22af1
+  dzHeader2 ::
+    GHC.Word.Word8
+    -> forall r.
+       Data.ByteString.Internal.ByteString
+       -> Data.Binary.Get.Internal.Success
+            Database.Memcache.Types.Header r
+       -> Data.Binary.Get.Internal.Decoder r
+  {- Arity: 3, Strictness: <S(S),1*U(U)><S,1*U(U,U,U,U)><L,C(C1(U))>,
+     Inline: INLINE[0],
+     Unfolding: InlineRule (3, True, False)
+                (\ w :: GHC.Word.Word8
+                   @ r
+                   w1 :: Data.ByteString.Internal.ByteString
+                   w2 :: Data.Binary.Get.Internal.Success
+                           Database.Memcache.Types.Header r ->
+                 case w of ww { GHC.Word.W8# ww1 ->
+                 case w1 of ww2 { Data.ByteString.Internal.PS ww3 ww4 ww5 ww6 ->
+                 Database.Memcache.Wire.$wa1 ww1 @ r ww3 ww4 ww5 ww6 w2 } }) -}
+623c8d92e5a3fcfdce374853726a897e
+  dzHeader3 ::
+    Data.ByteString.Internal.ByteString
+    -> Data.Binary.Get.Internal.Success GHC.Word.Word8 r
+    -> Data.Binary.Get.Internal.Decoder r
+  {- Arity: 2, Strictness: <S,1*U(U,U,U,U)><L,C(C1(U))>,
+     Inline: INLINE[0],
+     Unfolding: InlineRule (2, True, False)
+                (\ @ r
+                   w :: Data.ByteString.Internal.ByteString
+                   w1 :: Data.Binary.Get.Internal.Success GHC.Word.Word8 r ->
+                 case w of ww { Data.ByteString.Internal.PS ww1 ww2 ww3 ww4 ->
+                 Database.Memcache.Wire.$wa2 @ r ww1 ww2 ww3 ww4 w1 }) -}
+6c95813dcf4dbe89e080f0cd3970f868
+  dzHeader4 ::
+    [Data.ByteString.Internal.ByteString]
+    -> forall r1.
+       Data.ByteString.Internal.ByteString
+       -> Data.Binary.Get.Internal.Success
+            Data.ByteString.Internal.ByteString r1
+       -> Data.Binary.Get.Internal.Decoder r1
+  {- Arity: 3,
+     Unfolding: (\ bss :: [Data.ByteString.Internal.ByteString]
+                   @ r1
+                   ds :: Data.ByteString.Internal.ByteString[OneShot]
+                   ds1 :: Data.Binary.Get.Internal.Success
+                            Data.ByteString.Internal.ByteString r1[OneShot] ->
+                 case Data.ByteString.Internal.$fMonoidByteString_$cmconcat
+                        bss of dt4 { Data.ByteString.Internal.PS ipv1 ipv2 ipv3 ipv4 ->
+                 Data.Binary.Get.Internal.Fail
+                   @ r1
+                   dt4
+                   Database.Memcache.Wire.dzHeader5 }) -}
+7ecd817bda0e99a9b34ad3274fdfb20e
+  dzHeader5 :: [GHC.Types.Char]
+  {- Unfolding: (GHC.CString.unpackCString# "not enough bytes"#) -}
+1ff5ba073a6eb8b3ca87b4c724a1d858
+  dzHeader6 ::
+    GHC.Types.Int
+    -> Data.ByteString.Internal.ByteString
+    -> Data.Either.Either
+         GHC.Types.Int
+         (Data.ByteString.Internal.ByteString,
+          Data.ByteString.Internal.ByteString)
+  {- Arity: 2,
+     Unfolding: (\ n2 :: GHC.Types.Int
+                   str1 :: Data.ByteString.Internal.ByteString[OneShot] ->
+                 case str1 of wild2 { Data.ByteString.Internal.PS dt4 dt5 dt6 dt7 ->
+                 case n2 of wild3 { GHC.Types.I# y ->
+                 case GHC.Prim.tagToEnum#
+                        @ GHC.Types.Bool
+                        (GHC.Prim.>=# dt7 y) of wild4 {
+                   GHC.Types.False
+                   -> Data.Either.Left
+                        @ GHC.Types.Int
+                        @ (Data.ByteString.Internal.ByteString,
+                           Data.ByteString.Internal.ByteString)
+                        (GHC.Types.I# (GHC.Prim.-# y dt7))
+                   GHC.Types.True
+                   -> Data.Either.Right
+                        @ GHC.Types.Int
+                        @ (Data.ByteString.Internal.ByteString,
+                           Data.ByteString.Internal.ByteString)
+                        (wild2, Data.ByteString.empty) } } }) -}
+e00eb38adcdd8df70857e03b8e3b34ad
+  dzHeader7 :: GHC.Types.Int
+  {- HasNoCafRefs, Unfolding: (GHC.Types.I# 1) -}
+a24132cf43a4a473981dcf49d4ac025e
+  dzResponse ::
+    Data.Binary.Get.Internal.Get Database.Memcache.Types.Response
+  {- Arity: 2, Strictness: <S,1*U(U,U,U,U)><L,C(C1(U))>,
+     Unfolding: InlineRule (0, True, True)
+                Database.Memcache.Wire.dzResponse1
+                  `cast`
+                (Sym (Data.Binary.Get.Internal.NTCo:Get[0]
+                          <Database.Memcache.Types.Response>_R)) -}
+4bb3d790e139514ddb96ae6a4e4809f0
+  dzResponse' ::
+    Data.ByteString.Lazy.Internal.ByteString
+    -> Database.Memcache.Types.Response
+  {- Arity: 1, Strictness: <L,U>,
+     Unfolding: (\ lbs0 :: Data.ByteString.Lazy.Internal.ByteString ->
+                 Data.Binary.Get.runGet1
+                   @ Database.Memcache.Types.Response
+                   Database.Memcache.Wire.dzResponse'1
+                   lbs0) -}
+5c45e340a72fd5cd0c33337b289ecc23
+  dzResponse'1 ::
+    Data.Binary.Get.Decoder Database.Memcache.Types.Response
+  {- Unfolding: (Data.Binary.Get.$wpoly_go
+                   @ Database.Memcache.Types.Response
+                   Database.Memcache.Wire.dzResponse'2
+                   0) -}
+bbe94f42e78003d446f91c3799bac078
+  dzResponse'2 ::
+    Data.Binary.Get.Internal.Decoder Database.Memcache.Types.Response
+  {- Unfolding: (Data.Binary.Get.Internal.runGetIncremental1
+                   @ Database.Memcache.Types.Response
+                   Database.Memcache.Wire.dzResponse'3) -}
+650770b5d92e5c139eca8498fb84b314
+  dzResponse'3 ::
+    Data.Binary.Get.Internal.Decoder Database.Memcache.Types.Response
+  {- Unfolding: (Database.Memcache.Wire.$wa3
+                   @ Database.Memcache.Types.Response
+                   __NULL
+                   Data.ByteString.Internal.$fMonoidByteString3
+                   0
+                   0
+                   (Data.Binary.Get.Internal.$WDone
+                      @ Database.Memcache.Types.Response)) -}
+92849c03f48f7c1ddb8f1607168cbedd
+  dzResponse1 ::
+    Data.ByteString.Internal.ByteString
+    -> Data.Binary.Get.Internal.Success
+         Database.Memcache.Types.Response r
+    -> Data.Binary.Get.Internal.Decoder r
+  {- Arity: 2, Strictness: <S,1*U(U,U,U,U)><L,C(C1(U))>,
+     Inline: INLINE[0],
+     Unfolding: InlineRule (2, True, False)
+                (\ @ r
+                   w :: Data.ByteString.Internal.ByteString
+                   w1 :: Data.Binary.Get.Internal.Success
+                           Database.Memcache.Types.Response r ->
+                 case w of ww { Data.ByteString.Internal.PS ww1 ww2 ww3 ww4 ->
+                 Database.Memcache.Wire.$wa3 @ r ww1 ww2 ww3 ww4 w1 }) -}
+302e26b1b4927d798cf7479cc865b7b2
+  recv ::
+    Network.Socket.Types.Socket
+    -> GHC.Types.IO Database.Memcache.Types.Response
+  {- Arity: 2, Strictness: <L,U(U(U),A,A,A,A)><L,U>,
+     Unfolding: InlineRule (0, True, True)
+                Database.Memcache.Wire.recv1
+                  `cast`
+                (<Network.Socket.Types.Socket>_R
+                 ->_R Sym (GHC.Types.NTCo:IO[0]
+                               <Database.Memcache.Types.Response>_R)) -}
+6966ae5c24880fb4a532ddf5cc019896
+  recv1 ::
+    Network.Socket.Types.Socket
+    -> GHC.Prim.State# GHC.Prim.RealWorld
+    -> (# GHC.Prim.State# GHC.Prim.RealWorld,
+          Database.Memcache.Types.Response #)
+  {- Arity: 2, Strictness: <L,U(U(U),A,A,A,A)><L,U> -}
+a9beebe72f375b15f7f3e22325124ac1
+  send ::
+    Network.Socket.Types.Socket
+    -> Database.Memcache.Types.Request -> GHC.Types.IO ()
+  {- Arity: 3,
+     Strictness: <S,1*U(U(U),A,A,A,A)><L,U(U,U(U),U(U))><L,U>,
+     Unfolding: InlineRule (0, True, True)
+                Database.Memcache.Wire.send1
+                  `cast`
+                (<Network.Socket.Types.Socket>_R
+                 ->_R <Database.Memcache.Types.Request>_R
+                 ->_R Sym (GHC.Types.NTCo:IO[0] <()>_R)) -}
+b2f54f87505417aafdbae638a7ac8004
+  send1 ::
+    Network.Socket.Types.Socket
+    -> Database.Memcache.Types.Request
+    -> GHC.Prim.State# GHC.Prim.RealWorld
+    -> (# GHC.Prim.State# GHC.Prim.RealWorld, () #)
+  {- Arity: 3,
+     Strictness: <S,1*U(U(U),A,A,A,A)><L,U(U,U(U),U(U))><L,U>,
+     Inline: INLINE[0],
+     Unfolding: InlineRule (3, True, False)
+                (\ w :: Network.Socket.Types.Socket
+                   w1 :: Database.Memcache.Types.Request
+                   w2 :: GHC.Prim.State# GHC.Prim.RealWorld[OneShot] ->
+                 case w of ww { Network.Socket.Types.MkSocket ww1 ww2 ww3 ww4 ww5 ->
+                 Database.Memcache.Wire.$wa4 ww1 w1 w2 }) -}
+d25aad13bfc7dbf288039c109b9c890f
+  szRequest ::
+    Database.Memcache.Types.Request
+    -> Data.ByteString.Builder.Internal.Builder
+  {- Arity: 1, HasNoCafRefs, Strictness: <L,U(1*U,1*U(U),1*U(U))> -}
+c312d06aad352d63a9011595768484be
+  szRequest' ::
+    Database.Memcache.Types.Request
+    -> Data.ByteString.Lazy.Internal.ByteString
+  {- Arity: 1, Strictness: <L,U(U,U(U),U(U))>,
+     Unfolding: InlineRule (1, True, False)
+                (\ x :: Database.Memcache.Types.Request ->
+                 Data.ByteString.Builder.toLazyByteString
+                   (Database.Memcache.Wire.szRequest x)) -}
+vectorised variables:
+vectorised tycons:
+vectorised reused tycons:
+parallel variables:
+parallel tycons:
+trusted: none
+require own pkg trusted: False
+
