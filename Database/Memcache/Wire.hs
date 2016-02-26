@@ -1,4 +1,6 @@
 -- | Deals with serializing and parsing memcached requests and responses.
+{-# LANGUAGE TupleSections #-}
+{-# LANGUAGE BangPatterns #-}
 module Database.Memcache.Wire (
         send, recv,
         szRequest, szRequest',
@@ -19,7 +21,7 @@ import qualified Data.ByteString as B
 import qualified Data.ByteString.Lazy as L
 import           Data.Monoid
 import           Data.Word
-import           Network.Socket (Socket)
+import           Network.Socket (Socket, isConnected, isReadable)
 import qualified Network.Socket.ByteString as N
 
 -- | Send a request to the memcached server.
@@ -30,21 +32,33 @@ send s m = N.sendAll s (toByteString $ szRequest m)
 -- TODO: read into buffer to minimize read syscalls
 recv :: Socket -> IO Response
 recv s = do
-    header <- recvAll mEMCACHE_HEADER_SIZE
+    header <- recvAll mEMCACHE_HEADER_SIZE mempty
     let h = dzHeader' (L.fromChunks [header])
     if bodyLen h > 0
         then do
           let bytesToRead = fromIntegral $ bodyLen h
-          body <- recvAll bytesToRead
+          body <- recvAll bytesToRead mempty
           return $ dzBody' h (L.fromChunks [body])
         else return $ dzBody' h L.empty
   where
-    recvAll :: Int -> IO B.ByteString
-    recvAll n = do
-        buf <- N.recv s n
-        if B.length buf == n
-          then return buf
-          else throwIO NotEnoughBytes
+    recvAll :: Int -> Builder -> IO B.ByteString
+    recvAll 0 !acc = return $! toByteString acc
+    recvAll !n !acc = do
+        canRead <- isSocketActive s
+        case canRead of
+          False -> throwIO NotEnoughBytes
+          True  -> do
+              buf <- N.recv s n
+              let bufLen = B.length buf
+              if bufLen == n
+                then return $! (toByteString $! acc <> fromByteString buf)
+                else recvAll (max 0 (n - bufLen)) (acc <> fromByteString buf)
+
+-- | Check whether we can still operate on this socket or not.
+isSocketActive :: Socket -> IO Bool
+isSocketActive s = do
+  (c,r) <- (,) <$> isConnected s <*> isReadable s
+  return $ c && r
 
 -- | Serialize a request to a ByteString.
 szRequest' :: Request -> L.ByteString
