@@ -1,6 +1,7 @@
--- | Deals with serializing and parsing memcached requests and responses.
-{-# LANGUAGE TupleSections #-}
+{-# LANGUAGE CPP #-}
 {-# LANGUAGE BangPatterns #-}
+
+-- | Deals with serializing and parsing memcached requests and responses.
 module Database.Memcache.Wire (
         send, recv,
         szRequest, szRequest',
@@ -48,20 +49,18 @@ recv s = do
     recvAll 0 !acc = return $! toByteString acc
     recvAll !n !acc = do
         canRead <- isSocketActive s
-        case canRead of
-          False -> throwIO NotEnoughBytes
-          True  -> do
+        if canRead
+          then do
               buf <- N.recv s n
               let bufLen = B.length buf
               if bufLen == n
                 then return $! (toByteString $! acc <> fromByteString buf)
                 else recvAll (max 0 (n - bufLen)) (acc <> fromByteString buf)
+          else throwIO NotEnoughBytes
 
 -- | Check whether we can still operate on this socket or not.
 isSocketActive :: Socket -> IO Bool
-isSocketActive s = do
-  (c,r) <- (,) <$> isConnected s <*> isReadable s
-  return $ c && r
+isSocketActive s = (&&) <$> isConnected s <*> isReadable s
 
 -- | Serialize a request to a ByteString.
 szRequest' :: Request -> L.ByteString
