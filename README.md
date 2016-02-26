@@ -66,3 +66,8 @@ Master [git repository](http://github.com/dterei/memcache-hs):
 This library is written and maintained by David Terei,
 <code@davidterei.com>.
 
+Contributions have been made by the following great people:
+
+* Alfredo Di Napoli <alfredo.dinapoli@gmail.com>
+* Amit Levy
+
