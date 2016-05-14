@@ -20,15 +20,15 @@ import Data.Typeable
 -- | Exceptions that may be thrown by Memcache. These are expected error codes
 -- returned by a memcached server.
 data MemcacheError
-    = MemErrNoKey
-    | MemErrKeyExists
-    | MemErrValueTooLarge
-    | MemErrInvalidArgs
-    | MemErrStoreFailed
-    | MemErrValueNonNumeric
-    | MemErrUnknownCmd
-    | MemErrOutOfMemory
-    | MemErrAuthFail
+    = MemErrNoKey            -- expected
+    | MemErrKeyExists        -- expected
+    | MemErrValueTooLarge    -- unexpected
+    | MemErrInvalidArgs      -- unexpected
+    | MemErrStoreFailed      -- unexpected
+    | MemErrValueNonNumeric  -- unexpected
+    | MemErrUnknownCmd       -- unexpected
+    | MemErrOutOfMemory      -- unexpected
+    | MemErrAuthFail         -- unexpected
     deriving (Eq, Show, Typeable)
 
 instance Exception MemcacheError

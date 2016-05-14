@@ -1,7 +1,20 @@
 ## ToDo
 
 Required:
-* Connection error handling
+* Connection error handling - See Cluster.hs
+  - Move to mutable type for `Cluster.servers`: MVector most likely but could
+    consider:
+    - TVar/IORef/MVar [Server]
+    - TVar/IORef/MVar (Vector Server)
+    - [TVar/IORef/MVar Server]
+    - Vector (TVar/IORef/MVar Server)
+  - Remove `FailSilent` error mode, handle at client layer
+  - Pull `serverOp` into `keyedOp`
+  - Add failed timestamp to `Server`
+  - Implement `FailToError`
+  - Implement `FailToBackup`
+  - Move to passing in encoded bytes for transmision rather than a closure for
+    `keyedOp`
 * Timeouts
 
 Optional:

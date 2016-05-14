@@ -55,6 +55,7 @@ defaultOptions = Options {
 
 -- | A memcached cluster client.
 data Cluster = Cluster {
+        -- TODO: Need to move to a mutable type for `servers`
         servers            :: V.Vector Server,
         cmdFailureMode     :: !FailureMode,
         _serverFailureMode :: !FailureMode,
@@ -79,7 +80,13 @@ getServerForKey c k =
 -- | Run a memcached operation against a server that maps to the key given in
 -- the cluster.
 keyedOp :: forall a. Maybe a -> Cluster -> Key -> (Server -> IO a) -> IO a
+-- TODO: Inline and specialize serverOp, failure handling for keyedOp, anyOp
+-- and allOp are subtley different and so easier to start with them unshared.
+-- TODO: May also want to avoid function passing here `(Server -> IO a)` and
+-- instead just take the bytes already encoded for the wire that we want to
+-- transmit.
 keyedOp def c k = serverOp def c (getServerForKey c k)
+
 
 -- | Run a memcached operation against any single server in the cluster.
 anyOp :: forall a. Maybe a -> Cluster -> (Server -> IO a) -> IO a
@@ -103,17 +110,20 @@ allOp def c m = do
 --    * S  = server commands are meant to go to.
 --    * S' = failover server for S (i.e., next in ring)
 --
---  Mode | Current Command | Future Commands | Makes Sense?
---  -------------------------------------------------------
---    1  | exception       | silently drop   | Yes
---    2  | exception       | failover        | Yes
---    3  | exception       | exception       | Yes
---    4  | silently drop   | silently drop   | Yes
---    5  | failover        | failover        | Yes
---    6  | failover        | exception       | No
---    7  | failover        | silently drop   | No
+--  Mode | Current Command | Future Commands | Makes Sense? | Enconding
+--  -------------------------------------------------------------------
+--    1  | exception       | silently drop   | Maybe        | NA
+--    2  | exception       | failover        | Yes          | FailToBackup
+--    3  | exception       | exception       | Yes          | FailToError
+--    4  | silently drop   | silently drop   | Yes          | FailSilent
+--    5  | failover        | failover        | Yes          | ?
+--    6  | failover        | exception       | No           | NA
+--    7  | failover        | silently drop   | No           | NA
 -- 
 -- Other option here is, is this recursive or a one-hop failover?
+--
+-- XXX: Should FailSilent be encoded this deep? Maybe better to implement
+-- FailSilent at the client level by just catching exceptions and returning.
 --
 data FailureMode = FailSilent | FailToBackup | FailToError
     deriving (Eq, Show)
