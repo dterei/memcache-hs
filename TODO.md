@@ -2,6 +2,8 @@
 
 Required:
 * Connection error handling - See Cluster.hs
+  - Server abstraction should be memcache protocol agnostic, move all protocol
+    to higher level and just have server as a connection management
   - Move to mutable type for `Cluster.servers`: MVector most likely but could
     consider:
     - TVar/IORef/MVar [Server]
