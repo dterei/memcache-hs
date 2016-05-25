@@ -7,11 +7,9 @@ module Database.Memcache.Types (
         Q(..), K(..), Key, Value, Extras, Initial, Delta, Expiration, Flags, Version,
         mEMCACHE_HEADER_SIZE, Header(..),
         Request(..), OpRequest(..), SESet(..), SEIncr(..), SETouch(..), emptyReq,
-        Response(..), OpResponse(..), Status(..),
-        ProtocolError(..), IncorrectResponse(..)
+        Response(..), OpResponse(..), Status(..)
     ) where
 
-import Control.Exception
 import Data.ByteString (ByteString)
 import Data.Typeable
 import Data.Word
@@ -150,19 +148,4 @@ data Header = Header {
         opaque   :: Word32,
         cas      :: Version
     } deriving (Eq, Show, Typeable)
-
-data ProtocolError = ProtocolError {
-        protocolMessage :: String,
-        protocolHeader  :: Maybe Header,
-        protocolParams  :: [String]
-    } deriving (Eq, Show, Typeable)
-
-instance Exception ProtocolError
-
-data IncorrectResponse = IncorrectResponse {
-        increspMessage :: String,
-        increspActual  :: Response
-    } deriving (Eq, Show, Typeable)
-
-instance Exception IncorrectResponse
 

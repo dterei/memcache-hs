@@ -3,10 +3,11 @@
 -- | Memcached related errors and exception handling.
 module Database.Memcache.Errors (
         MemcacheError(..),
-        statusToError,
+        Status(..),
+        ClientError(..),
+        ProtocolError(..),
         throwStatus,
-        throwIncorrectRes,
-        ClientError(..)
+        wrongOp
     ) where
 
 import Database.Memcache.Types
@@ -14,61 +15,38 @@ import Database.Memcache.Types
 import Control.Exception
 import Data.Typeable
 
--- XXX: What to do about ProtocolError and IncorrectResponse exceptions? Should
--- we expose these types to user or map them to ClientError?
-
--- | Exceptions that may be thrown by Memcache. These are expected error codes
--- returned by a memcached server.
+-- | All exceptions that a Memcache client may throw.
 data MemcacheError
-    = MemErrNoKey            -- expected
-    | MemErrKeyExists        -- expected
-    | MemErrValueTooLarge    -- unexpected
-    | MemErrInvalidArgs      -- unexpected
-    | MemErrStoreFailed      -- unexpected
-    | MemErrValueNonNumeric  -- unexpected
-    | MemErrUnknownCmd       -- unexpected
-    | MemErrOutOfMemory      -- unexpected
-    | MemErrAuthFail         -- unexpected
+    = OpError Status
+    | ClientError ClientError
+    | ProtocolError ProtocolError
     deriving (Eq, Show, Typeable)
 
 instance Exception MemcacheError
 
--- | Convert a status to an error. Note, not all status's are errors and so
--- this is a partial function!
-statusToError :: Status -> MemcacheError
-{-# INLINE statusToError #-}
-statusToError NoError            = error "statusToError: called on NoError"
-statusToError ErrKeyNotFound     = MemErrNoKey
-statusToError ErrKeyExists       = MemErrKeyExists
-statusToError ErrValueTooLarge   = MemErrValueTooLarge
-statusToError ErrInvalidArgs     = MemErrInvalidArgs
-statusToError ErrItemNotStored   = MemErrStoreFailed
-statusToError ErrValueNonNumeric = MemErrValueNonNumeric
-statusToError ErrUnknownCommand  = MemErrUnknownCmd
-statusToError ErrOutOfMemory     = MemErrOutOfMemory
-statusToError SaslAuthFail       = MemErrAuthFail
-statusToError SaslAuthContinue   = error "statusToError: called on SaslAuthContinue"
-
--- | Convert a status to an exception. Note, not all status's are errors and so
--- this is not a complete function!
-throwStatus :: Status -> IO a
-{-# INLINE throwStatus #-}
-throwStatus = throwIO . statusToError
-
--- | Throw an IncorrectResponse exception for a wrong received response.
-throwIncorrectRes :: Response -> String -> IO a
-{-# INLINE throwIncorrectRes #-}
-throwIncorrectRes r msg = throwIO
-    IncorrectResponse {
-        increspMessage = "Expected " ++ msg ++ " response! Got: " ++ show (resOp r),
-        increspActual  = r
-    }
-
--- | Errors that occur between the client and server in communicating. These
--- are unexpected exceptions, such as network failures or garbage data.
+-- | Errors that occur on the client.
 data ClientError
-    = NotEnoughBytes
+    = NoServersReady
     deriving (Eq, Show, Typeable)
 
-instance Exception ClientError
+-- | Errors related to memcache protocol and bytes on the wire.
+data ProtocolError
+    = UnknownPkt    { protocolError :: String }
+    | UnknownOp     { protocolError :: String }
+    | UnknownStatus { protocolError :: String }
+    | BadLength     { protocolError :: String }
+    | WrongOp       { protocolError :: String }
+    | UnexpectedEOF { protocolError :: String }
+    deriving (Eq, Show, Typeable)
+
+-- | Convert a status to MemCacheError exception.
+throwStatus :: Status -> IO a
+throwStatus s = throwIO $ OpError s
+
+-- | Create a properly formatted WrongOp protocol error.
+wrongOp :: Response -> String -> MemcacheError
+wrongOp r msg = ProtocolError $
+    WrongOp {
+        protocolError  = "Expected " ++ msg ++ "! Got: " ++ show (resOp r)
+    }
 

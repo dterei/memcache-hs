@@ -1,15 +1,13 @@
-{-# LANGUAGE CPP #-}
 {-# LANGUAGE BangPatterns #-}
+{-# LANGUAGE CPP #-}
 
--- | Deals with serializing and parsing memcached requests and responses.
-module Database.Memcache.Wire (
+-- | Handles a single memcache connection, sending and receiving requests.
+module Database.Memcache.Socket (
         send, recv,
-        szRequest, szRequest',
-        dzResponse, dzResponse', dzHeader, dzHeader', dzBody, dzBody'
     ) where
 
--- XXX: Wire works with lazy bytestrings but we receive strict bytestrings from
--- the network...
+-- FIXME: Wire works with lazy bytestrings but we receive strict bytestrings
+-- from the network...
 
 import           Database.Memcache.Errors
 import           Database.Memcache.Types
@@ -18,7 +16,7 @@ import           Blaze.ByteString.Builder
 #if __GLASGOW_HASKELL__ < 710
 import           Control.Applicative
 #endif
-import           Control.Exception
+import           Control.Exception (throw, throwIO)
 import           Control.Monad
 import           Data.Binary.Get
 import qualified Data.ByteString as B
@@ -33,17 +31,17 @@ send :: Socket -> Request -> IO ()
 send s m = N.sendAll s (toByteString $ szRequest m)
 
 -- | Retrieve a single response from the memcached server.
--- TODO: read into buffer to minimize read syscalls
+-- FIXME: read into buffer to minimize read syscalls
 recv :: Socket -> IO Response
 recv s = do
     header <- recvAll mEMCACHE_HEADER_SIZE mempty
-    let h = dzHeader' (L.fromChunks [header])
+    let h = runGet dzHeader (L.fromChunks [header])
     if bodyLen h > 0
         then do
           let bytesToRead = fromIntegral $ bodyLen h
           body <- recvAll bytesToRead mempty
-          return $ dzBody' h (L.fromChunks [body])
-        else return $ dzBody' h L.empty
+          return $ dzBody h (L.fromChunks [body])
+        else return $ dzBody h L.empty
   where
     recvAll :: Int -> Builder -> IO B.ByteString
     recvAll 0 !acc = return $! toByteString acc
@@ -56,15 +54,11 @@ recv s = do
               if bufLen == n
                 then return $! (toByteString $! acc <> fromByteString buf)
                 else recvAll (max 0 (n - bufLen)) (acc <> fromByteString buf)
-          else throwIO NotEnoughBytes
+          else throwIO $ ProtocolError UnexpectedEOF { protocolError = "" }
 
 -- | Check whether we can still operate on this socket or not.
 isSocketActive :: Socket -> IO Bool
 isSocketActive s = (&&) <$> isConnected s <*> isReadable s
-
--- | Serialize a request to a ByteString.
-szRequest' :: Request -> L.ByteString
-szRequest' = toLazyByteString . szRequest
 
 -- | Serialize a request to a ByteString Builder.
 szRequest :: Request -> Builder
@@ -91,10 +85,10 @@ szRequest req =
         Nothing -> (0, mempty)
 
 -- Extract needed info from an OpRequest for serialization.
--- XXX: Make sure this is optimized well (no tuple, boxing, unboxing, inlined)
+-- FIXME: Make sure this is optimized well (no tuple, boxing, unboxing, inlined)
 getCodeKeyValue :: OpRequest -> (Word8, Maybe Key, Maybe Value, Builder, Int)
 getCodeKeyValue o = case o of
-    -- XXX: make sure this isn't a thunk! (c)
+    -- FIXME: make sure this isn't a thunk! (c)
     ReqGet      q k key   -> let c | q == Loud && k == NoKey      = 0x00
                                    | q == Loud && k == IncludeKey = 0x0C
                                    |              k == NoKey      = 0x09 -- Quiet
@@ -127,7 +121,7 @@ getCodeKeyValue o = case o of
 
     ReqTouch           key   e -> (0x1C, Just key, Nothing, szSETouch e, 4)
 
-    -- XXX: beware allocation.
+    -- FIXME: beware allocation.
     ReqGAT       q k   key   e -> let c | q == Quiet && k == IncludeKey = 0x24
                                         | q == Quiet && k == NoKey      = 0x1E
                                         | k == IncludeKey               = 0x23
@@ -153,30 +147,12 @@ getCodeKeyValue o = case o of
     szSEIncr  (SEIncr i d e) = fromWord64be i <> fromWord64be d <> fromWord32be e
     szSETouch (SETouch    e) = fromWord32be e
 
--- | Deserialize a Response from a ByteString.
-dzResponse' :: L.ByteString -> Response
-dzResponse' = runGet dzResponse
-
--- | Deserialize a Response.
-dzResponse :: Get Response
-dzResponse = do
-    h <- dzHeader
-    dzBody h
-
 -- | Deserialize a Header from a ByteString.
-dzHeader' :: L.ByteString -> Header
-dzHeader' = runGet dzHeader
-
--- | Deserialize a Header.
 dzHeader :: Get Header
 dzHeader = do
     m   <- getWord8
-    when (m /= 0x81) $ throw
-        ProtocolError {
-            protocolMessage = "Bad magic value for a response packet",
-            protocolHeader  = Nothing,
-            protocolParams  = [show m]
-        }
+    when (m /= 0x81) $
+        throw $ ProtocolError UnknownPkt { protocolError = show m }
     o   <- getWord8
     kl  <- getWord16be
     el  <- getWord8
@@ -195,13 +171,9 @@ dzHeader = do
             cas      = ver
         }
 
--- | Deserialize a Response body from a ByteString.
-dzBody' :: Header -> L.ByteString -> Response
-dzBody' h = runGet (dzBody h)
-
 -- | Deserialize a Response body.
-dzBody :: Header -> Get Response
-dzBody h =
+dzBody :: Header -> L.ByteString -> Response
+dzBody h = runGet $
     case op h of
         0x00 -> dzGetResponse h $ ResGet Loud
         0x09 -> dzGetResponse h $ ResGet Quiet
@@ -240,19 +212,15 @@ dzBody h =
         0x21 -> dzGenericResponse h ResSASLStart
         0x22 -> dzGenericResponse h ResSASLStep
 
-        _    -> throw ProtocolError {
-                    protocolMessage = "Unknown operation type",
-                    protocolHeader  = Just h,
-                    protocolParams  = [show $ op h]
-                }
+        _    -> throw $ ProtocolError UnknownOp { protocolError = show (op h) }
 
 -- | Deserialize the body of a Response that contains nothing.
 dzGenericResponse :: Header -> OpResponse -> Get Response
 dzGenericResponse h o = do
     skip (fromIntegral $ bodyLen h)
-    chkLength h 0 (extraLen h) "Extra length expected to be zero"
-    chkLength h 0 (keyLen   h) "Key length expected to be zero"
-    chkLength h 0 (bodyLen  h) "Body length expected to be zero"
+    chkLength 0 (extraLen h) "Extra"
+    chkLength 0 (keyLen   h) "Key"
+    chkLength 0 (bodyLen  h) "Body"
     return Res {
             resOp     = o,
             resStatus = status h,
@@ -267,8 +235,8 @@ dzGetResponse h o = do
             then getWord32be
             else skip el >> return 0
     v <- getByteString vl
-    chkLength h 4 el "Extra length expected to be four"
-    chkLength h 0 (keyLen h) "Key length expected to be zero"
+    chkLength 4 el "Extra"
+    chkLength 0 (keyLen h) "Key"
     return Res {
             resOp     = o v e,
             resStatus = status h,
@@ -287,8 +255,8 @@ dzGetKResponse h o = do
             else skip el >> return 0
     k <- getByteString kl
     v <- getByteString vl
-    chkLength h 4 el "Extra length expected to be four"
-    -- XXX: check strictness ($!)
+    chkLength 4 el "Extra"
+    -- FIXME: check strictness ($!)
     return Res {
             resOp     = o k v e,
             resStatus = status h,
@@ -306,9 +274,9 @@ dzNumericResponse h o = do
     v <- if status h == NoError && bodyLen h == 8
             then getWord64be
             else skip (fromIntegral $ bodyLen h) >> return 0
-    chkLength h 0 (extraLen h) "Extra length expected to be zero"
-    chkLength h 0 (keyLen   h) "Key length expected to be zero"
-    chkLength h 8 (bodyLen  h) "body length expected to be eight"
+    chkLength 0 (extraLen h) "Extra"
+    chkLength 0 (keyLen   h) "Key"
+    chkLength 8 (bodyLen  h) "Body"
     return Res {
             resOp     = o v,
             resStatus = status h,
@@ -321,8 +289,8 @@ dzNumericResponse h o = do
 dzValueResponse :: Header -> (Value -> OpResponse) -> Get Response
 dzValueResponse h o = do
     v <- getByteString (fromIntegral $ bodyLen h)
-    chkLength h 0 (extraLen h) "Extra length expected to be zero"
-    chkLength h 0 (keyLen   h) "Key length expected to be zero"
+    chkLength 0 (extraLen h) "Extra"
+    chkLength 0 (keyLen   h) "Key"
     return Res {
             resOp     = o v,
             resStatus = status h,
@@ -336,7 +304,7 @@ dzKeyValueResponse :: Header -> (Key -> Value -> OpResponse) -> Get Response
 dzKeyValueResponse h o = do
     k <- getByteString kl
     v <- getByteString vl
-    chkLength h 0 (extraLen h) "Extra length expected to be zero"
+    chkLength 0 (extraLen h) "Extra"
     return Res {
             resOp     = o k v,
             resStatus = status h,
@@ -363,19 +331,13 @@ dzStatus = do
         0x82 -> ErrOutOfMemory
         0x20 -> SaslAuthFail
         0x21 -> SaslAuthContinue
-        _    -> throw ProtocolError {
-                    protocolMessage = "Unknown status type",
-                    protocolHeader  = Nothing,
-                    protocolParams  = [show st]
-                }
+        _    -> throw $ ProtocolError UnknownStatus { protocolError = show st }
 
 -- | Check the length of a header field is as expected, throwing a
 -- ProtocolError exception if it is not.
-chkLength :: (Eq a, Show a) => Header -> a -> a -> String -> Get ()
-chkLength h expected l msg =
-    when (l /= expected) $ return $ throw ProtocolError {
-            protocolMessage = msg,
-            protocolHeader  = Just h,
-            protocolParams  = [show l]
-        }
+chkLength :: (Eq a, Show a) => a -> a -> String -> Get ()
+chkLength expected l msg = when (l /= expected) $
+  return $ throw $ ProtocolError BadLength { protocolError =
+      msg ++ " length expected " ++ show expected ++ " got " ++ show l
+  }
 

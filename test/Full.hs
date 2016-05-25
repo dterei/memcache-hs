@@ -12,7 +12,7 @@ import System.Exit
 
 main :: IO ()
 main = do
-    c <- M.newClient [M.ServerSpec "localhost" 11211 M.NoAuth] M.defaultOptions
+    c <- M.newClient [M.ServerSpec "localhost" 11211 M.NoAuth]
     getTest c
     exitSuccess
 
