@@ -1,9 +1,26 @@
 {-# LANGUAGE RecordWildCards #-}
 
--- | Handles a group of connections to different memcached servers.
+{-|
+Module      : Database.Memcache.Cluster
+Description : Cluster Handling
+Copyright   : (c) David Terei, 2016
+License     : BSD
+Maintainer  : code@davidterei.com
+Stability   : stable
+Portability : GHC
+
+Handles a group of connections to different Memcached servers.
+
+We use consistent hashing to choose which server to route a request to. On an
+error, we mark the server as failed and remove it temporarialy from the set of
+servers available.
+-}
 module Database.Memcache.Cluster (
+        -- * Cluster
         Cluster, newCluster, ServerSpec(..),
-        getServerForKey, serverOp
+
+        -- * Operations
+        Retries, getServerForKey, serverOp
     ) where
 
 import Database.Memcache.Errors
@@ -22,19 +39,23 @@ import Network.Socket (HostName, PortNumber)
 -- | Number of times to retry an operation before considering it failed.
 type Retries = Int
 
--- | ServerSpec specifies a server configuration to connect to.
+-- | ServerSpec specifies a server configuration for connection.
 data ServerSpec = ServerSpec {
+        -- | Hostname of server to connect to.
         ssHost :: HostName,
+        -- | Port number server is running on.
         ssPort :: PortNumber,
+        -- | Authentication values to use for SASL authentication with this
+        -- server.
         ssAuth :: Authentication
     }
 
--- | A memcached cluster client.
+-- | Memcached cluster.
 data Cluster = Cluster {
         servers :: V.Vector Server
     }
 
--- | Establish a new connection to a group of memcached servers.
+-- | Establish a new connection to a group of Memcached servers.
 newCluster :: [ServerSpec] -> IO Cluster
 newCluster []    = throwIO $ ClientError NoServersReady
 newCluster hosts = do
@@ -49,7 +70,7 @@ serverAlive s = do
         then return True
         else do
             t' <- getPOSIXTime
-            if (t' - t) < 2
+            if (t' - t) < 2 -- TODO: Configurable
                 then return False
                 else do
                     writeIORef (failed s) 0
@@ -66,7 +87,7 @@ getServerForKey c k = do
         then Nothing
         else Just $ fromMaybe (V.last servers') (V.find searchF servers')
 
--- | Run a memcached operation against a particular server, handling any
+-- | Run a Memcached operation against a particular server, handling any
 -- failures that occur.
 serverOp :: Server -> Request -> Retries -> IO Response
 serverOp s req retries = go retries

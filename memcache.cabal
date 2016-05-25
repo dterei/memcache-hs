@@ -67,7 +67,6 @@ library
   other-extensions:
     BangPatterns,
     CPP,
-    DeriveDataTypeable,
     RecordWildCards
   ghc-options: -Wall -fwarn-tabs
 

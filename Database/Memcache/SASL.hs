@@ -1,8 +1,22 @@
 {-# OPTIONS_GHC -fno-warn-unused-binds #-}
 
--- | SASL authentication support for memcache.
+{-|
+Module      : Database.Memcache.SASL
+Description : SASL Authentication
+Copyright   : (c) David Terei, 2016
+License     : BSD
+Maintainer  : code@davidterei.com
+Stability   : stable
+Portability : GHC
+
+SASL authentication support for memcache.
+-}
 module Database.Memcache.SASL (
-        authenticate, Authentication(..), Username, Password
+        -- * Types
+        Authentication(..), Username, Password,
+
+        -- * Operations
+        authenticate
     ) where
 
 import Database.Memcache.Errors
@@ -19,7 +33,7 @@ import Network.Socket (Socket)
 authenticate :: Socket -> Authentication -> IO ()
 authenticate _ NoAuth     = return ()
 authenticate s (Auth u p) = saslAuthPlain s u p
--- ^ NOTE: For correctness really should check that PLAIN auth is supported first
+-- NOTE: For correctness really should check that PLAIN auth is supported first
 -- but we'll just assume it is as that's all mainline and other implementations
 -- support and one exception is nearly as good as another.
 
@@ -37,7 +51,7 @@ saslAuthPlain s u p = do
         rs      -> throwIO $ OpError rs
 
 -- | List available SASL authentication methods. We could call this but as we
--- only support PLAIN as does the memcached server, we simply assume PLAIN
+-- only support PLAIN as does the Memcached server, we simply assume PLAIN
 -- authentication is supprted and try that.
 saslListMechs :: Socket -> IO B8.ByteString
 saslListMechs s = do

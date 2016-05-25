@@ -1,12 +1,23 @@
 {-# LANGUAGE RecordWildCards #-}
 
--- | Handles the connections between a memcached client and a single server.
---
--- MemCache expected errors (part of protocol) are returned in the Response,
--- unexpected errors (e.g., network failure) are thrown as exceptions. While
--- the Server datatype supports a `failed` and `failedAt` flag for managing
--- retries, it's up to consumers to use this.
+{-|
+Module      : Database.Memcache.Server
+Description : Server Handling
+Copyright   : (c) David Terei, 2016
+License     : BSD
+Maintainer  : code@davidterei.com
+Stability   : stable
+Portability : GHC
+
+Handles the connections between a Memcached client and a single server.
+
+MemCache expected errors (part of protocol) are returned in the Response,
+unexpected errors (e.g., network failure) are thrown as exceptions. While
+the Server datatype supports a `failed` and `failedAt` flag for managing
+retries, it's up to consumers to use this.
+-}
 module Database.Memcache.Server (
+      -- * Server
         Server(sid, failed), newServer, sendRecv, withSocket, close
     ) where
 
@@ -33,13 +44,19 @@ sSTRIPES     = 1
 sCONNECTIONS = 1
 sKEEPALIVE = 300
 
--- | A memcached server connection.
+-- | Memcached server connection.
 data Server = Server {
+        -- | ID of server for consistent hashing.
         sid      :: {-# UNPACK #-} !Int,
+        -- | Connection pool to server.
         pool     :: Pool Socket,
+        -- | Hostname of server.
         addr     :: !HostName,
+        -- | Port number of server.
         port     :: !PortNumber,
+        -- | Credentials for server.
         auth     :: !Authentication,
+        -- | When did the server fail? 0 if it is alive.
         failed   :: IORef POSIXTime
 
         -- TODO: 
@@ -59,7 +76,7 @@ instance Eq Server where
 instance Ord Server where
     compare x y = compare (sid x) (sid y)
 
--- | Create a new memcached connection.
+-- | Create a new Memcached server connection.
 newServer :: HostName -> PortNumber -> Authentication -> IO Server
 newServer host port auth = do
     fat <- newIORef 0
@@ -92,7 +109,7 @@ newServer host port auth = do
 
     releaseSocket = S.close
 
--- | Send and receive a single request/response pair to the memcached server.
+-- | Send and receive a single request/response pair to the Memcached server.
 sendRecv :: Server -> Request -> IO Response
 sendRecv svr msg = withSocket svr $ \s -> do
     send s msg

@@ -1,8 +1,19 @@
 {-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE CPP #-}
 
--- | Handles a single memcache connection, sending and receiving requests.
+{-|
+Module      : Database.Memcache.Socket
+Description : Connection Handling
+Copyright   : (c) David Terei, 2016
+License     : BSD
+Maintainer  : code@davidterei.com
+Stability   : stable
+Portability : GHC
+
+Handles a single memcache connection, sending and receiving requests.
+-}
 module Database.Memcache.Socket (
+        -- * Operations
         send, recv,
     ) where
 
@@ -26,11 +37,11 @@ import           Data.Word
 import           Network.Socket (Socket, isConnected, isReadable)
 import qualified Network.Socket.ByteString as N
 
--- | Send a request to the memcached server.
+-- | Send a request to the Memcached server.
 send :: Socket -> Request -> IO ()
 send s m = N.sendAll s (toByteString $ szRequest m)
 
--- | Retrieve a single response from the memcached server.
+-- | Retrieve a single response from the Memcached server.
 -- FIXME: read into buffer to minimize read syscalls
 recv :: Socket -> IO Response
 recv s = do

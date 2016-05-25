@@ -1,13 +1,33 @@
 {-# LANGUAGE DeriveDataTypeable #-}
 
--- | Stores the various types needed by memcache. Mostly concerned with the
--- representation of the protocol.
+{-|
+Module      : Database.Memcache.Types
+Description : Memcached Types
+Copyright   : (c) David Terei, 2016
+License     : BSD
+Maintainer  : code@davidterei.com
+Stability   : stable
+Portability : GHC
+
+Stores the various types needed by memcache. Mostly concerned with the
+representation of the protocol.
+-}
 module Database.Memcache.Types (
+        -- * SASL Authentication
         Authentication(..), Username, Password,
-        Q(..), K(..), Key, Value, Extras, Initial, Delta, Expiration, Flags, Version,
-        mEMCACHE_HEADER_SIZE, Header(..),
+
+        -- * Fields & Values
+        Q(..), K(..), Key, Value, Extras, Initial, Delta, Expiration, Flags,
+        Version, Status(..),
+
+        -- * Header
+        Header(..), mEMCACHE_HEADER_SIZE,
+
+        -- * Requests
         Request(..), OpRequest(..), SESet(..), SEIncr(..), SETouch(..), emptyReq,
-        Response(..), OpResponse(..), Status(..)
+
+        -- * Responses
+        Response(..), OpResponse(..)
     ) where
 
 import Data.ByteString (ByteString)
@@ -118,20 +138,34 @@ data OpResponse
     | ResSASLStep
     deriving (Eq, Show, Typeable)
 
+-- | The status (success or error) of a Memcached operation returned in a
+-- 'Response'.
 data Status
+    -- | Operation successful.
     = NoError             -- All
+    -- | Key not found.
     | ErrKeyNotFound      -- Get, GAT, Touch, Replace, Del, Inc, Dec, App, Pre, Set (key not there and version specified...)
+    -- | Key exists when not expected.
     | ErrKeyExists        -- Add, (version): Set, Rep, Del, Inc, Dec, App, Pre
+    -- | Value too large to store at server.
     | ErrValueTooLarge    -- Set, Add, Rep, Pre, App
+    -- | Invalid arguments for operation.
     | ErrInvalidArgs      -- All
+    -- | Key-Value pair not stored at server (internal error).
     | ErrItemNotStored    -- ?
+    -- | Value not numeric when increment or decrement requested.
     | ErrValueNonNumeric  -- Incr, Decr
+    -- | Server doesn't know requested command.
     | ErrUnknownCommand   -- All
+    -- | Server out of memory.
     | ErrOutOfMemory      -- All
+    -- | SASL authentication failed.
     | SaslAuthFail        -- SASL
+    -- | SASL authentication requires more steps.
     | SaslAuthContinue    -- SASL
     deriving (Eq, Show, Typeable)
 
+-- | Memcached response packet.
 data Response = Res {
         resOp     :: OpResponse,
         resStatus :: Status,
@@ -139,6 +173,7 @@ data Response = Res {
         resCas    :: Version
     } deriving (Eq, Show, Typeable)
 
+-- | Memcached packet header (for both 'Request' and 'Response').
 data Header = Header {
         op       :: Word8,
         keyLen   :: Word16,

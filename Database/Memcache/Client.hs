@@ -1,18 +1,49 @@
--- | A memcached client. Supports the binary protocol (only) and SASL
--- authentication.
---
--- A client can connect to a single memcached server or a cluster of them. In
--- the later case, consistent hashing is used to route requests to the
--- appropriate server.
---
--- Expected return values (like misses) are returned as part of the return
--- type, while unexpected errors are thrown as exceptions.
+{-|
+Module      : Database.Memcache.Client
+Description : Memcached Client
+Copyright   : (c) David Terei, 2016
+License     : BSD
+Maintainer  : code@davidterei.com
+Stability   : stable
+Portability : GHC
+
+A Memcached client.
+
+A client can connect to a single Memcached server or a cluster of them. In the
+later case, consistent hashing is used to route requests to the appropriate
+server. The binary Memcached protocol is used and SASL authentication is
+supported.
+
+Expected return values (like misses) are returned as part of the return type,
+while unexpected errors are thrown as exceptions. Exceptions are either of type
+'MemcacheError' or an 'IO' exception thrown by the network.
+
+Usage is roughly as follows:
+
+> module Main where
+>
+> import qualified Database.Memcache.Client as M
+>   
+> main = do
+>     mc <- M.newClient [M.ServerSpec "localhost" 11211 M.NoAuth]
+>     M.set mc "key" "value" 0 0
+>     v' <- M.get mc "key"
+>     case v' of
+>         Nothing        -> putStrLn "Miss!"
+>         Just (v, _, _) -> putStrLn $ "Hit: " + show v
+-}
 module Database.Memcache.Client (
+        -- * Client creation
         newClient, Client, ServerSpec(..),
         Authentication(..), Username, Password,
+
+        -- * Operations
         get,
         set, cas,
-        delete
+        delete,
+
+        -- * Errors
+        MemcacheError(..), Status(..), ClientError(..), ProtocolError(..)
     ) where
 
 import Database.Memcache.Cluster
@@ -22,10 +53,10 @@ import Database.Memcache.Types hiding (cas)
 import Control.Exception (throwIO)
 import Control.Monad (when)
 
--- | A memcached client, connected to a collection of memcached servers.
+-- | A Memcached client, connected to a collection of Memcached servers.
 type Client = Cluster
 
--- | Establish a new connection to a group of memcached servers.
+-- | Establish a new connection to a group of Memcached servers.
 newClient :: [ServerSpec] -> IO Client
 newClient = newCluster
 
@@ -62,9 +93,9 @@ set c k v f e = do
         rs      -> throwStatus rs
 
 -- | Store a key-value pair, but only if the version specified by the client
--- matches the version of the key-value pair at the server. The version
+-- matches the Version of the key-value pair at the server. The version
 -- identifier of the stored key-value pair is returned, or if the version match
--- fails, 'Nothing' is returned.
+-- fails, @Nothing@ is returned.
 cas :: Cluster -> Key -> Value -> Flags -> Expiration -> Version -> IO (Maybe Version)
 cas c k v f e ver = do
     let msg = emptyReq { reqOp = ReqSet Loud k v (SESet f e), reqCas = ver }
