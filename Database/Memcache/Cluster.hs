@@ -1,4 +1,5 @@
 {-# LANGUAGE RecordWildCards #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 
 {-|
 Module      : Database.Memcache.Cluster
@@ -20,7 +21,7 @@ module Database.Memcache.Cluster (
         Cluster, newCluster, ServerSpec(..),
 
         -- * Operations
-        Retries, getServerForKey, serverOp
+        Retries, getServerForKey, serverOp, anyOp, allOp, allOp'
     ) where
 
 import Database.Memcache.Errors
@@ -88,7 +89,7 @@ getServerForKey c k = do
         else Just $ fromMaybe (V.last servers') (V.find searchF servers')
 
 -- | Run a Memcached operation against a particular server, handling any
--- failures that occur.
+-- failures that occur, retrying the specified number of times.
 serverOp :: Server -> Request -> Retries -> IO Response
 serverOp s req retries = go retries
   where
@@ -101,4 +102,38 @@ serverOp s req retries = go retries
                           writeIORef (failed s) t
                           throwIO err
     handleErrs n _   = go n
+
+-- | Run a Memcached operation against any single server in the cluster,
+-- handling any failures that occur, retrying the specified number of times.
+anyOp :: Cluster -> Request -> Retries -> IO Response
+anyOp c req retries = do
+    servers' <- V.filterM serverAlive $ servers c
+    if V.null servers'
+        then throwIO $ ClientError NoServersReady
+        else serverOp (V.head servers') req retries
+
+-- | Run a Memcached operation against all servers in the cluster, handling any
+-- failures that occur, retrying the specified number of times.
+allOp :: Cluster -> Request -> Retries -> IO [(Server, Response)]
+allOp c req retries = do
+    servers' <- V.filterM serverAlive $ servers c
+    if V.null servers'
+        then throwIO $ ClientError NoServersReady
+        else do
+            res <- V.forM servers' $ \s -> serverOp s req retries
+            return $ V.toList $ V.zip servers' res
+
+-- | Run a Memcached operation against all servers in the cluster, handling any
+-- failures that occur, retrying the specified number of times. Similar to
+-- 'anyOp' but allows more flexible interaction with the 'Server' than a single
+-- request and response.
+allOp' :: forall a. Cluster -> (Server -> IO a) -> Retries -> IO [(Server, a)]
+allOp' c op retries = do
+    servers' <- V.filterM serverAlive $ servers c
+    if V.null servers'
+        then throwIO $ ClientError NoServersReady
+        else do
+            -- XXX: retry handling!
+            res <- V.forM servers' op
+            return $ V.toList $ V.zip servers' res
 

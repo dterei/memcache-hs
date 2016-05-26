@@ -13,6 +13,9 @@ Portability : GHC
 Handles a single memcache connection, sending and receiving requests.
 -}
 module Database.Memcache.Socket (
+        -- * Types
+        Socket, Request(..), Response(..),
+
         -- * Operations
         send, recv,
     ) where
