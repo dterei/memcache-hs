@@ -2,7 +2,6 @@
 
 Required:
 * Timeouts
-* Retry for allOp'
 * Configurable values
 
 Optional:

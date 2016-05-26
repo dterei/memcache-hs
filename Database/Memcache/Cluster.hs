@@ -91,17 +91,7 @@ getServerForKey c k = do
 -- | Run a Memcached operation against a particular server, handling any
 -- failures that occur, retrying the specified number of times.
 serverOp :: Server -> Request -> Retries -> IO Response
-serverOp s req retries = go retries
-  where
-    go try = sendRecv s req `catch` handleErrs (try - 1)
-
-    -- Only network errors throw exceptions, which occur inside the
-    -- resource-pool causing the connection to be destroyed.
-    handleErrs :: Int -> SomeException -> IO Response
-    handleErrs 0 err = do t <- getPOSIXTime
-                          writeIORef (failed s) t
-                          throwIO err
-    handleErrs n _   = go n
+serverOp s req retries = retryOp retries s $ sendRecv s req
 
 -- | Run a Memcached operation against any single server in the cluster,
 -- handling any failures that occur, retrying the specified number of times.
@@ -127,13 +117,26 @@ allOp c req retries = do
 -- failures that occur, retrying the specified number of times. Similar to
 -- 'anyOp' but allows more flexible interaction with the 'Server' than a single
 -- request and response.
-allOp' :: forall a. Cluster -> (Server -> IO a) -> Retries -> IO [(Server, a)]
+allOp' :: Cluster -> (Server -> IO a) -> Retries -> IO [(Server, a)]
 allOp' c op retries = do
     servers' <- V.filterM serverAlive $ servers c
     if V.null servers'
         then throwIO $ ClientError NoServersReady
         else do
-            -- XXX: retry handling!
-            res <- V.forM servers' op
+            res <- V.forM servers' $ \s -> retryOp retries s (op s)
             return $ V.toList $ V.zip servers' res
+
+-- | Run an IO operation multiple times if an exception is thrown, marking the
+-- server as dead if it fails more than the allowed number of retries.
+retryOp :: forall a. Int -> Server -> IO a -> IO a
+retryOp retries s op = go retries
+  where
+    go :: Int -> IO a
+    go n = op `catch` handleErrs (n - 1)
+
+    handleErrs :: Int -> SomeException -> IO a
+    handleErrs 0 err = do t <- getPOSIXTime
+                          writeIORef (failed s) t
+                          throwIO err
+    handleErrs n _   = go n
 
