@@ -78,7 +78,6 @@ type Expiration = Word32
 type Flags      = Word32
 type Version    = Word64
 
--- XXX: Which ones care about version? (Encode?)
 data OpRequest
     = ReqGet       Q K Key
     | ReqSet       Q   Key Value SESet
