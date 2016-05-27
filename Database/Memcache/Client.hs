@@ -25,7 +25,7 @@ Usage is roughly as follows:
 > import qualified Database.Memcache.Client as M
 >   
 > main = do
->     mc <- M.newClient [M.ServerSpec "localhost" 11211 M.NoAuth]
+>     mc <- M.newClient [M.ServerSpec "localhost" 11211 M.NoAuth] def
 >     M.set mc "key" "value" 0 0
 >     v' <- M.get mc "key"
 >     case v' of
@@ -34,8 +34,8 @@ Usage is roughly as follows:
 -}
 module Database.Memcache.Client (
         -- * Client creation
-        newClient, Client, ServerSpec(..),
-        Authentication(..), Username, Password,
+        newClient, Client, ServerSpec(..), Options(..),
+        Authentication(..), Username, Password, def,
         quit,
 
         -- * Operations
@@ -67,6 +67,7 @@ import Database.Memcache.Types hiding (cas)
 
 import Control.Exception (handle, throwIO, SomeException)
 import Control.Monad (forM_, void, when)
+import Data.Default.Class
 import Data.Word
 import Data.ByteString (ByteString)
 import qualified Data.ByteString as B (null)
@@ -75,12 +76,12 @@ import qualified Data.ByteString as B (null)
 type Client = Cluster
 
 -- | Establish a new connection to a group of Memcached servers.
-newClient :: [ServerSpec] -> IO Client
+newClient :: [ServerSpec] -> Options -> IO Client
 newClient = newCluster
 
 -- | Gracefully close a connection to a Memcached cluster.
 quit :: Cluster -> IO ()
-quit c = void $ allOp' c serverQuit 2 -- TODO: make configurable
+quit c = void $ allOp' c serverQuit
   where
     serverQuit :: Server -> IO ()
     serverQuit s = handle consumeError $ do
@@ -90,14 +91,6 @@ quit c = void $ allOp' c serverQuit 2 -- TODO: make configurable
 
     consumeError :: SomeException -> IO ()
     consumeError _ = return ()
-
--- | Send a request to the server determined by the key.
-keyedOp :: Cluster -> Key -> Request -> IO Response
-keyedOp c k r = do
-    s' <- getServerForKey c k
-    case s' of
-        Just s  -> serverOp s r 2 -- TODO: make configurable
-        Nothing -> throwIO $ ClientError NoServersReady
 
 -- | Retrieve the value for the given key from Memcached.
 get :: Cluster -> Key -> IO (Maybe (Value, Flags, Version))
@@ -263,7 +256,7 @@ delete c k ver = do
 flush :: Cluster -> Maybe Expiration -> IO ()
 flush c e = do
     let msg = emptyReq { reqOp = ReqFlush Loud (SETouch <$> e) }
-    results <- allOp c msg 2 -- TODO: configurable
+    results <- allOp c msg
     forM_ results $ \(_, r) -> do
         when (resOp r /= ResFlush Loud) $ throwIO $ wrongOp r "FLUSH"
         case resStatus r of
@@ -276,7 +269,7 @@ type StatResults = [(ByteString, ByteString)]
 -- | Return statistics on the stored key-value pairs at each server in the
 -- cluster.
 stats :: Cluster -> Maybe Key -> IO [(Server, Maybe StatResults)]
-stats c key = allOp' c serverStats 2 -- TODO: configurable
+stats c key = allOp' c serverStats
   where
     msg :: Request
     msg = emptyReq { reqOp = ReqStat key }
@@ -303,7 +296,7 @@ stats c key = allOp' c serverStats 2 -- TODO: configurable
 version :: Cluster -> IO ByteString
 version c = do
     let msg = emptyReq { reqOp = ReqVersion }
-    r <- anyOp c msg 2 -- TODO: configurable
+    r <- anyOp c msg
     v <- case resOp r of
         ResVersion v -> return v
         _            -> throwIO $ wrongOp r "VERSION"

@@ -23,7 +23,6 @@ module Database.Memcache.Server (
 
 import Database.Memcache.SASL
 import Database.Memcache.Socket
-import Database.Memcache.Types
 
 import Control.Exception
 import Data.Hashable
@@ -33,7 +32,7 @@ import Data.Time.Clock (NominalDiffTime)
 import Data.Time.Clock.POSIX (POSIXTime)
 
 import Network.BSD (getProtocolNumber, getHostByName, hostAddress)
-import Network.Socket (HostName, PortNumber(..), Socket)
+import Network.Socket (HostName, PortNumber(..))
 import qualified Network.Socket as S
 
 -- Connection pool constants.
@@ -111,6 +110,7 @@ newServer host port auth = do
 
 -- | Send and receive a single request/response pair to the Memcached server.
 sendRecv :: Server -> Request -> IO Response
+{-# INLINE sendRecv #-}
 sendRecv svr msg = withSocket svr $ \s -> do
     send s msg
     recv s
@@ -118,10 +118,12 @@ sendRecv svr msg = withSocket svr $ \s -> do
 -- | Run a function with access to an server socket for using 'send' and
 -- 'recv'.
 withSocket :: Server -> (Socket -> IO a) -> IO a
+{-# INLINE withSocket #-}
 withSocket svr = withResource $ pool svr
 
 -- | Close the server connection. If you perform another operation after this,
 -- the connection will be re-established.
 close :: Server -> IO ()
+{-# INLINE close #-}
 close srv = destroyAllResources $ pool srv
 

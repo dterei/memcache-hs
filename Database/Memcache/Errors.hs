@@ -42,7 +42,9 @@ instance Exception MemcacheError
 data ClientError
     -- | All servers are currently marked failed.
     = NoServersReady
-    deriving (Eq, Show, Read, Typeable)
+    -- | Timeout occurred sending request to server.
+    | Timeout
+    deriving (Eq, Show, Typeable)
 
 -- | Errors related to memcache protocol and bytes on the wire.
 data ProtocolError

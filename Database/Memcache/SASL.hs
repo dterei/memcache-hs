@@ -27,10 +27,10 @@ import Control.Exception (throwIO)
 import Control.Monad
 import Data.ByteString.Char8 as B8 (ByteString, pack, singleton)
 import Data.Monoid
-import Network.Socket (Socket)
 
 -- | Perform SASL authentication with the server.
 authenticate :: Socket -> Authentication -> IO ()
+{-# INLINE authenticate #-}
 authenticate _ NoAuth     = return ()
 authenticate s (Auth u p) = saslAuthPlain s u p
 -- NOTE: For correctness really should check that PLAIN auth is supported first
@@ -39,6 +39,7 @@ authenticate s (Auth u p) = saslAuthPlain s u p
 
 -- | Perform SASL PLAIN authentication.
 saslAuthPlain :: Socket -> Username -> Password -> IO ()
+{-# INLINE saslAuthPlain #-}
 saslAuthPlain s u p = do
     let credentials = singleton '\0' <> u <> singleton '\0' <> p
         msg = emptyReq { reqOp = ReqSASLStart (B8.pack "PLAIN") credentials }
@@ -54,6 +55,7 @@ saslAuthPlain s u p = do
 -- only support PLAIN as does the Memcached server, we simply assume PLAIN
 -- authentication is supprted and try that.
 saslListMechs :: Socket -> IO B8.ByteString
+{-# INLINE saslListMechs #-}
 saslListMechs s = do
     let msg = emptyReq { reqOp = ReqSASLList }
     send s msg

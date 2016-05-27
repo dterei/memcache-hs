@@ -1,8 +1,7 @@
 ## ToDo
 
 Required:
-* Timeouts
-* Configurable values
+* Fix < GHC710
 
 Optional:
 * Configurable fail-over mode

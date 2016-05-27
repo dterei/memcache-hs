@@ -1,5 +1,3 @@
-{-# LANGUAGE DeriveDataTypeable #-}
-
 {-|
 Module      : Database.Memcache.Types
 Description : Memcached Types
@@ -21,24 +19,23 @@ module Database.Memcache.Types (
         Version, Status(..),
 
         -- * Header
-        Header(..), mEMCACHE_HEADER_SIZE,
+        Header(..), mEMCACHE_HEADER_SIZE, PktType(..),
 
         -- * Requests
         Request(..), OpRequest(..), SESet(..), SEIncr(..), SETouch(..), emptyReq,
 
         -- * Responses
-        Response(..), OpResponse(..)
+        Response(..), OpResponse(..), emptyRes
     ) where
 
 import Data.ByteString (ByteString)
-import Data.Typeable
 import Data.Word
 
 -- | SASL Authentication information for a server.
 data Authentication
     = Auth { username :: !Username, password :: !Password }
     | NoAuth
-    deriving (Show, Eq)
+    deriving (Eq, Show)
 
 -- | Username for authentication.
 type Username = ByteString
@@ -67,8 +64,22 @@ type Password = ByteString
 mEMCACHE_HEADER_SIZE :: Int
 mEMCACHE_HEADER_SIZE = 24
 
-data Q          = Loud  | Quiet      deriving (Eq, Show, Typeable)
-data K          = NoKey | IncludeKey deriving (Eq, Show, Typeable)
+-- | Memcached packet header (for both 'Request' and 'Response').
+data Header = Header {
+        op       :: Word8,
+        keyLen   :: Word16,
+        extraLen :: Word8,
+        status   :: Status,
+        bodyLen  :: Word32,
+        opaque   :: Word32,
+        cas      :: Version
+    } deriving (Eq, Show)
+
+data PktType = PktRequest | PktResponse
+    deriving (Eq, Show)
+
+data Q          = Loud  | Quiet      deriving (Eq, Show)
+data K          = NoKey | IncludeKey deriving (Eq, Show)
 type Key        = ByteString
 type Value      = ByteString
 type Extras     = ByteString
@@ -98,18 +109,19 @@ data OpRequest
     | ReqSASLList
     | ReqSASLStart     Key Value -- key: auth method, value: auth data
     | ReqSASLStep      Key Value -- key: auth method, value: auth data (continued)
-    deriving (Eq, Show, Typeable)
+    deriving (Eq, Show)
 
-data SESet   = SESet   Flags Expiration         deriving (Eq, Show, Typeable)
-data SEIncr  = SEIncr  Initial Delta Expiration deriving (Eq, Show, Typeable)
-data SETouch = SETouch Expiration               deriving (Eq, Show, Typeable)
+data SESet   = SESet   Flags Expiration         deriving (Eq, Show)
+data SEIncr  = SEIncr  Initial Delta Expiration deriving (Eq, Show)
+data SETouch = SETouch Expiration               deriving (Eq, Show)
 
 data Request = Req {
         reqOp     :: OpRequest,
         reqOpaque :: Word32,
         reqCas    :: Version
-    } deriving (Eq, Show, Typeable)
+    } deriving (Eq, Show)
 
+-- | Noop request.
 emptyReq :: Request
 emptyReq = Req { reqOp = ReqNoop, reqOpaque = 0, reqCas = 0 }
 
@@ -132,10 +144,10 @@ data OpResponse
     | ResVersion         Value
     | ResStat        Key Value
     | ResQuit      Q
-    | ResSASLList           Value
+    | ResSASLList        Value
     | ResSASLStart
     | ResSASLStep
-    deriving (Eq, Show, Typeable)
+    deriving (Eq, Show)
 
 -- | The status (success or error) of a Memcached operation returned in a
 -- 'Response'.
@@ -162,7 +174,7 @@ data Status
     | SaslAuthFail        -- SASL
     -- | SASL authentication requires more steps.
     | SaslAuthContinue    -- SASL
-    deriving (Eq, Show, Typeable)
+    deriving (Eq, Show)
 
 -- | Memcached response packet.
 data Response = Res {
@@ -170,16 +182,9 @@ data Response = Res {
         resStatus :: Status,
         resOpaque :: Word32,
         resCas    :: Version
-    } deriving (Eq, Show, Typeable)
+    } deriving (Eq, Show)
 
--- | Memcached packet header (for both 'Request' and 'Response').
-data Header = Header {
-        op       :: Word8,
-        keyLen   :: Word16,
-        extraLen :: Word8,
-        status   :: Status,
-        bodyLen  :: Word32,
-        opaque   :: Word32,
-        cas      :: Version
-    } deriving (Eq, Show, Typeable)
+-- | Noop response.
+emptyRes :: Response
+emptyRes = Res { resOp = ResNoop, resStatus = NoError, resOpaque = 0, resCas = 0 }
 

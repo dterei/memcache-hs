@@ -18,6 +18,9 @@ module Database.Memcache.Socket (
 
         -- * Operations
         send, recv,
+
+        -- * Serialization / Deserialization
+        szRequest, szResponse, dzHeader, dzResponse
     ) where
 
 -- FIXME: Wire works with lazy bytestrings but we receive strict bytestrings
@@ -42,20 +45,22 @@ import qualified Network.Socket.ByteString as N
 
 -- | Send a request to the Memcached server.
 send :: Socket -> Request -> IO ()
+{-# INLINE send #-}
 send s m = N.sendAll s (toByteString $ szRequest m)
 
 -- | Retrieve a single response from the Memcached server.
 -- FIXME: read into buffer to minimize read syscalls
 recv :: Socket -> IO Response
+{-# INLINE recv #-}
 recv s = do
     header <- recvAll mEMCACHE_HEADER_SIZE mempty
-    let h = runGet dzHeader (L.fromChunks [header])
+    let h = runGet (dzHeader PktResponse) (L.fromChunks [header])
     if bodyLen h > 0
         then do
           let bytesToRead = fromIntegral $ bodyLen h
           body <- recvAll bytesToRead mempty
-          return $ dzBody h (L.fromChunks [body])
-        else return $ dzBody h L.empty
+          return $ dzResponse h (L.fromChunks [body])
+        else return $ dzResponse h L.empty
   where
     recvAll :: Int -> Builder -> IO B.ByteString
     recvAll 0 !acc = return $! toByteString acc
@@ -72,7 +77,70 @@ recv s = do
 
 -- | Check whether we can still operate on this socket or not.
 isSocketActive :: Socket -> IO Bool
+{-# INLINE isSocketActive #-}
 isSocketActive s = (&&) <$> isConnected s <*> isReadable s
+
+-- | Serialize a response to a ByteString Builder.
+szResponse :: Response -> Builder
+szResponse res =
+       fromWord8 0x81
+    <> fromWord8 c
+    <> fromWord16be (fromIntegral keyl)
+    <> fromWord8 (fromIntegral extl)
+    <> fromWord8 0
+    <> fromWord16be 0
+    <> fromWord32be (fromIntegral $ extl + keyl + vall)
+    <> fromWord32be (resOpaque res)
+    <> fromWord64be (resCas res)
+    <> ext'
+    <> key'
+    <> val'
+  where
+    (c, k', v', ext', extl) = szOpResponse (resOp res)
+    (keyl, key') = case k' of
+        Just k  -> (B.length k, fromByteString k)
+        Nothing -> (0, mempty)
+    (vall, val') = case v' of
+        Just v  -> (B.length v, fromByteString v)
+        Nothing -> (0, mempty)
+
+szOpResponse :: OpResponse -> (Word8, Maybe Key, Maybe Value, Builder, Int)
+szOpResponse o = case o of
+    ResGet       Loud    v f -> (0x00, Nothing, Just v, fromWord32be f, 4)
+    ResGet       Quiet   v f -> (0x09, Nothing, Just v, fromWord32be f, 4)
+    ResGetK      Loud  k v f -> (0x0C, Just k,  Just v, fromWord32be f, 4)
+    ResGetK      Quiet k v f -> (0x0D, Just k,  Just v, fromWord32be f, 4)
+    ResSet       Loud        -> (0x01, Nothing, Nothing, mempty, 0)
+    ResSet       Quiet       -> (0x11, Nothing, Nothing, mempty, 0)
+    ResAdd       Loud        -> (0x02, Nothing, Nothing, mempty, 0)
+    ResAdd       Quiet       -> (0x12, Nothing, Nothing, mempty, 0)
+    ResReplace   Loud        -> (0x03, Nothing, Nothing, mempty, 0)
+    ResReplace   Quiet       -> (0x13, Nothing, Nothing, mempty, 0)
+    ResDelete    Loud        -> (0x04, Nothing, Nothing, mempty, 0)
+    ResDelete    Quiet       -> (0x14, Nothing, Nothing, mempty, 0)
+    ResIncrement Loud      f -> (0x05, Nothing, Nothing, fromWord64be f, 8)
+    ResIncrement Quiet     f -> (0x15, Nothing, Nothing, fromWord64be f, 8)
+    ResDecrement Loud      f -> (0x06, Nothing, Nothing, fromWord64be f, 8)
+    ResDecrement Quiet     f -> (0x16, Nothing, Nothing, fromWord64be f, 8)
+    ResAppend    Loud        -> (0x0E, Nothing, Nothing, mempty, 0)
+    ResAppend    Quiet       -> (0x19, Nothing, Nothing, mempty, 0)
+    ResPrepend   Loud        -> (0x0F, Nothing, Nothing, mempty, 0)
+    ResPrepend   Quiet       -> (0x1A, Nothing, Nothing, mempty, 0)
+    ResTouch                 -> (0x1C, Nothing, Nothing, mempty, 0)
+    ResGAT       Loud    v f -> (0x1D, Nothing,  Just v, fromWord32be f, 4)
+    ResGAT       Quiet   v f -> (0x1E, Nothing,  Just v, fromWord32be f, 4)
+    ResGATK      Loud  k v f -> (0x23,  Just k,  Just v, fromWord32be f, 4)
+    ResGATK      Quiet k v f -> (0x24,  Just k,  Just v, fromWord32be f, 4)
+    ResFlush     Loud        -> (0x08, Nothing, Nothing, mempty, 0)
+    ResFlush     Quiet       -> (0x18, Nothing, Nothing, mempty, 0)
+    ResNoop                  -> (0x0A, Nothing, Nothing, mempty, 0)
+    ResVersion           v   -> (0x0B, Nothing,  Just v, mempty, 0)
+    ResStat            k v   -> (0x10,  Just k,  Just v, mempty, 0)
+    ResQuit      Loud        -> (0x07, Nothing, Nothing, mempty, 0)
+    ResQuit      Quiet       -> (0x17, Nothing, Nothing, mempty, 0)
+    ResSASLList          v   -> (0x20, Nothing,  Just v, mempty, 0)
+    ResSASLStart             -> (0x21, Nothing, Nothing, mempty, 0)
+    ResSASLStep              -> (0x22, Nothing, Nothing, mempty, 0)
 
 -- | Serialize a request to a ByteString Builder.
 szRequest :: Request -> Builder
@@ -90,7 +158,7 @@ szRequest req =
     <> key'
     <> val'
   where
-    (c, k', v', ext', extl) = getCodeKeyValue (reqOp req)
+    (c, k', v', ext', extl) = szOpRequest (reqOp req)
     (keyl, key') = case k' of
         Just k  -> (B.length k, fromByteString k)
         Nothing -> (0, mempty)
@@ -100,8 +168,8 @@ szRequest req =
 
 -- Extract needed info from an OpRequest for serialization.
 -- FIXME: Make sure this is optimized well (no tuple, boxing, unboxing, inlined)
-getCodeKeyValue :: OpRequest -> (Word8, Maybe Key, Maybe Value, Builder, Int)
-getCodeKeyValue o = case o of
+szOpRequest :: OpRequest -> (Word8, Maybe Key, Maybe Value, Builder, Int)
+szOpRequest o = case o of
     -- FIXME: make sure this isn't a thunk! (c)
     ReqGet      q k key   -> let c | q == Loud && k == NoKey      = 0x00
                                    | q == Loud && k == IncludeKey = 0x0C
@@ -111,37 +179,27 @@ getCodeKeyValue o = case o of
 
     ReqSet       Loud  key v e -> (0x01, Just key, Just v, szSESet e, 8)
     ReqSet       Quiet key v e -> (0x11, Just key, Just v, szSESet e, 8)
-
     ReqAdd       Loud  key v e -> (0x02, Just key, Just v, szSESet e, 8)
     ReqAdd       Quiet key v e -> (0x12, Just key, Just v, szSESet e, 8)
-
     ReqReplace   Loud  key v e -> (0x03, Just key, Just v, szSESet e, 8)
     ReqReplace   Quiet key v e -> (0x13, Just key, Just v, szSESet e, 8)
-
     ReqDelete    Loud  key     -> (0x04, Just key, Nothing, mempty, 0)
     ReqDelete    Quiet key     -> (0x14, Just key, Nothing, mempty, 0)
-
     ReqIncrement Loud  key   e -> (0x05, Just key, Nothing, szSEIncr e, 20)
     ReqIncrement Quiet key   e -> (0x15, Just key, Nothing, szSEIncr e, 20)
-
     ReqDecrement Loud  key   e -> (0x06, Just key, Nothing, szSEIncr e, 20)
     ReqDecrement Quiet key   e -> (0x16, Just key, Nothing, szSEIncr e, 20)
-
     ReqAppend    Loud  key v   -> (0x0E, Just key, Just v, mempty, 0)
     ReqAppend    Quiet key v   -> (0x19, Just key, Just v, mempty, 0)
-
     ReqPrepend   Loud  key v   -> (0x0F, Just key, Just v, mempty, 0)
     ReqPrepend   Quiet key v   -> (0x1A, Just key, Just v, mempty, 0)
-
     ReqTouch           key   e -> (0x1C, Just key, Nothing, szSETouch e, 4)
-
     -- FIXME: beware allocation.
     ReqGAT       q k   key   e -> let c | q == Quiet && k == IncludeKey = 0x24
                                         | q == Quiet && k == NoKey      = 0x1E
                                         | k == IncludeKey               = 0x23
                                         | otherwise                     = 0x1D
                                   in (c, Just key, Nothing, szSETouch e, 4)
-
     ReqFlush    Loud  (Just e) -> (0x08, Nothing, Nothing, szSETouch e, 4)
     ReqFlush    Quiet (Just e) -> (0x18, Nothing, Nothing, szSETouch e, 4)
     ReqFlush    Loud  Nothing  -> (0x08, Nothing, Nothing, mempty, 0)
@@ -151,7 +209,6 @@ getCodeKeyValue o = case o of
     ReqStat           key      -> (0x10, key, Nothing, mempty, 0)
     ReqQuit     Loud           -> (0x07, Nothing, Nothing, mempty, 0)
     ReqQuit     Quiet          -> (0x17, Nothing, Nothing, mempty, 0)
-
     ReqSASLList                -> (0x20, Nothing, Nothing, mempty, 0)
     ReqSASLStart      key v    -> (0x21, Just key, Just v, mempty, 0)
     ReqSASLStep       key v    -> (0x22, Just key, Just v, mempty, 0)
@@ -162,11 +219,15 @@ getCodeKeyValue o = case o of
     szSETouch (SETouch    e) = fromWord32be e
 
 -- | Deserialize a Header from a ByteString.
-dzHeader :: Get Header
-dzHeader = do
+dzHeader :: PktType -> Get Header
+{-# INLINE dzHeader #-}
+dzHeader pkt = do
     m   <- getWord8
-    when (m /= 0x81) $
-        throw $ ProtocolError UnknownPkt { protocolError = show m }
+    case pkt of
+      PktResponse -> when (m /= 0x81) $
+          throw $ ProtocolError UnknownPkt { protocolError = show m }
+      PktRequest -> when (m /= 0x80) $
+          throw $ ProtocolError UnknownPkt { protocolError = show m }
     o   <- getWord8
     kl  <- getWord16be
     el  <- getWord8
@@ -186,8 +247,8 @@ dzHeader = do
         }
 
 -- | Deserialize a Response body.
-dzBody :: Header -> L.ByteString -> Response
-dzBody h = runGet $
+dzResponse :: Header -> L.ByteString -> Response
+dzResponse h = runGet $
     case op h of
         0x00 -> dzGetResponse h $ ResGet Loud
         0x09 -> dzGetResponse h $ ResGet Quiet
@@ -350,6 +411,7 @@ dzStatus = do
 -- | Check the length of a header field is as expected, throwing a
 -- ProtocolError exception if it is not.
 chkLength :: (Eq a, Show a) => a -> a -> String -> Get ()
+{-# INLINE chkLength #-}
 chkLength expected l msg = when (l /= expected) $
   return $ throw $ ProtocolError BadLength { protocolError =
       msg ++ " length expected " ++ show expected ++ " got " ++ show l
