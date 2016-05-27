@@ -4,6 +4,8 @@ Required:
 * Fix < GHC710
 
 Optional:
+* Is System.Timeout still slow? Switch to Warp/Snap timeout handler?
+* Is NominalDiffTime slow? Switch to unix epoch time?
 * Configurable fail-over mode
 * Multi-get
 * Generic multi operation support
