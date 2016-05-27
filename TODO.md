@@ -1,9 +1,10 @@
 ## ToDo
 
 Required:
-* Fix < GHC710
+* Document: Expiration, Flags, Version.
 
 Optional:
+* Simpler interface?
 * Is System.Timeout still slow? Switch to Warp/Snap timeout handler?
 * Is NominalDiffTime slow? Switch to unix epoch time?
 * Configurable fail-over mode
