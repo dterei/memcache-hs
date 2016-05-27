@@ -11,7 +11,9 @@
   exceptions.
 * Remove many `Typeable` instances.
 * Support better testing with a mock Memcached server.
+* Fix bug in socket handling - detected EOF properly.
 * Greatly improve documentation.
+* Use `data-default-class` for defaults of servers and options.
 
 # 0.1.0.1 - February 26th, 2016
 
