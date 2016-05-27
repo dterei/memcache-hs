@@ -1,4 +1,4 @@
-# 0.2.0.0 - 
+# 0.2.0.0 - May 27th, 2016
 
 * Big design change to reduce code duplication (`Protocol` module gone).
 * Remove `Options` type - just fixed configuration for now.
