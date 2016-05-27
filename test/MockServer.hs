@@ -42,15 +42,15 @@ data MockResponse
 -- | Run an IO action with a mock Memcached server running in the background,
 -- killing it once done.
 withMCServer :: Bool -> [MockResponse] -> IO () -> IO ()
-withMCServer loop res m = bracket (mockMCServer loop res) killThread (const m)
+withMCServer loop res m = bracket (mockMCServer loop res) killThread $ const m
 
 -- | New mock Memcached server that responds to each request with the specified
 -- list of responses.
 mockMCServer :: Bool -> [MockResponse] -> IO ThreadId
 mockMCServer loop resp' = forkIO $ do
-    sock <- N.socket N.AF_INET N.Stream 0
-    N.setSocketOption sock N.ReusePort 1
-    N.bind sock $ N.SockAddrInet 11211 0
+    sock <- N.socket N.AF_INET N.Stream N.defaultProtocol
+    N.setSocketOption sock N.ReuseAddr 1
+    N.bind sock $ N.SockAddrInet 11211 N.iNADDR_ANY
     N.listen sock 10
     
     ref <- newIORef resp'
@@ -63,7 +63,6 @@ mockMCServer loop resp' = forkIO $ do
     acceptHandler sock ref = do
         client <- fst <$> N.accept sock
         resp <- readIORef ref
-        putStrLn $ "new client: " ++ show (length resp)
         cont <- clientHandler client ref resp
         if cont
             then acceptHandler sock ref

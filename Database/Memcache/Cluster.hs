@@ -127,15 +127,14 @@ newCluster :: [ServerSpec] -> Options -> IO Cluster
 newCluster []    _ = throwIO $ ClientError NoServersReady
 newCluster hosts Options{..} = do
     s <- mapM (\ServerSpec{..} -> newServer ssHost ssPort ssAuth) hosts
-    let c = Cluster {
+    return $
+        Cluster {
             cServers   = (V.fromList $ sort s),
             cRetries   = optsServerRetries ,
             cFailDelay = fromEnum optsFailRetryDelay,
             cDeadDelay = fromRational $ toRational optsDeadRetryDelay / 1000,
             cTimeout   = fromEnum optsServerTimeout 
         }
-    print c
-    return c
 
 -- | Check if server is alive.
 serverAlive :: NominalDiffTime -> Server -> IO Bool
