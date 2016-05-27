@@ -1,4 +1,5 @@
 {-# LANGUAGE BangPatterns #-}
+{-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
@@ -59,6 +60,9 @@ data ServerSpec = ServerSpec {
 
 instance Default ServerSpec where
   def = ServerSpec "localhost" 11211 NoAuth
+
+instance Default [ServerSpec] where
+  def = [def]
 
 -- | Options specifies how a memcached cluster should be configured.
 data Options = Options {
@@ -226,7 +230,7 @@ retryOp Cluster{..} s op = do
     handleErrs 0 err = do t <- getPOSIXTime
                           writeIORef (failed s) t
                           throwIO err
-    handleErrs n err = do
+    handleErrs n _ = do
         threadDelay cFailDelay
         go n
 
