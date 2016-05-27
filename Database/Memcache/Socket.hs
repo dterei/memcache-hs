@@ -57,9 +57,9 @@ recv s = do
     let h = runGet (dzHeader PktResponse) (L.fromChunks [header])
     if bodyLen h > 0
         then do
-          let bytesToRead = fromIntegral $ bodyLen h
-          body <- recvAll bytesToRead mempty
-          return $ dzResponse h (L.fromChunks [body])
+            let bytesToRead = fromIntegral $ bodyLen h
+            body <- recvAll bytesToRead mempty
+            return $ dzResponse h (L.fromChunks [body])
         else return $ dzResponse h L.empty
   where
     recvAll :: Int -> Builder -> IO B.ByteString
@@ -67,13 +67,17 @@ recv s = do
     recvAll !n !acc = do
         canRead <- isSocketActive s
         if canRead
-          then do
-              buf <- N.recv s n
-              let bufLen = B.length buf
-              if bufLen == n
-                then return $! (toByteString $! acc <> fromByteString buf)
-                else recvAll (max 0 (n - bufLen)) (acc <> fromByteString buf)
-          else throwIO $ ProtocolError UnexpectedEOF { protocolError = "" }
+            then do
+                buf <- N.recv s n
+                case B.length buf of
+                    0  -> throwIO errEOF
+                    bl | bl == n ->
+                        return $! (toByteString $! acc <> fromByteString buf)
+                    bl -> recvAll (n - bl) (acc <> fromByteString buf)
+            else throwIO errEOF
+    
+    errEOF :: MemcacheError
+    errEOF = ProtocolError UnexpectedEOF { protocolError = "" }
 
 -- | Check whether we can still operate on this socket or not.
 isSocketActive :: Socket -> IO Bool

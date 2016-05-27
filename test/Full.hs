@@ -24,13 +24,14 @@ import           System.IO
 
 main :: IO ()
 main = do
-    -- getTest
-    -- deleteTest
+    getTest
+    deleteTest
+    retryTest
     timeoutTest
     exitSuccess
 
 getTest :: IO ()
-getTest = withMCServer res $ do
+getTest = withMCServer False res $ do
     c <- M.newClient [M.def] M.def
     void $ M.set c (BC.pack "key") (BC.pack "world") 0 0
     Just (v', _, _) <- M.get c "key"
@@ -38,12 +39,12 @@ getTest = withMCServer res $ do
         putStrLn $ "bad value returned! " ++ show v'
         exitFailure 
   where
-    res = [ emptyRes { resOp = ResSet Loud }
-          , emptyRes { resOp = ResGet Loud "world" 0 }
+    res = [ MR $ emptyRes { resOp = ResSet Loud }
+          , MR $ emptyRes { resOp = ResGet Loud "world" 0 }
           ]
 
 deleteTest :: IO ()
-deleteTest = withMCServer res $ do
+deleteTest = withMCServer False res $ do
     c <- M.newClient [M.def] M.def
     v1 <- M.set c "key" "world"  0 0
     v2 <- M.set c "key" "world2" 0 0
@@ -55,13 +56,22 @@ deleteTest = withMCServer res $ do
         putStrLn "delete failed!"
         exitFailure
   where
-    res = [ emptyRes { resOp = ResSet Loud, resCas = 1 }
-          , emptyRes { resOp = ResSet Loud, resCas = 2 }
-          , emptyRes { resOp = ResDelete Loud }
+    res = [ MR $ emptyRes { resOp = ResSet Loud, resCas = 1 }
+          , MR $ emptyRes { resOp = ResSet Loud, resCas = 2 }
+          , MR $ emptyRes { resOp = ResDelete Loud }
+          ]
+
+retryTest :: IO ()
+retryTest = withMCServer False res $ do
+    c <- M.newClient [M.def] M.def
+    void $ M.set c (BC.pack "key") (BC.pack "world") 0 0
+  where
+    res = [ CloseConnection
+          , MR $ emptyRes { resOp = ResSet Loud }
           ]
 
 timeoutTest :: IO ()
-timeoutTest = withMCServer res $ do
+timeoutTest = withMCServer True res $ do
     c <- M.newClient [M.def] M.def
     void $ M.set c (BC.pack "key") (BC.pack "world") 0 0
     r <- try $ M.get c "key" 
@@ -70,5 +80,5 @@ timeoutTest = withMCServer res $ do
         Left  _ -> putStrLn "unexpected exception!" >> exitFailure
         Right _ -> putStrLn "no timeout occured!" >> exitFailure
   where
-    res = [ emptyRes { resOp = ResSet Loud } ]
+    res = [ MR $ emptyRes { resOp = ResSet Loud } ]
 
