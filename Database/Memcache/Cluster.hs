@@ -69,7 +69,7 @@ instance Default ServerSpec where
 instance Default [ServerSpec] where
   def = [def]
 
--- | Options specifies how a memcached cluster should be configured.
+-- | Options specifies how a Memcached cluster should be configured.
 data Options = Options {
         -- | Number of times to retry an operation on failure. If consecutive
         -- failures exceed this value for a server, we mark it as down and

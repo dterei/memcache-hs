@@ -1,6 +1,6 @@
 {-# LANGUAGE OverloadedStrings #-}
 
--- | Our testsuite, which we run expecting there to be a local memcache server
+-- | Our testsuite, which we run expecting there to be a local Memcached server
 -- running on `localhost:11211`.
 module Main where
 

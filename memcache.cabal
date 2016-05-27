@@ -4,7 +4,10 @@ homepage:       https://github.com/dterei/memcache-hs
 bug-reports:    https://github.com/dterei/memcache-hs/issues
 synopsis:       A memcached client library.
 description:    
-  A client library for a memcached cluster.
+  A client library for a memcached cluster. Memcached is an in-memory key-value
+  store typically used as a distributed and shared cache. Clients connect to a
+  group of memcached servers and perform out-of-band caching for things like
+  SQL results, rendered pages, or third-party APIs.
   .
   It supports the binary memcached protocol and SASL authentication. No support
   for the ASCII protocol is provided. It supports connecting to a single, or a

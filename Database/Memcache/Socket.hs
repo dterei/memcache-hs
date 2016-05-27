@@ -10,7 +10,7 @@ Maintainer  : code@davidterei.com
 Stability   : stable
 Portability : GHC
 
-Handles a single memcache connection, sending and receiving requests.
+Handles a single Memcached connection, sending and receiving requests.
 -}
 module Database.Memcache.Socket (
         -- * Types

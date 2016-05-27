@@ -11,7 +11,7 @@ Portability : GHC
 
 Handles the connections between a Memcached client and a single server.
 
-MemCache expected errors (part of protocol) are returned in the Response,
+Memcached expected errors (part of protocol) are returned in the Response,
 unexpected errors (e.g., network failure) are thrown as exceptions. While
 the Server datatype supports a `failed` and `failedAt` flag for managing
 retries, it's up to consumers to use this.

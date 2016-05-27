@@ -7,7 +7,7 @@ Maintainer  : code@davidterei.com
 Stability   : stable
 Portability : GHC
 
-Stores the various types needed by memcache. Mostly concerned with the
+Stores the various types needed by Memcached. Mostly concerned with the
 representation of the protocol.
 -}
 module Database.Memcache.Types (

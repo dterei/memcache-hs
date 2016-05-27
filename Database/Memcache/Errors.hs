@@ -28,13 +28,13 @@ import Database.Memcache.Types
 import Control.Exception
 import Data.Typeable
 
--- | All exceptions that a Memcache client may throw.
+-- | All exceptions that a Memcached client may throw.
 data MemcacheError
-    -- | Memcache operation error.
+    -- | Memcached operation error.
     = OpError Status
     -- | Error occuring on client side.
     | ClientError ClientError
-    -- | Errors occurring communicating with memcache server.
+    -- | Errors occurring communicating with Memcached server.
     | ProtocolError ProtocolError
     deriving (Eq, Show, Typeable)
 
@@ -48,12 +48,10 @@ data ClientError
     | Timeout
     deriving (Eq, Show, Typeable)
 
--- | Errors related to memcache protocol and bytes on the wire.
+-- | Errors related to Memcached protocol and bytes on the wire.
 data ProtocolError
     -- | Received an unknown response packet.
-    = UnknownPkt    { protocolError :: String
-                      -- ^ Human readable description of error
-                    }
+    = UnknownPkt    { protocolError :: String }
     -- | Unknown Memcached operation.
     | UnknownOp     { protocolError :: String }
     -- | Unknown Memcached status field value.

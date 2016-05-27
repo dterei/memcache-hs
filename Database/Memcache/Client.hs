@@ -9,11 +9,14 @@ Maintainer  : code@davidterei.com
 Stability   : stable
 Portability : GHC
 
-A Memcached client.
+A Memcached client. Memcached is an in-memory key-value store typically used as
+a distributed and shared cache. Clients connect to a group of Memcached servers
+and perform out-of-band caching for things like SQL results, rendered pages, or
+third-party APIs.
 
 A client can connect to a single Memcached server or a cluster of them. In the
 later case, consistent hashing is used to route requests to the appropriate
-server. The binary Memcached protocol is used and SASL authentication is
+server. The /binary/ Memcached protocol is used and /SASL authentication/ is
 supported.
 
 Expected return values (like misses) are returned as part of the return type,
@@ -22,20 +25,40 @@ while unexpected errors are thrown as exceptions. Exceptions are either of type
 
 We support the following logic for handling failure in operatins:
 
-* Timeouts: we timeout any operation that takes too long and consider it
-            failed.
-* Retry: on operation failure (timeout, network error) we close the connection
-         and rety the operation, doing this up to a configurable maximum.
+* __Timeouts__: we timeout any operation that takes too long and consider it
+                failed.
+* __Retry__: on operation failure (timeout, network error) we close the
+             connection and rety the operation, doing this up to a configurable
+             maximum.
 
-* Failover: when an operation against a server in a cluster fails all retries,
-            we mark that server as dead and use the remaining servers in the
-            cluster to handle all operations. After a configurable period of
-            time as passed, we consider the server alive again and try to use
-            it. This can lead to consistency issues (stale data), but is
-            usually fine for caching purposes and is the common approach in
-            Memcached clients.
+* __Failover__: when an operation against a server in a cluster fails all
+                retries, we mark that server as dead and use the remaining
+                servers in the cluster to handle all operations. After a
+                configurable period of time as passed, we consider the server
+                alive again and try to use it. This can lead to consistency
+                issues (stale data), but is usually fine for caching purposes
+                and is the common approach in Memcached clients.
 
-Some of this behavior can be configured through the 'Options' data type.
+Some of this behavior can be configured through the 'Options' data type. We
+also have the following concepts exposed by Memcached:
+
+  [@version@] Each value has a 'Version' associated with it. This is simply a
+              numeric, monontonically increasing value. The version field
+              allows for a primitive version of 'cas' to be implemented.
+
+  [@expiration@] Each value pair has an 'Expiration' associated with it. Once a
+                 a value expires, it will no longer be returned from the cache
+                 until a new value for that key is set. Expirations come in two
+                 forms, the first form interprets the expiration value as the
+                 number of seconds in the future at which the value should be
+                 considered expired. For example, an expiration of @3600@
+                 expires the value in 1 hour. When the value of the expiration
+                 is greater than 30 days however (@2592000@), the expiration
+                 field is instead interpretted as a UNIX timestamp (the number
+                 of seconds since epoch).
+
+  [@flags@] Each value can have a small amount of fixed metadata associated
+            with it beyond the value itself, these are the 'Flags'.
 
 Usage is roughly as follows:
 
@@ -301,7 +324,7 @@ type StatResults = [(ByteString, ByteString)]
 
 -- | Return statistics on the stored key-value pairs at each server in the
 -- cluster. The optional key can be used to select a different set of
--- statistics from the server than the default. Most memcached servers support
+-- statistics from the server than the default. Most Memcached servers support
 -- @"items"@, @"slabs"@ or @"settings"@.
 stats :: Cluster -> Maybe Key -> IO [(Server, Maybe StatResults)]
 stats c key = allOp' c serverStats

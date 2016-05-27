@@ -9,7 +9,7 @@ Maintainer  : code@davidterei.com
 Stability   : stable
 Portability : GHC
 
-SASL authentication support for memcache.
+SASL authentication support for Memcached.
 -}
 module Database.Memcache.SASL (
         -- * Types
