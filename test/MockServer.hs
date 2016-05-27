@@ -1,4 +1,5 @@
 {-# LANGUAGE BangPatterns #-}
+{-# LANGUAGE CPP #-}
 {-# LANGUAGE OverloadedStrings #-}
 
 -- | Mock Memcached server - just enough for testing client.
@@ -11,6 +12,9 @@ import           Database.Memcache.Socket
 import           Database.Memcache.Types
 
 import           Blaze.ByteString.Builder
+#if __GLASGOW_HASKELL__ < 710
+import           Control.Applicative
+#endif
 import           Control.Concurrent
 import           Control.Exception (bracket, throwIO)
 import           Control.Monad

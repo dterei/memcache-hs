@@ -1,3 +1,5 @@
+{-# LANGUAGE DeriveDataTypeable #-}
+
 {-|
 Module      : Database.Memcache.Errors
 Description : Errors Handling

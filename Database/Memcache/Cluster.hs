@@ -1,4 +1,5 @@
 {-# LANGUAGE BangPatterns #-}
+{-# LANGUAGE CPP #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE ScopedTypeVariables #-}
@@ -25,6 +26,10 @@ module Database.Memcache.Cluster (
         -- * Operations
         Retries, keyedOp, anyOp, allOp, allOp'
     ) where
+
+#if __GLASGOW_HASKELL__ < 706
+import Prelude hiding (catch)
+#endif
 
 import Database.Memcache.Errors
 import Database.Memcache.Server
