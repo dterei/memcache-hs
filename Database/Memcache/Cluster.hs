@@ -224,6 +224,7 @@ retryOp Cluster{..} s op = do
     mr <- go cRetries
     case mr of
         Just r  -> return r
+        -- TODO: should we retry on timeout?
         Nothing -> close s >> throwIO (ClientError Timeout)
   where
     go :: Int -> IO (Maybe a)

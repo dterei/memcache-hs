@@ -20,14 +20,34 @@ Expected return values (like misses) are returned as part of the return type,
 while unexpected errors are thrown as exceptions. Exceptions are either of type
 'MemcacheError' or an 'IO' exception thrown by the network.
 
+We support the following logic for handling failure in operatins:
+
+* Timeouts: we timeout any operation that takes too long and consider it
+            failed.
+* Retry: on operation failure (timeout, network error) we close the connection
+         and rety the operation, doing this up to a configurable maximum.
+
+* Failover: when an operation against a server in a cluster fails all retries,
+            we mark that server as dead and use the remaining servers in the
+            cluster to handle all operations. After a configurable period of
+            time as passed, we consider the server alive again and try to use
+            it. This can lead to consistency issues (stale data), but is
+            usually fine for caching purposes and is the common approach in
+            Memcached clients.
+
+Some of this behavior can be configured through the 'Options' data type.
+
 Usage is roughly as follows:
 
 > module Main where
 >
 > import qualified Database.Memcache.Client as M
->   
+>
 > main = do
->     mc <- M.newClient [M.ServerSpec "localhost" 11211 M.NoAuth] def
+>     -- use default values: connects to localhost:11211
+>     mc <- M.newClient M.def M.def
+>
+>     -- store and then retrieve a key-value pair
 >     M.set mc "key" "value" 0 0
 >     v' <- M.get mc "key"
 >     case v' of
@@ -47,10 +67,10 @@ module Database.Memcache.Client (
 
         -- ** Set operations
         set, cas, add, replace,
-        
+
         -- ** Modify operations
         increment, decrement, append, prepend,
-        
+
         -- ** Delete operations
         delete, flush,
 
@@ -111,7 +131,8 @@ get c k = do
         rs             -> throwStatus rs
 
 -- | Get-and-touch: Retrieve the value for the given key from Memcached, and
--- also update the stored key-value pairs expiration time at the server.
+-- also update the stored key-value pairs expiration time at the server. Use an
+-- expiration value of @0@ to store forever.
 gat :: Cluster -> Key -> Expiration -> IO (Maybe (Value, Flags, Version))
 gat c k e = do
     let msg = emptyReq { reqOp = ReqGAT Loud NoKey k (SETouch e) }
@@ -125,7 +146,7 @@ gat c k e = do
         rs             -> throwStatus rs
 
 -- | Update the expiration time of a stored key-value pair, returning its
--- version identifier.
+-- version identifier. Use an expiration value of @0@ to store forever.
 touch :: Cluster -> Key -> Expiration -> IO (Maybe Version)
 touch c k e = do
     let msg = emptyReq { reqOp = ReqTouch k (SETouch e) }
@@ -137,7 +158,7 @@ touch c k e = do
         rs             -> throwStatus rs
 
 -- | Store a new (or overwrite exisiting) key-value pair, returning its version
--- identifier.
+-- identifier. Use an expiration value of @0@ to store forever.
 set :: Cluster -> Key -> Value -> Flags -> Expiration -> IO Version
 set c k v f e = do
     let msg = emptyReq { reqOp = ReqSet Loud k v (SESet f e) }
@@ -150,7 +171,8 @@ set c k v f e = do
 -- | Store a key-value pair, but only if the version specified by the client
 -- matches the Version of the key-value pair at the server. The version
 -- identifier of the stored key-value pair is returned, or if the version match
--- fails, @Nothing@ is returned.
+-- fails, @Nothing@ is returned. Use an expiration value of @0@ to store
+-- forever.
 cas :: Cluster -> Key -> Value -> Flags -> Expiration -> Version -> IO (Maybe Version)
 cas c k v f e ver = do
     let msg = emptyReq { reqOp = ReqSet Loud k v (SESet f e), reqCas = ver }
@@ -163,7 +185,8 @@ cas c k v f e ver = do
         rs             -> throwStatus rs
 
 -- | Store a new key-value pair, returning it's version identifier. If the
--- key-value pair already exists, then fail (return 'Nothing').
+-- key-value pair already exists, then fail (return 'Nothing'). Use an
+-- expiration value of @0@ to store forever.
 add :: Cluster -> Key -> Value -> Flags -> Expiration -> IO (Maybe Version)
 add c k v f e = do
     let msg = emptyReq { reqOp = ReqAdd Loud k v (SESet f e) }
@@ -176,6 +199,7 @@ add c k v f e = do
 
 -- | Update the value of an existing key-value pair, returning it's new version
 -- identifier. If the key doesn't already exist, the fail and return Nothing.
+-- Use an expiration value of @0@ to store forever.
 replace :: Cluster -> Key -> Value -> Flags -> Expiration -> Version -> IO (Maybe Version)
 replace c k v f e ver = do
     let msg = emptyReq { reqOp = ReqReplace Loud k v (SESet f e), reqCas = ver }
@@ -190,7 +214,8 @@ replace c k v f e ver = do
         rs             -> throwStatus rs
 
 -- | Increment a numeric value stored against a key, returning the incremented
--- value and the version identifier of the key-value pair.
+-- value and the version identifier of the key-value pair. Use an expiration
+-- value of @0@ to store forever.
 increment :: Cluster -> Key -> Initial -> Delta -> Expiration -> Version -> IO (Maybe (Word64, Version))
 increment c k i d e ver = do
     let msg = emptyReq { reqOp = ReqIncrement Loud k (SEIncr i d e), reqCas = ver }
@@ -205,7 +230,8 @@ increment c k i d e ver = do
         rs             -> throwStatus rs
 
 -- | Decrement a numeric value stored against a key, returning the decremented
--- value and the version identifier of the key-value pair.
+-- value and the version identifier of the key-value pair. Use an expiration
+-- value of @0@ to store forever.
 decrement :: Cluster -> Key -> Initial -> Delta -> Expiration -> Version -> IO (Maybe (Word64, Version))
 decrement c k i d e ver = do
     let msg = emptyReq { reqOp = ReqDecrement Loud k (SEIncr i d e), reqCas = ver }
@@ -257,7 +283,9 @@ delete c k ver = do
         ErrKeyExists   -> return False
         rs             -> throwStatus rs
 
--- | Remove (delete) all currently stored key-value pairs from the cluster.
+-- | Remove (delete) all currently stored key-value pairs from the cluster. The
+-- expiration value can be used to cause this flush to occur in the future
+-- rather than immediately.
 flush :: Cluster -> Maybe Expiration -> IO ()
 flush c e = do
     let msg = emptyReq { reqOp = ReqFlush Loud (SETouch <$> e) }
@@ -272,7 +300,9 @@ flush c e = do
 type StatResults = [(ByteString, ByteString)]
 
 -- | Return statistics on the stored key-value pairs at each server in the
--- cluster.
+-- cluster. The optional key can be used to select a different set of
+-- statistics from the server than the default. Most memcached servers support
+-- @"items"@, @"slabs"@ or @"settings"@.
 stats :: Cluster -> Maybe Key -> IO [(Server, Maybe StatResults)]
 stats c key = allOp' c serverStats
   where
