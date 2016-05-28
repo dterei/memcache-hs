@@ -55,7 +55,8 @@ also have the following concepts exposed by Memcached:
                  expires the value in 1 hour. When the value of the expiration
                  is greater than 30 days however (@2592000@), the expiration
                  field is instead interpreted as a UNIX timestamp (the number
-                 of seconds since epoch).
+                 of seconds since epoch). The timestamp specifies the date at
+                 which the value should expire.
 
   [@flags@] Each value can have a small amount of fixed metadata associated
             with it beyond the value itself, these are the 'Flags'.
