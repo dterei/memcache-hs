@@ -27,10 +27,6 @@ module Database.Memcache.Cluster (
         Retries, keyedOp, anyOp, allOp, allOp'
     ) where
 
-#if __GLASGOW_HASKELL__ < 706
-import Prelude hiding (handle)
-#endif
-
 import Database.Memcache.Errors
 import Database.Memcache.Server
 import Database.Memcache.Types
