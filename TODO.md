@@ -1,9 +1,7 @@
 ## ToDo
 
-Required:
-* Document: Expiration, Flags, Version.
-
 Optional:
+* Differentiate between two expiration modes?
 * Simpler interface?
 * Is System.Timeout still slow? Switch to Warp/Snap timeout handler?
 * Is NominalDiffTime slow? Switch to unix epoch time?
