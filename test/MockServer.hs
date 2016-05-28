@@ -16,7 +16,7 @@ import           Blaze.ByteString.Builder
 import           Control.Applicative
 #endif
 import           Control.Concurrent
-import           Control.Exception (bracket, throwIO)
+import           Control.Exception (bracket, handle, throwIO, SomeException)
 import           Control.Monad
 import           Data.Binary.Get
 import qualified Data.ByteString as B
@@ -38,45 +38,60 @@ import           Database.Memcache.Types
 data MockResponse
     = MR Response
     | CloseConnection
+    | DelayMS Int MockResponse
+    | Noop
 
 -- | Run an IO action with a mock Memcached server running in the background,
 -- killing it once done.
 withMCServer :: Bool -> [MockResponse] -> IO () -> IO ()
-withMCServer loop res m = bracket (mockMCServer loop res) killThread $ const m
+withMCServer loop res m = bracket
+    (mockMCServer loop res)
+    (\tid -> killThread tid >> threadDelay 100000)
+    (const m)
 
 -- | New mock Memcached server that responds to each request with the specified
 -- list of responses.
 mockMCServer :: Bool -> [MockResponse] -> IO ThreadId
-mockMCServer loop resp' = forkIO $ do
-    sock <- N.socket N.AF_INET N.Stream N.defaultProtocol
-    N.setSocketOption sock N.ReuseAddr 1
-    N.bind sock $ N.SockAddrInet 11211 N.iNADDR_ANY
-    N.listen sock 10
-    
-    ref <- newIORef resp'
-    acceptHandler sock ref
-
-    when loop $ forever $ threadDelay 1000000
-    N.sClose sock
+mockMCServer loop resp' = forkIO $ bracket 
+    (N.socket N.AF_INET N.Stream N.defaultProtocol)
+    (N.sClose)
+    $ \sock -> do
+        N.setSocketOption sock N.ReuseAddr 1
+        N.bind sock $ N.SockAddrInet 11211 N.iNADDR_ANY
+        N.listen sock 10
+        ref <- newIORef resp'
+        acceptHandler sock ref
+        when loop $ forever $ threadDelay 1000000
   
   where
     acceptHandler sock ref = do
         client <- fst <$> N.accept sock
         resp <- readIORef ref
-        cont <- clientHandler client ref resp
+        cont <- handle allErrors $ clientHandler client ref resp
         if cont
             then acceptHandler sock ref
             else return ()
 
+    allErrors :: SomeException -> IO Bool
+    allErrors = const $ return True
+
     clientHandler client ref []       = N.sClose client >> return False
     clientHandler client ref (r':resp) = do
       void $ recvReq client
-      case r' of
-        (MR r)          -> sendRes client r >> clientHandler client ref resp
-        CloseConnection -> do
-            N.sClose client
-            writeIORef ref resp
-            return $ not $ null resp
+      mrHandler r'
+      where
+        mrHandler r = case r of
+            Noop            -> clientHandler client ref resp
+            (MR mr)         -> sendRes client mr >> clientHandler client ref resp
+            (DelayMS ms mr) -> do
+                writeIORef ref resp -- client may reset connection
+                threadDelay (ms * 1000)
+                mrHandler mr
+            CloseConnection -> do
+                N.sClose client
+                writeIORef ref resp
+                return $ not $ null resp
+
 
 
 sendRes :: N.Socket -> Response -> IO ()
@@ -95,13 +110,18 @@ recvAll s 0 !acc = return $! toByteString acc
 recvAll s !n !acc = do
     canRead <- isSocketActive s
     if canRead
-      then do
-          buf <- N.recv s n
-          let bufLen = B.length buf
-          if bufLen == n
-            then return $! (toByteString $! acc <> fromByteString buf)
-            else recvAll s (max 0 (n - bufLen)) (acc <> fromByteString buf)
-      else throwIO $ ProtocolError UnexpectedEOF { protocolError = "" }
+        then do
+            buf <- N.recv s n
+            case B.length buf of
+                0  -> throwIO errEOF
+                bl | bl == n ->
+                    return $! (toByteString $! acc <> fromByteString buf)
+                bl -> recvAll s (n - bl) (acc <> fromByteString buf)
+        else throwIO errEOF
+  
+  where
+    errEOF :: MemcacheError
+    errEOF = ProtocolError UnexpectedEOF { protocolError = "" }
 
 isSocketActive :: N.Socket -> IO Bool
 isSocketActive s = (&&) <$> N.isConnected s <*> N.isReadable s

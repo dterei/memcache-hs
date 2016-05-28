@@ -28,7 +28,7 @@ module Database.Memcache.Cluster (
     ) where
 
 #if __GLASGOW_HASKELL__ < 706
-import Prelude hiding (catch)
+import Prelude hiding (handle)
 #endif
 
 import Database.Memcache.Errors
@@ -36,7 +36,7 @@ import Database.Memcache.Server
 import Database.Memcache.Types
 
 import Control.Concurrent (threadDelay)
-import Control.Exception (catch, throwIO, SomeException)
+import Control.Exception (handle, throwIO, SomeException)
 import Data.Default.Class
 import Data.Fixed (Milli)
 import Data.Hashable (hash)
@@ -219,18 +219,17 @@ allOp' c op = do
 -- server as dead if it fails more than the allowed number of retries.
 retryOp :: forall a. Cluster -> Server -> IO a -> IO a
 {-# INLINE retryOp #-}
-retryOp Cluster{..} s op = do
-    mr <- go cRetries
-    case mr of
-        Just r  -> return r
-        -- TODO: should we retry on timeout?
-        Nothing -> close s >> throwIO (ClientError Timeout)
+retryOp Cluster{..} s op = go cRetries
   where
-    go :: Int -> IO (Maybe a)
+    go :: Int -> IO a
     {-# INLINE go #-}
-    go !n = timeout cTimeout op `catch` handleErrs (n - 1)
+    go !n = handle (handleErrs $ n - 1) $ do
+        mr <- timeout cTimeout op
+        case mr of
+            Just r  -> return r
+            Nothing -> close s >> throwIO (ClientError Timeout)
 
-    handleErrs :: Int -> SomeException -> IO (Maybe a)
+    handleErrs :: Int -> SomeException -> IO a
     {-# INLINE handleErrs #-}
     handleErrs 0 err = do t <- getPOSIXTime
                           writeIORef (failed s) t

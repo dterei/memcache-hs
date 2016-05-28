@@ -24,10 +24,21 @@ import           System.IO
 
 main :: IO ()
 main = do
+    putStr "GET:      "
     getTest
+    putStrLn "PASSED"
+    putStr "DELETE:   "
     deleteTest
+    putStrLn "PASSED"
+    putStr "RETRY:    "
     retryTest
+    putStrLn "PASSED"
+    putStr "TIMEOUT1: "
     timeoutTest
+    putStrLn "PASSED"
+    putStr "TIMEOUT2: "
+    timeoutRetryTest
+    putStrLn "PASSED"
     exitSuccess
 
 getTest :: IO ()
@@ -81,4 +92,13 @@ timeoutTest = withMCServer True res $ do
         Right _ -> putStrLn "no timeout occured!" >> exitFailure
   where
     res = [ MR $ emptyRes { resOp = ResSet Loud } ]
+
+timeoutRetryTest :: IO ()
+timeoutRetryTest = withMCServer False res $ do
+    c <- M.newClient M.def M.def
+    void $ M.set c (BC.pack "key") (BC.pack "world") 0 0
+  where
+    res = [ DelayMS 800 Noop
+          , MR $ emptyRes { resOp = ResSet Loud }
+          ]
 
