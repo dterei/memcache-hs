@@ -1,6 +1,7 @@
 ## ToDo
 
 Optional:
+* Safe Haskell
 * Differentiate between two expiration modes?
 * Simpler interface?
 * Is System.Timeout still slow? Switch to Warp/Snap timeout handler?
