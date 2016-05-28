@@ -23,18 +23,18 @@ Expected return values (like misses) are returned as part of the return type,
 while unexpected errors are thrown as exceptions. Exceptions are either of type
 'MemcacheError' or an 'IO' exception thrown by the network.
 
-We support the following logic for handling failure in operatins:
+We support the following logic for handling failure in operations:
 
 * __Timeouts__: we timeout any operation that takes too long and consider it
                 failed.
 * __Retry__: on operation failure (timeout, network error) we close the
-             connection and rety the operation, doing this up to a configurable
-             maximum.
+             connection and retry the operation, doing this up to a
+             configurable maximum.
 
 * __Failover__: when an operation against a server in a cluster fails all
                 retries, we mark that server as dead and use the remaining
                 servers in the cluster to handle all operations. After a
-                configurable period of time as passed, we consider the server
+                configurable period of time has passed, we consider the server
                 alive again and try to use it. This can lead to consistency
                 issues (stale data), but is usually fine for caching purposes
                 and is the common approach in Memcached clients.
@@ -43,7 +43,7 @@ Some of this behavior can be configured through the 'Options' data type. We
 also have the following concepts exposed by Memcached:
 
   [@version@] Each value has a 'Version' associated with it. This is simply a
-              numeric, monontonically increasing value. The version field
+              numeric, monotonically increasing value. The version field
               allows for a primitive version of 'cas' to be implemented.
 
   [@expiration@] Each value pair has an 'Expiration' associated with it. Once a
@@ -54,7 +54,7 @@ also have the following concepts exposed by Memcached:
                  considered expired. For example, an expiration of @3600@
                  expires the value in 1 hour. When the value of the expiration
                  is greater than 30 days however (@2592000@), the expiration
-                 field is instead interpretted as a UNIX timestamp (the number
+                 field is instead interpreted as a UNIX timestamp (the number
                  of seconds since epoch).
 
   [@flags@] Each value can have a small amount of fixed metadata associated
