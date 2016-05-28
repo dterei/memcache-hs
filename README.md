@@ -5,6 +5,7 @@
 [![Hackage Dependencies](https://img.shields.io/hackage-deps/v/memcache.svg?style=flat)](http://packdeps.haskellers.com/reverse/memcache)
 [![BSD3 License](http://img.shields.io/badge/license-BSD3-brightgreen.svg?style=flat)][tl;dr Legal: BSD3]
 [![Build](https://img.shields.io/travis/dterei/memcache-hs.svg?style=flat)](https://travis-ci.org/dterei/memcache-hs)
+[![Gitter](https://badges.gitter.im/dterei/memcache-hs.svg)](https://gitter.im/dterei/memcache-hs?utm_source=badge&utm_medium=badge&utm_campaign=pr-badge)
 
 [tl;dr Legal: BSD3]:
   https://tldrlegal.com/license/bsd-3-clause-license-(revised)
