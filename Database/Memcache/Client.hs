@@ -96,7 +96,7 @@ module Database.Memcache.Client (
         increment, decrement, append, prepend,
 
         -- ** Delete operations
-        delete, flush,
+        delete, flush, flushKey,
 
         -- ** Information operations
         StatResults, stats, version,
@@ -312,13 +312,27 @@ delete c k ver = do
 -- rather than immediately.
 flush :: Cluster -> Maybe Expiration -> IO ()
 flush c e = do
-    let msg = emptyReq { reqOp = ReqFlush Loud (SETouch <$> e) }
+    let msg = emptyReq { reqOp = ReqFlush Loud Nothing (SETouch <$> e) }
     results <- allOp c msg
     forM_ results $ \(_, r) -> do
         when (resOp r /= ResFlush Loud) $ throwIO $ wrongOp r "FLUSH"
         case resStatus r of
             NoError -> return ()
             rs      -> throwStatus rs
+
+-- | Remove (delete) all currently stored key-value pairs from the cluster. The
+-- expiration value can be used to cause this flush to occur in the future
+-- rather than immediately.
+flushKey :: Cluster -> Key -> Maybe Expiration -> IO ()
+flushKey c key e = do
+    let msg = emptyReq { reqOp = ReqFlush Loud (Just key) (SETouch <$> e) }
+    results <- allOp c msg
+    forM_ results $ \(_, r) -> do
+        when (resOp r /= ResFlush Loud) $ throwIO $ wrongOp r "FLUSH"
+        case resStatus r of
+            NoError -> return ()
+            rs      -> throwStatus rs
+
 
 -- | StatResults are a list of key-value pairs.
 type StatResults = [(ByteString, ByteString)]
