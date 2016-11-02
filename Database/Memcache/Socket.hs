@@ -1,5 +1,6 @@
 {-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE CPP #-}
+{-# OPTIONS_GHC -fno-warn-warnings-deprecations #-}
 
 {-|
 Module      : Database.Memcache.Socket
@@ -216,6 +217,9 @@ szOpRequest o = case o of
     ReqSASLList                -> (0x20, Nothing, Nothing, mempty, 0)
     ReqSASLStart      key v    -> (0x21, Just key, Just v, mempty, 0)
     ReqSASLStep       key v    -> (0x22, Just key, Just v, mempty, 0)
+
+    -- XXX: Should kill in future, ugly
+    ReqRaw c k v (SERaw e n)   -> (c, k, v, e, n)
 
   where
     szSESet   (SESet    f e) = fromWord32be f <> fromWord32be e

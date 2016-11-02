@@ -1,6 +1,8 @@
 # 0.2.0.1 - November 2nd, 2016
 
 * Fix compatability with latest `data-default-class`
+* Add new ReqRaw type for external clients to implement custom requests. Quite
+  a hack right now, so behind a WARNING pragma.
 
 # 0.2.0.0 - May 27th, 2016
 

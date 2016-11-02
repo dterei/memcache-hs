@@ -22,12 +22,14 @@ module Database.Memcache.Types (
         Header(..), mEMCACHE_HEADER_SIZE, PktType(..),
 
         -- * Requests
-        Request(..), OpRequest(..), SESet(..), SEIncr(..), SETouch(..), emptyReq,
+        Request(..), OpRequest(..), SESet(..), SEIncr(..), SETouch(..),
+        SERaw(..), emptyReq,
 
         -- * Responses
         Response(..), OpResponse(..), emptyRes
     ) where
 
+import Blaze.ByteString.Builder (Builder)
 import Data.ByteString (ByteString)
 import Data.Word
 
@@ -109,11 +111,24 @@ data OpRequest
     | ReqSASLList
     | ReqSASLStart     Key Value -- key: auth method, value: auth data
     | ReqSASLStep      Key Value -- key: auth method, value: auth data (continued)
+
+    -- | Raw request is custom requests, dangerous as no corresponding raw
+    -- response...
+    | ReqRaw       Word8 (Maybe Key) (Maybe Value) SERaw
     deriving (Eq, Show)
+
+{-# WARNING ReqRaw "This is dangerous; no future compatability guaranteed" #-}
 
 data SESet   = SESet   Flags Expiration         deriving (Eq, Show)
 data SEIncr  = SEIncr  Initial Delta Expiration deriving (Eq, Show)
 data SETouch = SETouch Expiration               deriving (Eq, Show)
+data SERaw   = SERaw   Builder Int
+
+instance Show SERaw where
+    show _ = "SERaw _"
+
+instance Eq SERaw where
+    (==) _ _ = False
 
 data Request = Req {
         reqOp     :: OpRequest,
