@@ -69,7 +69,7 @@ Usage is roughly as follows:
 >
 > main = do
 >     -- use default values: connects to localhost:11211
->     mc <- M.newClient M.def M.def
+>     mc <- M.newClient [M.def] M.def
 >
 >     -- store and then retrieve a key-value pair
 >     M.set mc "key" "value" 0 0

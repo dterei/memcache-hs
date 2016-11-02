@@ -1,3 +1,7 @@
+# 0.2.0.1 - November 2nd, 2016
+
+* Fix compatability with latest `data-default-class`
+
 # 0.2.0.0 - May 27th, 2016
 
 * Big design change to reduce code duplication (`Protocol` module gone).

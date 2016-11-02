@@ -62,9 +62,6 @@ data ServerSpec = ServerSpec {
 instance Default ServerSpec where
   def = ServerSpec "localhost" 11211 NoAuth
 
-instance Default [ServerSpec] where
-  def = [def]
-
 -- | Options specifies how a Memcached cluster should be configured.
 data Options = Options {
         -- | Number of times to retry an operation on failure. If consecutive

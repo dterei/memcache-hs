@@ -43,7 +43,7 @@ main = do
 
 getTest :: IO ()
 getTest = withMCServer False res $ do
-    c <- M.newClient M.def M.def
+    c <- M.newClient [M.def] M.def
     void $ M.set c (BC.pack "key") (BC.pack "world") 0 0
     Just (v', _, _) <- M.get c "key"
     when (v' /= "world") $ do
@@ -56,7 +56,7 @@ getTest = withMCServer False res $ do
 
 deleteTest :: IO ()
 deleteTest = withMCServer False res $ do
-    c <- M.newClient M.def M.def
+    c <- M.newClient [M.def] M.def
     v1 <- M.set c "key" "world"  0 0
     v2 <- M.set c "key" "world2" 0 0
     when (v1 == v2) $ do
@@ -74,7 +74,7 @@ deleteTest = withMCServer False res $ do
 
 retryTest :: IO ()
 retryTest = withMCServer False res $ do
-    c <- M.newClient M.def M.def
+    c <- M.newClient [M.def] M.def
     void $ M.set c (BC.pack "key") (BC.pack "world") 0 0
   where
     res = [ CloseConnection
@@ -83,7 +83,7 @@ retryTest = withMCServer False res $ do
 
 timeoutTest :: IO ()
 timeoutTest = withMCServer True res $ do
-    c <- M.newClient M.def M.def
+    c <- M.newClient [M.def] M.def
     void $ M.set c (BC.pack "key") (BC.pack "world") 0 0
     r <- try $ M.get c "key" 
     case r of
@@ -95,7 +95,7 @@ timeoutTest = withMCServer True res $ do
 
 timeoutRetryTest :: IO ()
 timeoutRetryTest = withMCServer False res $ do
-    c <- M.newClient M.def M.def
+    c <- M.newClient [M.def] M.def
     void $ M.set c (BC.pack "key") (BC.pack "world") 0 0
   where
     res = [ DelayMS 800 Noop
