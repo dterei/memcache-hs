@@ -103,7 +103,7 @@ data OpRequest
     | ReqPrepend   Q   Key Value
     | ReqTouch         Key       SETouch
     | ReqGAT       Q K Key       SETouch
-    | ReqFlush     Q             (Maybe SETouch)
+    | ReqFlush     Q   (Maybe Key) (Maybe SETouch)
     | ReqNoop
     | ReqVersion
     | ReqStat          (Maybe Key)

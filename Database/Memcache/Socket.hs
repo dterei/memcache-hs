@@ -205,10 +205,10 @@ szOpRequest o = case o of
                                         | k == IncludeKey               = 0x23
                                         | otherwise                     = 0x1D
                                   in (c, Just key, Nothing, szSETouch e, 4)
-    ReqFlush    Loud  (Just e) -> (0x08, Nothing, Nothing, szSETouch e, 4)
-    ReqFlush    Quiet (Just e) -> (0x18, Nothing, Nothing, szSETouch e, 4)
-    ReqFlush    Loud  Nothing  -> (0x08, Nothing, Nothing, mempty, 0)
-    ReqFlush    Quiet Nothing  -> (0x18, Nothing, Nothing, mempty, 0)
+    ReqFlush Loud  mk (Just e) -> (0x08, mk, Nothing, szSETouch e, 4)
+    ReqFlush Quiet mk (Just e) -> (0x18, mk, Nothing, szSETouch e, 4)
+    ReqFlush Loud  mk Nothing  -> (0x08, mk, Nothing, mempty, 0)
+    ReqFlush Quiet mk Nothing  -> (0x18, mk, Nothing, mempty, 0)
     ReqNoop                    -> (0x0A, Nothing, Nothing, mempty, 0)
     ReqVersion                 -> (0x0B, Nothing, Nothing, mempty, 0)
     ReqStat           key      -> (0x10, key, Nothing, mempty, 0)
