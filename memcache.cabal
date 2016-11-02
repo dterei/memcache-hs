@@ -1,5 +1,5 @@
 name:           memcache
-version:        0.2.0.0
+version:        0.2.0.1
 homepage:       https://github.com/dterei/memcache-hs
 bug-reports:    https://github.com/dterei/memcache-hs/issues
 synopsis:       A memcached client library.
@@ -42,7 +42,7 @@ extra-source-files:
 Source-repository this
   type: git
   location: https://github.com/dterei/memcache-hs.git
-  tag: 0.2.0.0
+  tag: 0.2.0.1
 
 source-repository head
   type:     git
