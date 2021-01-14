@@ -26,7 +26,6 @@ import Database.Memcache.Types
 import Control.Exception (throwIO)
 import Control.Monad
 import Data.ByteString.Char8 as B8 (ByteString, pack, singleton)
-import Data.Monoid
 
 -- | Perform SASL authentication with the server.
 authenticate :: Socket -> Authentication -> IO ()

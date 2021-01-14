@@ -39,9 +39,8 @@ import           Control.Monad
 import           Data.Binary.Get
 import qualified Data.ByteString as B
 import qualified Data.ByteString.Lazy as L
-import           Data.Monoid
 import           Data.Word
-import           Network.Socket (Socket, isConnected, isReadable)
+import           Network.Socket (Socket)
 import qualified Network.Socket.ByteString as N
 
 -- | Send a request to the Memcached server.
@@ -66,24 +65,15 @@ recv s = do
     recvAll :: Int -> Builder -> IO B.ByteString
     recvAll 0 !acc = return $! toByteString acc
     recvAll !n !acc = do
-        canRead <- isSocketActive s
-        if canRead
-            then do
-                buf <- N.recv s n
-                case B.length buf of
-                    0  -> throwIO errEOF
-                    bl | bl == n ->
-                        return $! (toByteString $! acc <> fromByteString buf)
-                    bl -> recvAll (n - bl) (acc <> fromByteString buf)
-            else throwIO errEOF
+        buf <- N.recv s n
+        case B.length buf of
+            0  -> throwIO errEOF
+            bl | bl == n ->
+                return $! (toByteString $! acc <> fromByteString buf)
+            bl -> recvAll (n - bl) (acc <> fromByteString buf)
     
     errEOF :: MemcacheError
     errEOF = ProtocolError UnexpectedEOF { protocolError = "" }
-
--- | Check whether we can still operate on this socket or not.
-isSocketActive :: Socket -> IO Bool
-{-# INLINE isSocketActive #-}
-isSocketActive s = (&&) <$> isConnected s <*> isReadable s
 
 -- | Serialize a response to a ByteString Builder.
 szResponse :: Response -> Builder

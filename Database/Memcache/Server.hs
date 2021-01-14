@@ -31,8 +31,7 @@ import Data.Pool
 import Data.Time.Clock (NominalDiffTime)
 import Data.Time.Clock.POSIX (POSIXTime)
 
-import Network.BSD (getProtocolNumber, getHostByName, hostAddress)
-import Network.Socket (HostName, PortNumber(..))
+import Network.Socket (getAddrInfo, HostName, ServiceName)
 import qualified Network.Socket as S
 
 -- Connection pool constants.
@@ -52,7 +51,7 @@ data Server = Server {
         -- | Hostname of server.
         addr     :: !HostName,
         -- | Port number of server.
-        port     :: !PortNumber,
+        port     :: !ServiceName,
         -- | Credentials for server.
         auth     :: !Authentication,
         -- | When did the server fail? 0 if it is alive.
@@ -76,7 +75,7 @@ instance Ord Server where
     compare x y = compare (sid x) (sid y)
 
 -- | Create a new Memcached server connection.
-newServer :: HostName -> PortNumber -> Authentication -> IO Server
+newServer :: HostName -> ServiceName -> Authentication -> IO Server
 newServer host port auth = do
     fat <- newIORef 0
     pSock <- createPool connectSocket releaseSocket
@@ -90,16 +89,18 @@ newServer host port auth = do
         , failed   = fat
         }
   where
-    serverHash = hash (host, fromEnum port)
+    serverHash = hash (host, port)
 
     connectSocket = do
-        proto <- getProtocolNumber "tcp"
+        let hints = S.defaultHints {
+          S.addrSocketType = S.Stream
+        }
+        addr:_ <- getAddrInfo (Just hints) (Just host) (Just port)
         bracketOnError
-            (S.socket S.AF_INET S.Stream proto)
+            (S.socket (S.addrFamily addr) (S.addrSocketType addr) (S.addrProtocol addr))
             releaseSocket
             (\s -> do
-                h <- getHostByName host
-                S.connect s (S.SockAddrInet port $ hostAddress h)
+                S.connect s $ S.addrAddress addr
                 S.setSocketOption s S.KeepAlive 1
                 S.setSocketOption s S.NoDelay 1
                 authenticate s auth
