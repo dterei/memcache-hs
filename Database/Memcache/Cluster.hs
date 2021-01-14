@@ -42,7 +42,7 @@ import Data.List (sort)
 import Data.Time.Clock (NominalDiffTime)
 import Data.Time.Clock.POSIX (getPOSIXTime)
 import qualified Data.Vector as V
-import Network.Socket (HostName, PortNumber)
+import Network.Socket (HostName, ServiceName)
 import System.Timeout
 
 -- | Number of times to retry an operation before considering it failed.
@@ -53,14 +53,14 @@ data ServerSpec = ServerSpec {
         -- | Hostname of server to connect to.
         ssHost :: HostName,
         -- | Port number server is running on.
-        ssPort :: PortNumber,
+        ssPort :: ServiceName,
         -- | Authentication values to use for SASL authentication with this
         -- server.
         ssAuth :: Authentication
     } deriving (Eq, Show)
 
 instance Default ServerSpec where
-  def = ServerSpec "localhost" 11211 NoAuth
+  def = ServerSpec "127.0.0.1" "11211" NoAuth
 
 -- | Options specifies how a Memcached cluster should be configured.
 data Options = Options {

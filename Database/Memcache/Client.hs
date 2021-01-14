@@ -126,7 +126,10 @@ type Client = Cluster
 
 -- | Establish a new connection to a group of Memcached servers.
 newClient :: [ServerSpec] -> Options -> IO Client
-newClient = newCluster
+newClient scs = do
+  case scs of
+    [] -> newCluster [def]
+    _  -> newCluster scs
 
 -- | Gracefully close a connection to a Memcached cluster.
 quit :: Cluster -> IO ()

@@ -54,10 +54,15 @@ withMCServer loop res m = bracket
 mockMCServer :: Bool -> [MockResponse] -> IO ThreadId
 mockMCServer loop resp' = forkIO $ bracket 
     (N.socket N.AF_INET N.Stream N.defaultProtocol)
-    (N.sClose)
+    (N.close)
     $ \sock -> do
         N.setSocketOption sock N.ReuseAddr 1
-        N.bind sock $ N.SockAddrInet 11211 N.iNADDR_ANY
+        let hints = N.defaultHints {
+            N.addrFlags = [N.AI_PASSIVE]
+          , N.addrSocketType = N.Stream
+        }
+        addr:_ <- N.getAddrInfo (Just hints) Nothing (Just "11211")
+        N.bind sock $ N.addrAddress addr
         N.listen sock 10
         ref <- newIORef resp'
         acceptHandler sock ref
@@ -75,7 +80,7 @@ mockMCServer loop resp' = forkIO $ bracket
     allErrors :: SomeException -> IO Bool
     allErrors = const $ return True
 
-    clientHandler client ref []       = N.sClose client >> return False
+    clientHandler client ref []       = N.close client >> return False
     clientHandler client ref (r':resp) = do
       void $ recvReq client
       mrHandler r'
@@ -88,7 +93,7 @@ mockMCServer loop resp' = forkIO $ bracket
                 threadDelay (ms * 1000)
                 mrHandler mr
             CloseConnection -> do
-                N.sClose client
+                N.close client
                 writeIORef ref resp
                 return $ not $ null resp
 
@@ -108,21 +113,14 @@ recvReq s = do
 recvAll :: N.Socket -> Int -> Builder -> IO B.ByteString
 recvAll s 0 !acc = return $! toByteString acc
 recvAll s !n !acc = do
-    canRead <- isSocketActive s
-    if canRead
-        then do
-            buf <- N.recv s n
-            case B.length buf of
-                0  -> throwIO errEOF
-                bl | bl == n ->
-                    return $! (toByteString $! acc <> fromByteString buf)
-                bl -> recvAll s (n - bl) (acc <> fromByteString buf)
-        else throwIO errEOF
+    buf <- N.recv s n
+    case B.length buf of
+        0  -> throwIO errEOF
+        bl | bl == n ->
+            return $! (toByteString $! acc <> fromByteString buf)
+        bl -> recvAll s (n - bl) (acc <> fromByteString buf)
   
   where
     errEOF :: MemcacheError
     errEOF = ProtocolError UnexpectedEOF { protocolError = "" }
-
-isSocketActive :: N.Socket -> IO Bool
-isSocketActive s = (&&) <$> N.isConnected s <*> N.isReadable s
 
