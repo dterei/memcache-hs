@@ -1,3 +1,8 @@
+# 0.3.0.0 - January 17th, 2021
+
+* Bump package dependencies for newer GHC/back/network.
+* Update code to work with newer dependencies.
+
 # 0.2.0.1 - November 2nd, 2016
 
 * Fix compatability with latest `data-default-class`
