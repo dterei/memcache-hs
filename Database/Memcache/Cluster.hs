@@ -24,7 +24,7 @@ module Database.Memcache.Cluster (
         Cluster, ServerSpec(..), Options(..), newCluster,
 
         -- * Field selectors
-        getServers
+        getServers,
 
         -- * Operations
         Retries, keyedOp, anyOp, allOp, allOp'
