@@ -2,6 +2,7 @@
 
 * Add `optsGetServerForKey` field to `Options`.
 * Change how `sid` is calculated.
+* Expose `getServers` function.
 
 # 0.3.0.0 - January 17th, 2021
 

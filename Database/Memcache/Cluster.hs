@@ -23,6 +23,9 @@ module Database.Memcache.Cluster (
         -- * Cluster
         Cluster, ServerSpec(..), Options(..), newCluster,
 
+        -- * Field selectors
+        getServers
+
         -- * Operations
         Retries, keyedOp, anyOp, allOp, allOp'
     ) where
@@ -121,6 +124,13 @@ data Cluster = Cluster {
         cTimeout   :: {-# UNPACK #-} !Int, -- ^ microseconds
         cGetServerForKey  :: Cluster -> Key -> IO (Maybe Server)
     }
+
+-- Get the list of servers within a cluster.
+--
+-- Useful for those implementing a custom /getServerForKey/ function.
+--
+getServers :: Cluster -> V.Vector Server
+getServers = cServers
 
 -- | Establish a new connection to a group of Memcached servers.
 --
