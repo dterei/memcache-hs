@@ -84,7 +84,12 @@ data Options = Options {
         -- it failed.
         --
         -- Default is 750ms.
-        optsServerTimeout :: Milli
+        optsServerTimeout :: Milli,
+        --
+        -- | Figure out which server to talk to for a given key.
+        --
+        -- Default is 'getServerForKeyDefault'.
+        optsGetServerForKey :: Cluster -> Key -> IO (Maybe Server)
         -- TODO: socket_timeout
         -- TODO: failover
         -- TODO: expires_in
@@ -93,14 +98,15 @@ data Options = Options {
         -- TODO: compress_min_size
         -- TODO: compress_max_size
         -- TODO: value_max_bytes
-    } deriving (Eq, Show)
+    }
 
 instance Default Options where
   def = Options {
             optsServerRetries  = 2,
             optsFailRetryDelay = 200,
             optsDeadRetryDelay = 1500,
-            optsServerTimeout  = 750
+            optsServerTimeout  = 750,
+            optsGetServerForKey = getServerForKeyDefault
         }
 
 -- | Memcached cluster.
@@ -112,8 +118,9 @@ data Cluster = Cluster {
         cRetries   :: {-# UNPACK #-} !Int,
         cFailDelay :: {-# UNPACK #-} !Int, -- ^ microseconds
         cDeadDelay :: !NominalDiffTime,
-        cTimeout   :: {-# UNPACK #-} !Int -- ^ microseconds
-    } deriving (Eq, Show)
+        cTimeout   :: {-# UNPACK #-} !Int, -- ^ microseconds
+        cGetServerForKey  :: Cluster -> Key -> IO (Maybe Server)
+    }
 
 -- | Establish a new connection to a group of Memcached servers.
 newCluster :: [ServerSpec] -> Options -> IO Cluster
@@ -126,7 +133,8 @@ newCluster hosts Options{..} = do
             cRetries   = optsServerRetries ,
             cFailDelay = fromEnum optsFailRetryDelay,
             cDeadDelay = fromRational $ toRational optsDeadRetryDelay / 1000,
-            cTimeout   = fromEnum optsServerTimeout 
+            cTimeout   = fromEnum optsServerTimeout,
+            cGetServerForKey = optsGetServerForKey
         }
 
 -- | Check if server is alive.
@@ -146,9 +154,9 @@ serverAlive deadDelay s = do
 
 -- | Figure out which server to talk to for this key. I.e., the distribution
 -- method. We use consistent hashing based on the CHORD approach.
-getServerForKey :: Cluster -> Key -> IO (Maybe Server)
-{-# INLINE getServerForKey #-}
-getServerForKey c k = do
+getServerForKeyDefault :: Cluster -> Key -> IO (Maybe Server)
+{-# INLINE getServerForKeyDefault #-}
+getServerForKeyDefault  c k = do
     let hashedKey = hash k
         searchF s = sid s < hashedKey
     servers' <- V.filterM (serverAlive $ cDeadDelay c) $ cServers c
@@ -167,7 +175,7 @@ serverOp c s req = retryOp c s $ sendRecv s req
 keyedOp :: Cluster -> Key -> Request -> IO Response
 {-# INLINE keyedOp #-}
 keyedOp c k req = do
-    s' <- getServerForKey c k
+    s' <- cGetServerForKey c c k
     case s' of
         Just s  -> serverOp c s req
         Nothing -> throwIO $ ClientError NoServersReady
