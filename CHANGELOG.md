@@ -1,6 +1,7 @@
 # 0.4.0.0 - March 20th, 2024
 
 * Add `optsGetServerForKey` field to `Options`.
+* Change how `sid` is calculated.
 
 # 0.3.0.0 - January 17th, 2021
 
