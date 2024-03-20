@@ -37,7 +37,7 @@ import Data.Word
 data Authentication
     = Auth { username :: !Username, password :: !Password }
     | NoAuth
-    deriving (Eq, Show)
+    deriving (Eq, Show, Ord)
 
 -- | Username for authentication.
 type Username = ByteString

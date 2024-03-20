@@ -57,7 +57,7 @@ data ServerSpec = ServerSpec {
         -- | Authentication values to use for SASL authentication with this
         -- server.
         ssAuth :: Authentication
-    } deriving (Eq, Show)
+    } deriving (Eq, Show, Ord)
 
 instance Default ServerSpec where
   def = ServerSpec "127.0.0.1" "11211" NoAuth
@@ -123,10 +123,14 @@ data Cluster = Cluster {
     }
 
 -- | Establish a new connection to a group of Memcached servers.
+--
+-- The `sid` serves as the max hash key value that the server is responsible for. Since this is partially based on the index of the server within the list, we sort the list first.
+--
 newCluster :: [ServerSpec] -> Options -> IO Cluster
 newCluster []    _ = throwIO $ ClientError NoServersReady
 newCluster hosts Options{..} = do
-    s <- mapM (\ServerSpec{..} -> newServer ssHost ssPort ssAuth) hosts
+    let numServers = length hosts
+    s <- mapM (\(serverIndex, ServerSpec{..}) -> newServer numServers serverIndex ssHost ssPort ssAuth) $ zip [0..] $ sort hosts
     return $
         Cluster {
             cServers   = (V.fromList $ sort s),
