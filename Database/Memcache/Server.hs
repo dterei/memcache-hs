@@ -25,7 +25,6 @@ import Database.Memcache.SASL
 import Database.Memcache.Socket
 
 import Control.Exception
-import Data.Hashable
 import Data.IORef
 import Data.Pool
 import Data.Time.Clock (NominalDiffTime)
@@ -44,7 +43,7 @@ sKEEPALIVE = 300
 
 -- | Memcached server connection.
 data Server = Server {
-        -- | ID of server for consistent hashing.
+        -- | ID of server.
         sid      :: {-# UNPACK #-} !Int,
         -- | Connection pool to server.
         pool     :: Pool Socket,
@@ -74,14 +73,17 @@ instance Eq Server where
 instance Ord Server where
     compare x y = compare (sid x) (sid y)
 
+type NumServers = Int
+type ServerIndex = Int
+
 -- | Create a new Memcached server connection.
-newServer :: HostName -> ServiceName -> Authentication -> IO Server
-newServer host port auth = do
+newServer :: NumServers -> ServerIndex -> HostName -> ServiceName -> Authentication -> IO Server
+newServer numServers serverIndex host port auth = do
     fat <- newIORef 0
     pSock <- createPool connectSocket releaseSocket
                 sSTRIPES sKEEPALIVE sCONNECTIONS
     return Server
-        { sid      = serverHash
+        { sid      = sid
         , pool     = pSock
         , addr     = host
         , port     = port
@@ -89,7 +91,13 @@ newServer host port auth = do
         , failed   = fat
         }
   where
-    serverHash = hash (host, port)
+    sid
+      | isLastServer = maxBound
+      | otherwise = segment
+
+    isLastServer = numServers == serverIndex + 1
+
+    segment = maxBound `div` numServers * (serverIndex + 1)
 
     connectSocket = do
         let hints = S.defaultHints {
