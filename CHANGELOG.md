@@ -1,3 +1,7 @@
+# 0.4.0.0 - March 20th, 2024
+
+* Add `optsGetServerForKey` field to `Options`.
+
 # 0.3.0.0 - January 17th, 2021
 
 * Bump package dependencies for newer GHC/back/network.
