@@ -35,6 +35,7 @@ import Database.Memcache.Server
 import Database.Memcache.Types
 
 import Control.Concurrent (threadDelay)
+import Database.Memcache.Sid (splitIntRangeIntoNRangesSimple)
 import Control.Exception (handle, throwIO, SomeException)
 import Data.Default.Class
 import Data.Fixed (Milli)
@@ -139,8 +140,8 @@ getServers = cServers
 newCluster :: [ServerSpec] -> Options -> IO Cluster
 newCluster []    _ = throwIO $ ClientError NoServersReady
 newCluster hosts Options{..} = do
-    let numServers = length hosts
-    s <- mapM (\(serverIndex, ServerSpec{..}) -> newServer numServers serverIndex ssHost ssPort ssAuth) $ zip [0..] $ sort hosts
+    let numServers = fromInteger $ toInteger $ length hosts
+    s <- mapM (\(sid, ServerSpec{..}) -> newServer sid ssHost ssPort ssAuth) $ zip (splitIntRangeIntoNRangesSimple numServers) $ sort hosts
     return $
         Cluster {
             cServers   = (V.fromList $ sort s),

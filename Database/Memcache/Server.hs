@@ -73,12 +73,9 @@ instance Eq Server where
 instance Ord Server where
     compare x y = compare (sid x) (sid y)
 
-type NumServers = Int
-type ServerIndex = Int
-
 -- | Create a new Memcached server connection.
-newServer :: NumServers -> ServerIndex -> HostName -> ServiceName -> Authentication -> IO Server
-newServer numServers serverIndex host port auth = do
+newServer :: Int -> HostName -> ServiceName -> Authentication -> IO Server
+newServer sid host port auth = do
     fat <- newIORef 0
     pSock <- createPool connectSocket releaseSocket
                 sSTRIPES sKEEPALIVE sCONNECTIONS
@@ -91,14 +88,6 @@ newServer numServers serverIndex host port auth = do
         , failed   = fat
         }
   where
-    sid
-      | isLastServer = maxBound
-      | otherwise = segment
-
-    isLastServer = numServers == serverIndex + 1
-
-    segment = maxBound `div` numServers * (serverIndex + 1)
-
     connectSocket = do
         let hints = S.defaultHints {
           S.addrSocketType = S.Stream
