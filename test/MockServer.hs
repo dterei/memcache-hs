@@ -44,11 +44,12 @@ data MockResponse
 -- | Run an IO action with a mock Memcached server running in the background,
 -- killing it once done.
 withMCServer :: Bool -> [MockResponse] -> IO () -> IO ()
-withMCServer loop res m = bracket
-    sem <- newemptyMVar
+withMCServer loop res m = do
+  sem <- newEmptyMVar
 
-    let waitForInitialization = takeMVar sem
+  let waitForInitialization = takeMVar sem
 
+  bracket
     (mockMCServer loop res sem)
     (\tid -> killThread tid >> threadDelay 100000)
     (const $ waitForInitialization >> m)
