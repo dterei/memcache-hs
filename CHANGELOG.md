@@ -1,3 +1,12 @@
+# 0.3.0.2 - March 27th, 2024
+
+* Make the key hashing algorithm configurable by clients -- that is, let
+  clients provide a function mapping a key to a server.
+
+# 0.3.0.1 - January 17th, 2021
+
+* No changes, needed a new release to fix a Hackage upload issue.
+
 # 0.3.0.0 - January 17th, 2021
 
 * Bump package dependencies for newer GHC/back/network.
