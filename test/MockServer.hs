@@ -45,14 +45,18 @@ data MockResponse
 -- killing it once done.
 withMCServer :: Bool -> [MockResponse] -> IO () -> IO ()
 withMCServer loop res m = bracket
-    (mockMCServer loop res)
+    sem <- newemptyMVar
+
+    let waitForInitialization = takeMVar sem
+
+    (mockMCServer loop res sem)
     (\tid -> killThread tid >> threadDelay 100000)
-    (const m)
+    (const $ waitForInitialization >> m)
 
 -- | New mock Memcached server that responds to each request with the specified
 -- list of responses.
-mockMCServer :: Bool -> [MockResponse] -> IO ThreadId
-mockMCServer loop resp' = forkIO $ bracket 
+mockMCServer :: Bool -> [MockResponse] -> MVar () -> IO ThreadId
+mockMCServer loop resp' sem = forkIO $ bracket 
     (N.socket N.AF_INET N.Stream N.defaultProtocol)
     (N.close)
     $ \sock -> do
@@ -65,6 +69,10 @@ mockMCServer loop resp' = forkIO $ bracket
         N.bind sock $ N.addrAddress addr
         N.listen sock 10
         ref <- newIORef resp'
+
+        -- Publish that initialization is done
+        putMVar sem ()
+
         acceptHandler sock ref
         when loop $ forever $ threadDelay 1000000
   
