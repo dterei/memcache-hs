@@ -18,13 +18,14 @@ retries, it's up to consumers to use this.
 -}
 module Database.Memcache.Server (
       -- * Server
-        Server(sid, failed), newServer, sendRecv, withSocket, close
+        Server(sid, failed), newServerDefault, sendRecv, withSocket, close
     ) where
 
 import Database.Memcache.SASL
 import Database.Memcache.Socket
 
 import Control.Exception
+import Database.Memcache.Types (ServerSpec(..))
 import Data.Hashable
 import Data.IORef
 import Data.Pool
@@ -75,27 +76,27 @@ instance Ord Server where
     compare x y = compare (sid x) (sid y)
 
 -- | Create a new Memcached server connection.
-newServer :: HostName -> ServiceName -> Authentication -> IO Server
-newServer host port auth = do
+newServerDefault :: ServerSpec -> IO Server
+newServerDefault ServerSpec{..} = do
     fat <- newIORef 0
     pSock <- createPool connectSocket releaseSocket
                 sSTRIPES sKEEPALIVE sCONNECTIONS
     return Server
         { sid      = serverHash
         , pool     = pSock
-        , addr     = host
-        , port     = port
-        , auth     = auth
+        , addr     = ssHost
+        , port     = ssPort
+        , auth     = ssAuth
         , failed   = fat
         }
   where
-    serverHash = hash (host, port)
+    serverHash = hash (ssHost, ssPort)
 
     connectSocket = do
         let hints = S.defaultHints {
           S.addrSocketType = S.Stream
         }
-        addr:_ <- getAddrInfo (Just hints) (Just host) (Just port)
+        addr:_ <- getAddrInfo (Just hints) (Just ssHost) (Just ssPort)
         bracketOnError
             (S.socket (S.addrFamily addr) (S.addrSocketType addr) (S.addrProtocol addr))
             releaseSocket
@@ -103,7 +104,7 @@ newServer host port auth = do
                 S.connect s $ S.addrAddress addr
                 S.setSocketOption s S.KeepAlive 1
                 S.setSocketOption s S.NoDelay 1
-                authenticate s auth
+                authenticate s ssAuth
                 return s
             )
 
