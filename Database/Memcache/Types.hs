@@ -26,12 +26,16 @@ module Database.Memcache.Types (
         SERaw(..), emptyReq,
 
         -- * Responses
-        Response(..), OpResponse(..), emptyRes
+        Response(..), OpResponse(..), emptyRes,
+
+        ServerSpec(..)
     ) where
 
 import Blaze.ByteString.Builder (Builder)
 import Data.ByteString (ByteString)
+import Network.Socket (HostName, ServiceName)
 import Data.Word
+import Data.Default.Class
 
 -- | SASL Authentication information for a server.
 data Authentication
@@ -203,3 +207,17 @@ data Response = Res {
 emptyRes :: Response
 emptyRes = Res { resOp = ResNoop, resStatus = NoError, resOpaque = 0, resCas = 0 }
 
+-- | ServerSpec specifies a server configuration for connection.
+
+data ServerSpec = ServerSpec {
+        -- | Hostname of server to connect to.
+        ssHost :: HostName,
+        -- | Port number server is running on.
+        ssPort :: ServiceName,
+        -- | Authentication values to use for SASL authentication with this
+        -- server.
+        ssAuth :: Authentication
+    } deriving (Eq, Show)
+
+instance Default ServerSpec where
+  def = ServerSpec "127.0.0.1" "11211" NoAuth

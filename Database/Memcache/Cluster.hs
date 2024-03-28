@@ -42,25 +42,10 @@ import Data.List (sort)
 import Data.Time.Clock (NominalDiffTime)
 import Data.Time.Clock.POSIX (getPOSIXTime)
 import qualified Data.Vector as V
-import Network.Socket (HostName, ServiceName)
 import System.Timeout
 
 -- | Number of times to retry an operation before considering it failed.
 type Retries = Int
-
--- | ServerSpec specifies a server configuration for connection.
-data ServerSpec = ServerSpec {
-        -- | Hostname of server to connect to.
-        ssHost :: HostName,
-        -- | Port number server is running on.
-        ssPort :: ServiceName,
-        -- | Authentication values to use for SASL authentication with this
-        -- server.
-        ssAuth :: Authentication
-    } deriving (Eq, Show)
-
-instance Default ServerSpec where
-  def = ServerSpec "127.0.0.1" "11211" NoAuth
 
 -- | Options specifies how a Memcached cluster should be configured.
 data Options = Options {
@@ -89,7 +74,12 @@ data Options = Options {
         -- | Figure out which server to talk to for a given key.
         --
         -- Default is 'getServerForKeyDefault'.
-        optsGetServerForKey :: Cluster -> Key -> IO (Maybe Server)
+        optsGetServerForKey :: Cluster -> Key -> IO (Maybe Server),
+        --
+        -- | Convert a 'ServerSpec' into a 'Server'.
+        --
+        -- Default uses 'newServerDefault'.
+        optsServerSpecsToServers :: [ServerSpec] -> IO [Server]
         -- TODO: socket_timeout
         -- TODO: failover
         -- TODO: expires_in
@@ -106,7 +96,8 @@ instance Default Options where
             optsFailRetryDelay = 200,
             optsDeadRetryDelay = 1500,
             optsServerTimeout  = 750,
-            optsGetServerForKey = getServerForKeyDefault
+            optsGetServerForKey = getServerForKeyDefault,
+            optsServerSpecsToServers = mapM newServerDefault
         }
 
 -- | Memcached cluster.
@@ -126,7 +117,7 @@ data Cluster = Cluster {
 newCluster :: [ServerSpec] -> Options -> IO Cluster
 newCluster []    _ = throwIO $ ClientError NoServersReady
 newCluster hosts Options{..} = do
-    s <- mapM (\ServerSpec{..} -> newServer ssHost ssPort ssAuth) hosts
+    s <- optsServerSpecsToServers hosts
     return $
         Cluster {
             cServers   = (V.fromList $ sort s),
