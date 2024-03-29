@@ -7,7 +7,6 @@ module MockServer (
         MockResponse(..), mockMCServer, withMCServer
     ) where
 
-import qualified Database.Memcache.Client as M
 import           Database.Memcache.Socket
 import           Database.Memcache.Types
 
@@ -20,18 +19,12 @@ import           Control.Exception (bracket, handle, throwIO, SomeException)
 import           Control.Monad
 import           Data.Binary.Get
 import qualified Data.ByteString as B
-import qualified Data.ByteString.Char8 as BC
 import qualified Data.ByteString.Lazy as L
 import           Data.IORef
-import           Data.Monoid
-import           Data.Word
-import qualified Network.Socket as N hiding (recv)
+import qualified Network.Socket as N
 import qualified Network.Socket.ByteString as N
-import           System.Exit
-import           System.IO
 
 import           Database.Memcache.Errors
-import           Database.Memcache.Types
 
 
 -- | Actions the mock server can take to a request.
@@ -89,7 +82,7 @@ mockMCServer loop resp' sem = forkIO $ bracket
     allErrors :: SomeException -> IO Bool
     allErrors = const $ return True
 
-    clientHandler client ref []       = N.close client >> return False
+    clientHandler client _ []       = N.close client >> return False
     clientHandler client ref (r':resp) = do
       void $ recvReq client
       mrHandler r'
@@ -120,7 +113,7 @@ recvReq s = do
         void $ recvAll s bytesToRead mempty
 
 recvAll :: N.Socket -> Int -> Builder -> IO B.ByteString
-recvAll s 0 !acc = return $! toByteString acc
+recvAll _ 0 !acc = return $! toByteString acc
 recvAll s !n !acc = do
     buf <- N.recv s n
     case B.length buf of

@@ -29,7 +29,6 @@ import Database.Memcache.Types (ServerSpec(..))
 import Data.Hashable
 import Data.IORef
 import Data.Pool
-import Data.Time.Clock (NominalDiffTime)
 import Data.Time.Clock.POSIX (POSIXTime)
 
 import Network.Socket (getAddrInfo, HostName, ServiceName)
@@ -37,11 +36,14 @@ import qualified Network.Socket as S
 
 -- Connection pool constants.
 -- TODO: make configurable
-sSTRIPES, sCONNECTIONS :: Int
-sKEEPALIVE :: NominalDiffTime
-sSTRIPES     = 1
-sCONNECTIONS = 1
-sKEEPALIVE = 300
+numResources :: Int
+numResources = 1
+
+keepAlive :: Double
+keepAlive = 300
+
+numStripes :: Maybe Int
+numStripes = Just 1
 
 -- | Memcached server connection.
 data Server = Server {
@@ -79,8 +81,10 @@ instance Ord Server where
 newServerDefault :: ServerSpec -> IO Server
 newServerDefault ServerSpec{..} = do
     fat <- newIORef 0
-    pSock <- createPool connectSocket releaseSocket
-                sSTRIPES sKEEPALIVE sCONNECTIONS
+    pSock <-
+      newPool
+        $ setNumStripes numStripes
+        $ defaultPoolConfig connectSocket releaseSocket keepAlive numResources
     return Server
         { sid      = serverHash
         , pool     = pSock

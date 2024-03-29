@@ -11,16 +11,10 @@ import           Database.Memcache.Errors
 import           Database.Memcache.Socket
 import           Database.Memcache.Types
 
-import           Blaze.ByteString.Builder
-import           Control.Concurrent
 import           Control.Exception
 import           Control.Monad
-import           Data.Binary.Get
 import qualified Data.ByteString.Char8 as BC
-import qualified Network.Socket as N
-import qualified Network.Socket.ByteString as N
 import           System.Exit
-import           System.IO
 
 main :: IO ()
 main = do
