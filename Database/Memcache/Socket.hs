@@ -53,7 +53,7 @@ send s m = N.sendAll s (toByteString $ szRequest m)
 recv :: Socket -> IO Response
 {-# INLINE recv #-}
 recv s = do
-    header <- recvAll mEMCACHE_HEADER_SIZE mempty
+    header <- recvAll memcacheHeaderSize mempty
     let h = runGet (dzHeader PktResponse) (L.fromChunks [header])
     if bodyLen h > 0
         then do

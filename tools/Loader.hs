@@ -52,7 +52,7 @@ parseArguments = do
     case getOpt Permute options args of
         (o, _, [])   -> return $ foldl' (flip ($)) defaultOptions o
         (_, _, errs) -> do
-            when (not $ null errs) $ do
+            unless (null errs) $ do
                 putStr $ "Error: " ++ head errs
                 forM_ (tail errs) $ \e ->
                     putStr $ "       " ++ e

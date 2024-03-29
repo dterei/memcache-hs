@@ -64,7 +64,7 @@ parseArguments = do
     case getOpt Permute options args of
         (o, _, [])   -> return $ foldl' (flip ($)) defaultOptions o
         (_, _, errs) -> do
-            when (not $ null errs) $ do
+            unless (null errs) $ do
                 putStr $ "Error: " ++ head errs
                 forM_ (tail errs) $ \e ->
                     putStr $ "       " ++ e
@@ -97,9 +97,9 @@ main = do
     children <- forM [0..(events - 1)] $ \_ -> do
         -- create new connection each request
         a <- async $ do
-            mc <- case newConn opts of
-                True  -> newMemcacheClient (server opts) (toEnum $ port opts)
-                False -> return mc
+            mc <- if newConn opts
+                    then newMemcacheClient (server opts) (toEnum $ port opts)
+                    else return mc
             case op opts of
                 NOOP -> return ()
                 GET  -> void $ get mc "k"

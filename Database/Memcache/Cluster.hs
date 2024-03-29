@@ -120,7 +120,7 @@ newCluster hosts Options{..} = do
     s <- optsServerSpecsToServers hosts
     return $
         Cluster {
-            cServers   = (V.fromList $ sort s),
+            cServers   = V.fromList $ sort s,
             cRetries   = optsServerRetries ,
             cFailDelay = fromEnum optsFailRetryDelay,
             cDeadDelay = fromRational $ toRational optsDeadRetryDelay / 1000,
