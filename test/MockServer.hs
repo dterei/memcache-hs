@@ -52,7 +52,7 @@ withMCServer loop res m = do
 mockMCServer :: Bool -> [MockResponse] -> MVar () -> IO ThreadId
 mockMCServer loop resp' sem = forkIO $ bracket 
     (N.socket N.AF_INET N.Stream N.defaultProtocol)
-    (N.close)
+    N.close
     $ \sock -> do
         N.setSocketOption sock N.ReuseAddr 1
         let hints = N.defaultHints {
@@ -75,9 +75,7 @@ mockMCServer loop resp' sem = forkIO $ bracket
         client <- fst <$> N.accept sock
         resp <- readIORef ref
         cont <- handle allErrors $ clientHandler client ref resp
-        if cont
-            then acceptHandler sock ref
-            else return ()
+        when cont $  acceptHandler sock ref
 
     allErrors :: SomeException -> IO Bool
     allErrors = const $ return True
@@ -106,7 +104,7 @@ sendRes s m = N.sendAll s (toByteString $ szResponse m)
 
 recvReq :: N.Socket -> IO ()
 recvReq s = do
-    header <- recvAll s mEMCACHE_HEADER_SIZE mempty
+    header <- recvAll s memcacheHeaderSize mempty
     let h = runGet (dzHeader PktRequest) (L.fromChunks [header])
         bytesToRead = fromIntegral $ bodyLen h
     when (bytesToRead > 0) $

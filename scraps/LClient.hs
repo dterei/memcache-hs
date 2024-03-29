@@ -28,7 +28,7 @@ getClient = do
     l <- getLabel
     c <- rethrowIoTCB $ newMemcacheClient "localhost" 11211
     b <- rethrowIoTCB $ authenticate c (encode l) "pass"
-    when (not b) $ error "ARGH!"
+    unless b $ error "ARGH!"
     return c 
 
 -- | Retrieve a key from the cache at the current label.

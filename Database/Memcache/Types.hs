@@ -19,7 +19,7 @@ module Database.Memcache.Types (
         Version, Status(..),
 
         -- * Header
-        Header(..), mEMCACHE_HEADER_SIZE, PktType(..),
+        Header(..), memcacheHeaderSize, PktType(..),
 
         -- * Requests
         Request(..), OpRequest(..), SESet(..), SEIncr(..), SETouch(..),
@@ -67,8 +67,8 @@ type Password = ByteString
     value  :: ByteString
  -}
 
-mEMCACHE_HEADER_SIZE :: Int
-mEMCACHE_HEADER_SIZE = 24
+memcacheHeaderSize :: Int
+memcacheHeaderSize = 24
 
 -- | Memcached packet header (for both 'Request' and 'Response').
 data Header = Header {
@@ -123,10 +123,10 @@ data OpRequest
 
 {-# WARNING ReqRaw "This is dangerous; no future compatability guaranteed" #-}
 
-data SESet   = SESet   Flags Expiration         deriving (Eq, Show)
-data SEIncr  = SEIncr  Initial Delta Expiration deriving (Eq, Show)
-data SETouch = SETouch Expiration               deriving (Eq, Show)
-data SERaw   = SERaw   Builder Int
+data    SESet   = SESet   Flags Expiration         deriving (Eq, Show)
+data    SEIncr  = SEIncr  Initial Delta Expiration deriving (Eq, Show)
+newtype SETouch = SETouch Expiration               deriving (Eq, Show)
+data    SERaw   = SERaw   Builder Int
 
 instance Show SERaw where
     show _ = "SERaw _"
