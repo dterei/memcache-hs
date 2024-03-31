@@ -1,0 +1,52 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+# If updates are pushed to a branch, cancel in-progress runs
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Check for stack YAML files
+  generate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - id: generate
+        uses: freckle/stack-action/generate-matrix@v4
+    outputs:
+      stack-yamls: ${{ steps.generate.outputs.stack-yamls }}
+
+  test:
+    needs: generate
+    runs-on: ubuntu-latest
+
+    strategy:
+      matrix:
+        stack-yaml: ${{ fromJSON(needs.generate.outputs.stack-yamls) }}
+      fail-fast: false
+
+    steps:
+      - uses: actions/checkout@v4
+      - id: stack
+        uses: freckle/stack-action@v4
+        with:
+          stack-yaml: ${{ matrix.stack-yaml }}
+      - if: ${{ matrix.stack-yaml == 'stack.yaml' }}
+        uses: freckle/weeder-action@v2
+        with:
+          ghc-version: ${{ steps.stack.outputs.compiler-version }}
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: haskell/actions/hlint-setup@v2
+      - uses: haskell/actions/hlint-run@v2
+        with:
+          fail-on: warning
