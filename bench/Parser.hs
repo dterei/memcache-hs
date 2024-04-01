@@ -3,15 +3,15 @@
 -- | Benchmark the parsing and serialization aspects of memcache.
 module Main where
 
-import Database.Memcache.Types
-import Database.Memcache.Wire
+import           Database.Memcache.Types
+import           Database.Memcache.Wire
 
-import Criterion.Main
-import Data.ByteString (ByteString)
-import qualified Data.ByteString as B
-import qualified Data.ByteString.Lazy as L
+import           Criterion.Main
+import           Data.ByteString            (ByteString)
+import qualified Data.ByteString            as B
+import qualified Data.ByteString.Lazy       as L
 import qualified Data.ByteString.Lazy.Char8 as LC
-import Data.Monoid
+import           Data.Monoid
 
 main :: IO ()
 main =
@@ -56,4 +56,3 @@ getRespBytes = getRespHeaderBytes <> extras' <> key' <> value'
     extras' = L.pack  [0x00, 0x00, 0x00, 0x01] -- BE: so 1?
     key'    = L.pack  []
     value'  = LC.pack "12345678"
-

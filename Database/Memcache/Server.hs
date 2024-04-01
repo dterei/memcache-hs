@@ -21,18 +21,18 @@ module Database.Memcache.Server (
         Server(sid, failed), newServerDefault, sendRecv, withSocket, close
     ) where
 
-import Database.Memcache.SASL
-import Database.Memcache.Socket
+import           Database.Memcache.SASL
+import           Database.Memcache.Socket
 
-import Control.Exception
-import Database.Memcache.Types (ServerSpec(..))
-import Data.Hashable
-import Data.IORef
-import Data.Pool
-import Data.Time.Clock.POSIX (POSIXTime)
+import           Control.Exception
+import           Data.Hashable
+import           Data.IORef
+import           Data.Pool
+import           Data.Time.Clock.POSIX    (POSIXTime)
+import           Database.Memcache.Types  (ServerSpec (..))
 
-import Network.Socket (getAddrInfo, HostName, ServiceName)
-import qualified Network.Socket as S
+import           Network.Socket           (HostName, ServiceName, getAddrInfo)
+import qualified Network.Socket           as S
 
 -- Connection pool constants.
 -- TODO: make configurable
@@ -48,19 +48,19 @@ numStripes = Just 1
 -- | Memcached server connection.
 data Server = Server {
         -- | ID of server for consistent hashing.
-        sid      :: {-# UNPACK #-} !Int,
+        sid    :: {-# UNPACK #-} !Int,
         -- | Connection pool to server.
-        pool     :: Pool Socket,
+        pool   :: Pool Socket,
         -- | Hostname of server.
-        addr     :: !HostName,
+        addr   :: !HostName,
         -- | Port number of server.
-        port     :: !ServiceName,
+        port   :: !ServiceName,
         -- | Credentials for server.
-        auth     :: !Authentication,
+        auth   :: !Authentication,
         -- | When did the server fail? 0 if it is alive.
-        failed   :: IORef POSIXTime
+        failed :: IORef POSIXTime
 
-        -- TODO: 
+        -- TODO:
         -- weight   :: Double
         -- tansport :: Transport (UDP vs. TCP)
         -- poolLim  :: Int (pooled connection limit)
@@ -132,4 +132,3 @@ withSocket svr = withResource $ pool svr
 close :: Server -> IO ()
 {-# INLINE close #-}
 close srv = destroyAllResources $ pool srv
-

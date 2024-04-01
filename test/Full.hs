@@ -13,7 +13,7 @@ import           Database.Memcache.Types
 
 import           Control.Exception
 import           Control.Monad
-import qualified Data.ByteString.Char8 as BC
+import qualified Data.ByteString.Char8    as BC
 import           System.Exit
 
 main :: IO ()
@@ -42,7 +42,7 @@ getTest = withMCServer False res $ do
     Just (v', _, _) <- M.get c "key"
     when (v' /= "world") $ do
         putStrLn $ "bad value returned! " ++ show v'
-        exitFailure 
+        exitFailure
   where
     res = [ MR $ emptyRes { resOp = ResSet Loud }
           , MR $ emptyRes { resOp = ResGet Loud "world" 0 }
@@ -79,7 +79,7 @@ timeoutTest :: IO ()
 timeoutTest = withMCServer True res $ do
     c <- M.newClient [M.def] M.def
     void $ M.set c (BC.pack "key") (BC.pack "world") 0 0
-    r <- try $ M.get c "key" 
+    r <- try $ M.get c "key"
     case r of
         Left (ClientError Timeout) -> return ()
         Left  _ -> putStrLn "unexpected exception!" >> exitFailure
@@ -95,4 +95,3 @@ timeoutRetryTest = withMCServer False res $ do
     res = [ DelayMS 800 Noop
           , MR $ emptyRes { resOp = ResSet Loud }
           ]
-

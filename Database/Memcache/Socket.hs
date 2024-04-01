@@ -1,5 +1,5 @@
 {-# LANGUAGE BangPatterns #-}
-{-# LANGUAGE CPP #-}
+{-# LANGUAGE CPP          #-}
 {-# OPTIONS_GHC -fno-warn-warnings-deprecations #-}
 
 {-|
@@ -34,13 +34,13 @@ import           Blaze.ByteString.Builder
 #if __GLASGOW_HASKELL__ < 710
 import           Control.Applicative
 #endif
-import           Control.Exception (throw, throwIO)
+import           Control.Exception         (throw, throwIO)
 import           Control.Monad
 import           Data.Binary.Get
-import qualified Data.ByteString as B
-import qualified Data.ByteString.Lazy as L
+import qualified Data.ByteString           as B
+import qualified Data.ByteString.Lazy      as L
 import           Data.Word
-import           Network.Socket (Socket)
+import           Network.Socket            (Socket)
 import qualified Network.Socket.ByteString as N
 
 -- | Send a request to the Memcached server.
@@ -71,7 +71,7 @@ recv s = do
             bl | bl == n ->
                 return $! (toByteString $! acc <> fromByteString buf)
             bl -> recvAll (n - bl) (acc <> fromByteString buf)
-    
+
     errEOF :: MemcacheError
     errEOF = ProtocolError UnexpectedEOF { protocolError = "" }
 
@@ -319,7 +319,7 @@ dzGetResponse h o = do
   where
     el = fromIntegral $ extraLen h
     vl = fromIntegral (bodyLen h) - el
-    
+
 -- | Deserialize the body of a GetK Response (Extras [flags] & Key & Value).
 dzGetKResponse :: Header -> (Key -> Value -> Flags -> OpResponse) -> Get Response
 dzGetKResponse h o = do
@@ -414,4 +414,3 @@ chkLength expected l msg = when (l /= expected) $
   return $ throw $ ProtocolError BadLength { protocolError =
       msg ++ " length expected " ++ show expected ++ " got " ++ show l
   }
-

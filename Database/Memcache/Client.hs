@@ -105,21 +105,21 @@ module Database.Memcache.Client (
         MemcacheError(..), Status(..), ClientError(..), ProtocolError(..)
     ) where
 
-import Database.Memcache.Cluster
-import Database.Memcache.Errors
-import Database.Memcache.Server
-import Database.Memcache.Socket
-import Database.Memcache.Types hiding (cas)
+import           Database.Memcache.Cluster
+import           Database.Memcache.Errors
+import           Database.Memcache.Server
+import           Database.Memcache.Socket
+import           Database.Memcache.Types   hiding (cas)
 
 #if __GLASGOW_HASKELL__ < 710
-import Control.Applicative
+import           Control.Applicative
 #endif
-import Control.Exception (handle, throwIO, SomeException)
-import Control.Monad (forM_, void, when)
-import Data.Default.Class
-import Data.Word
-import Data.ByteString (ByteString)
-import qualified Data.ByteString as B (null)
+import           Control.Exception         (SomeException, handle, throwIO)
+import           Control.Monad             (forM_, void, when)
+import           Data.ByteString           (ByteString)
+import qualified Data.ByteString           as B (null)
+import           Data.Default.Class
+import           Data.Word
 
 -- | A Memcached client, connected to a collection of Memcached servers.
 type Client = Cluster
@@ -377,4 +377,3 @@ version c = do
 --     case resStatus r of
 --         NoError -> return ()
 --         rs      -> throwStatus rs
-

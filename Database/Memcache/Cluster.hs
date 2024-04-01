@@ -1,7 +1,7 @@
-{-# LANGUAGE BangPatterns #-}
-{-# LANGUAGE CPP #-}
-{-# LANGUAGE FlexibleInstances #-}
-{-# LANGUAGE RecordWildCards #-}
+{-# LANGUAGE BangPatterns        #-}
+{-# LANGUAGE CPP                 #-}
+{-# LANGUAGE FlexibleInstances   #-}
+{-# LANGUAGE RecordWildCards     #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
 {-|
@@ -27,22 +27,22 @@ module Database.Memcache.Cluster (
         Retries, keyedOp, anyOp, allOp, allOp'
     ) where
 
-import Database.Memcache.Errors
-import Database.Memcache.Server
-import Database.Memcache.Types
+import           Database.Memcache.Errors
+import           Database.Memcache.Server
+import           Database.Memcache.Types
 
-import Control.Concurrent (threadDelay)
-import Control.Exception (handle, throwIO, SomeException)
-import Data.Default.Class
-import Data.Fixed (Milli)
-import Data.Hashable (hash)
-import Data.IORef
-import Data.Maybe (fromMaybe)
-import Data.List (sort)
-import Data.Time.Clock (NominalDiffTime)
-import Data.Time.Clock.POSIX (getPOSIXTime)
-import qualified Data.Vector as V
-import System.Timeout
+import           Control.Concurrent       (threadDelay)
+import           Control.Exception        (SomeException, handle, throwIO)
+import           Data.Default.Class
+import           Data.Fixed               (Milli)
+import           Data.Hashable            (hash)
+import           Data.IORef
+import           Data.List                (sort)
+import           Data.Maybe               (fromMaybe)
+import           Data.Time.Clock          (NominalDiffTime)
+import           Data.Time.Clock.POSIX    (getPOSIXTime)
+import qualified Data.Vector              as V
+import           System.Timeout
 
 -- | Number of times to retry an operation before considering it failed.
 type Retries = Int
@@ -54,27 +54,27 @@ data Options = Options {
         -- failover to a different server for the next operation.
         --
         -- Default is 2.
-        optsServerRetries :: Retries,
+        optsServerRetries        :: Retries,
         -- | After an operation has failed, how long to wait before retrying it
         -- while still within the 'optsServerRetries' count?
         --
         -- Default is 200ms.
-        optsFailRetryDelay :: Milli,
+        optsFailRetryDelay       :: Milli,
         -- | How long to wait after a server has been marked down, before
         -- trying to use it again.
         --
         -- Default is 1500ms.
-        optsDeadRetryDelay :: Milli,
+        optsDeadRetryDelay       :: Milli,
         -- | How long to wait for an operation to complete before considering
         -- it failed.
         --
         -- Default is 750ms.
-        optsServerTimeout :: Milli,
+        optsServerTimeout        :: Milli,
         --
         -- | Figure out which server to talk to for a given key.
         --
         -- Default is 'getServerForKeyDefault'.
-        optsGetServerForKey :: Cluster -> Key -> IO (Maybe Server),
+        optsGetServerForKey      :: Cluster -> Key -> IO (Maybe Server),
         --
         -- | Convert a 'ServerSpec' into a 'Server'.
         --
@@ -102,15 +102,15 @@ instance Default Options where
 
 -- | Memcached cluster.
 data Cluster = Cluster {
-        cServers   :: V.Vector Server,
+        cServers         :: V.Vector Server,
 
         -- See 'Options' for description of these values.
 
-        cRetries   :: {-# UNPACK #-} !Int,
-        cFailDelay :: {-# UNPACK #-} !Int, -- ^ microseconds
-        cDeadDelay :: !NominalDiffTime,
-        cTimeout   :: {-# UNPACK #-} !Int, -- ^ microseconds
-        cGetServerForKey  :: Cluster -> Key -> IO (Maybe Server)
+        cRetries         :: {-# UNPACK #-} !Int,
+        cFailDelay       :: {-# UNPACK #-} !Int, -- ^ microseconds
+        cDeadDelay       :: !NominalDiffTime,
+        cTimeout         :: {-# UNPACK #-} !Int, -- ^ microseconds
+        cGetServerForKey :: Cluster -> Key -> IO (Maybe Server)
     }
 
 -- | Establish a new connection to a group of Memcached servers.
@@ -229,4 +229,3 @@ retryOp Cluster{..} s op = go cRetries
     handleErrs n _ = do
         threadDelay cFailDelay
         go n
-

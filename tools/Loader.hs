@@ -1,21 +1,21 @@
 {-# LANGUAGE OverloadedStrings #-}
 module Main where
 
-import Control.Concurrent.Async
-import Control.Concurrent
-import Control.Monad
-import qualified Data.ByteString.Char8 as B8
-import Data.Int
-import Data.List
-import Data.Maybe
-import System.Environment
-import System.Exit
-import System.Console.GetOpt
+import           Control.Concurrent
+import           Control.Concurrent.Async
+import           Control.Monad
+import qualified Data.ByteString.Char8      as B8
+import           Data.Int
+import           Data.List
+import           Data.Maybe
+import           System.Console.GetOpt
+import           System.Environment
+import           System.Exit
 
-import Data.ByteString.Char8 (unpack)
-import Database.Memcache.Protocol
-import Database.Memcache.Server
-import Network.Socket (PortNumber)
+import           Data.ByteString.Char8      (unpack)
+import           Database.Memcache.Protocol
+import           Database.Memcache.Server
+import           Network.Socket             (PortNumber)
 
 data Options = Options { itemSize   :: Int64
                        , totalBytes :: Int64
@@ -65,7 +65,7 @@ parseArguments = do
 
 main :: IO ()
 main = do
-    opts <- parseArguments    
+    opts <- parseArguments
     when (itemSize opts < 1) $ error "Incorrect size value!"
     when (totalBytes opts < 1) $ error "Incorrect data value!"
 
@@ -87,5 +87,3 @@ main = do
 
     -- wait on them all.
     forM_ children wait
-
-

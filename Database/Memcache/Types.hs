@@ -31,11 +31,11 @@ module Database.Memcache.Types (
         ServerSpec(..)
     ) where
 
-import Blaze.ByteString.Builder (Builder)
-import Data.ByteString (ByteString)
-import Network.Socket (HostName, ServiceName)
-import Data.Word
-import Data.Default.Class
+import           Blaze.ByteString.Builder (Builder)
+import           Data.ByteString          (ByteString)
+import           Data.Default.Class
+import           Data.Word
+import           Network.Socket           (HostName, ServiceName)
 
 -- | SASL Authentication information for a server.
 data Authentication
