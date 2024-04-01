@@ -1,15 +1,12 @@
 # memcache: Haskell Memcached Client
 
-
 [![Hackage](https://img.shields.io/hackage/v/memcache.svg?style=flat)](https://hackage.haskell.org/package/memcache)
 [![Hackage Dependencies](https://img.shields.io/hackage-deps/v/memcache.svg?style=flat)](http://packdeps.haskellers.com/reverse/memcache)
 [![BSD3 License](http://img.shields.io/badge/license-BSD3-brightgreen.svg?style=flat)][tl;dr Legal: BSD3]
 [![Build](https://img.shields.io/travis/dterei/memcache-hs.svg?style=flat)](https://travis-ci.org/dterei/memcache-hs)
 [![Gitter](https://badges.gitter.im/dterei/memcache-hs.svg)](https://gitter.im/dterei/memcache-hs?utm_source=badge&utm_medium=badge&utm_campaign=pr-badge)
 
-[tl;dr Legal: BSD3]:
-  https://tldrlegal.com/license/bsd-3-clause-license-(revised)
-  "BSD3 License"
+[tl;dr Legal: BSD3]: https://tldrlegal.com/license/bsd-3-clause-license-(revised) "BSD3 License"
 
 A client library for a memcached cluster.
 
@@ -30,10 +27,10 @@ This library is BSD-licensed.
 This library also includes a few tools for manipulating and experimenting with
 memcached servers.
 
-* `OpGen` -- A load generator for memcached. Doesn't collect timing statistics,
+- `OpGen` -- A load generator for memcached. Doesn't collect timing statistics,
   other tools like [mutilate](https://github.com/leverich/mutilate) already do
   that very well. This tool is useful in conjunction with mutilate.
-* `Loader` -- A tool to load random data of a certain size into a memcached
+- `Loader` -- A tool to load random data of a certain size into a memcached
   server. Useful for priming a server for testing.
 
 ## Architecture Notes
@@ -52,9 +49,9 @@ Either way, a pool is fine for now.
 
 ## Other clients
 
-* [C: libmemcached](http://libmemcached.org/libMemcached.html)
-* [Java: SpyMemcached](http://code.google.com/p/spymemcached/)
-* [Ruby: Dalli](https://github.com/mperham/dalli)
+- [C: libmemcached](http://libmemcached.org/libMemcached.html)
+- [Java: SpyMemcached](http://code.google.com/p/spymemcached/)
+- [Ruby: Dalli](https://github.com/mperham/dalli)
 
 ## Get involved!
 
@@ -66,7 +63,7 @@ Please report bugs via the
 
 Master [git repository](http://github.com/dterei/memcache-hs):
 
-* `git clone https://github.com/dterei/memcache-hs.git`
+- `git clone https://github.com/dterei/memcache-hs.git`
 
 ## Authors
 
@@ -74,7 +71,6 @@ This library is written and maintained by David Terei (<code@davidterei.com>).
 
 Contributions have been made by the following great people:
 
-* Alfredo Di Napoli (<alfredo.dinapoli@gmail.com>)
-* Amit Levy
-* Steven Leiva
-
+- Alfredo Di Napoli (<alfredo.dinapoli@gmail.com>)
+- Amit Levy
+- Steven Leiva

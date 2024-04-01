@@ -1,4 +1,4 @@
-{ pkgs ? import <nixpkgs> {} }:
+{ pkgs ? import <nixpkgs> { } }:
 let
   hsPkgs = pkgs.haskellPackages;
 
@@ -15,4 +15,4 @@ let
 
   project = hsPkgs.callCabal2nix "memcache-hs" src;
 in
-hsPkgs.callPackage project {}
+hsPkgs.callPackage project { }

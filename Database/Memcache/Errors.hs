@@ -23,10 +23,10 @@ module Database.Memcache.Errors (
         wrongOp
     ) where
 
-import Database.Memcache.Types
+import           Database.Memcache.Types
 
-import Control.Exception
-import Data.Typeable
+import           Control.Exception
+import           Data.Typeable
 
 -- | All exceptions that a Memcached client may throw.
 data MemcacheError
@@ -74,4 +74,3 @@ wrongOp r msg = ProtocolError $
     WrongOp {
         protocolError  = "Expected " ++ msg ++ "! Got: " ++ show (resOp r)
     }
-

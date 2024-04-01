@@ -10,16 +10,16 @@ module Database.Memcache.LClient (
     ) where
 
 import qualified Database.Memcache.Protocol as P
-import Database.Memcache.SASL
-import Database.Memcache.Server
-import Database.Memcache.Types
+import           Database.Memcache.SASL
+import           Database.Memcache.Server
+import           Database.Memcache.Types
 
-import LIO
-import LIO.DCLabel
-import LIO.TCB
+import           LIO
+import           LIO.DCLabel
+import           LIO.TCB
 
-import Control.Monad
-import Data.Serialize (encode)
+import           Control.Monad
+import           Data.Serialize             (encode)
 
 -- | Retrieve a Memcache connection correctly setup for use at the current
 -- label.
@@ -29,7 +29,7 @@ getClient = do
     c <- rethrowIoTCB $ newMemcacheClient "localhost" 11211
     b <- rethrowIoTCB $ authenticate c (encode l) "pass"
     unless b $ error "ARGH!"
-    return c 
+    return c
 
 -- | Retrieve a key from the cache at the current label.
 get :: Key -> LIO DCLabel (Maybe (Value, Flags, Version))
@@ -56,5 +56,3 @@ delete' :: Key -> Version -> LIO DCLabel Bool
 delete' k ver = do
     c <- getClient
     rethrowIoTCB $ P.delete c k ver
-
-

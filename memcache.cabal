@@ -3,7 +3,7 @@ version:        0.3.0.2
 homepage:       https://github.com/dterei/memcache-hs
 bug-reports:    https://github.com/dterei/memcache-hs/issues
 synopsis:       A memcached client library.
-description:    
+description:
   A client library for a Memcached cluster. Memcached is an in-memory key-value
   store typically used as a distributed and shared cache. Clients connect to a
   group of Memcached servers and perform out-of-band caching for things like
@@ -21,7 +21,7 @@ description:
   Basic usage is:
   .
   > import qualified Database.Memcache.Client as M
-  > 
+  >
   > mc <- M.newClient [M.ServerSpec "localhost" "11211" M.NoAuth] M.def
   > M.set mc "key" "value" 0 0
   > v <- M.get mc "key"
@@ -133,4 +133,3 @@ benchmark parser
   other-extensions:
     OverloadedStrings
   ghc-options: -fwarn-tabs
-

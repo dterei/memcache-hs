@@ -1,19 +1,19 @@
 {-# LANGUAGE OverloadedStrings #-}
 module Main where
 
-import Control.Concurrent.Async
-import Control.Concurrent
-import Control.Monad
-import Data.List
-import Data.Maybe
-import System.Environment
-import System.Exit
-import System.Console.GetOpt
+import           Control.Concurrent
+import           Control.Concurrent.Async
+import           Control.Monad
+import           Data.List
+import           Data.Maybe
+import           System.Console.GetOpt
+import           System.Environment
+import           System.Exit
 
-import Data.ByteString.Char8 (unpack)
-import Database.Memcache.Protocol
-import Database.Memcache.Server
-import Network.Socket (PortNumber)
+import           Data.ByteString.Char8      (unpack)
+import           Database.Memcache.Protocol
+import           Database.Memcache.Server
+import           Network.Socket             (PortNumber)
 
 data Operation = GET | STAT | NOOP deriving (Show, Eq)
 
@@ -77,7 +77,7 @@ parseArguments = do
 
 main :: IO ()
 main = do
-    opts <- parseArguments    
+    opts <- parseArguments
     when (time opts < 1) $ error "Incorrect time value!"
     when (qps opts < 1) $ error "Incorrect qps value!"
     when (quotum opts < 1) $ error "Incorrect quotum value!"
@@ -112,4 +112,3 @@ main = do
 
     -- wait on them all.
     forM_ children wait
-

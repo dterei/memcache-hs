@@ -1,5 +1,5 @@
-{-# LANGUAGE BangPatterns #-}
-{-# LANGUAGE CPP #-}
+{-# LANGUAGE BangPatterns      #-}
+{-# LANGUAGE CPP               #-}
 {-# LANGUAGE OverloadedStrings #-}
 
 -- | Mock Memcached server - just enough for testing client.
@@ -15,13 +15,14 @@ import           Blaze.ByteString.Builder
 import           Control.Applicative
 #endif
 import           Control.Concurrent
-import           Control.Exception (bracket, handle, throwIO, SomeException)
+import           Control.Exception         (SomeException, bracket, handle,
+                                            throwIO)
 import           Control.Monad
 import           Data.Binary.Get
-import qualified Data.ByteString as B
-import qualified Data.ByteString.Lazy as L
+import qualified Data.ByteString           as B
+import qualified Data.ByteString.Lazy      as L
 import           Data.IORef
-import qualified Network.Socket as N
+import qualified Network.Socket            as N
 import qualified Network.Socket.ByteString as N
 
 import           Database.Memcache.Errors
@@ -50,7 +51,7 @@ withMCServer loop res m = do
 -- | New mock Memcached server that responds to each request with the specified
 -- list of responses.
 mockMCServer :: Bool -> [MockResponse] -> MVar () -> IO ThreadId
-mockMCServer loop resp' sem = forkIO $ bracket 
+mockMCServer loop resp' sem = forkIO $ bracket
     (N.socket N.AF_INET N.Stream N.defaultProtocol)
     N.close
     $ \sock -> do
@@ -69,7 +70,7 @@ mockMCServer loop resp' sem = forkIO $ bracket
 
         acceptHandler sock ref
         when loop $ forever $ threadDelay 1000000
-  
+
   where
     acceptHandler sock ref = do
         client <- fst <$> N.accept sock
@@ -119,8 +120,7 @@ recvAll s !n !acc = do
         bl | bl == n ->
             return $! (toByteString $! acc <> fromByteString buf)
         bl -> recvAll s (n - bl) (acc <> fromByteString buf)
-  
+
   where
     errEOF :: MemcacheError
     errEOF = ProtocolError UnexpectedEOF { protocolError = "" }
-
