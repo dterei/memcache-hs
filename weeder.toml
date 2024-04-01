@@ -1,0 +1,5 @@
+roots = ["Main.main", "^Paths_weeder.*", "^Paths_.*", "^Database.Memcache.Client.*"]
+
+type-class-roots = true
+
+unused-types = false

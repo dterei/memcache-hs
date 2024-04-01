@@ -25,7 +25,7 @@ import           Database.Memcache.Types
 
 import           Control.Exception        (throwIO)
 import           Control.Monad
-import           Data.ByteString.Char8    as B8 (ByteString, pack, singleton)
+import           Data.ByteString.Char8    as B8 (pack, singleton)
 
 -- | Perform SASL authentication with the server.
 authenticate :: Socket -> Authentication -> IO ()
@@ -48,20 +48,4 @@ saslAuthPlain s u p = do
         throwIO $ wrongOp r "SASL_START"
     case resStatus r of
         NoError -> return ()
-        rs      -> throwIO $ OpError rs
-
--- | List available SASL authentication methods. We could call this but as we
--- only support PLAIN as does the Memcached server, we simply assume PLAIN
--- authentication is supprted and try that.
-saslListMechs :: Socket -> IO B8.ByteString
-{-# INLINE saslListMechs #-}
-saslListMechs s = do
-    let msg = emptyReq { reqOp = ReqSASLList }
-    send s msg
-    r <- recv s
-    v <- case resOp r of
-        ResSASLList v -> return v
-        _             -> throwIO $ wrongOp r "SASL_LIST"
-    case resStatus r of
-        NoError -> return v
         rs      -> throwIO $ OpError rs
