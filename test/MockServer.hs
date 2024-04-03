@@ -59,6 +59,7 @@ mockMCServer loop resp' sem = forkIO $ bracket
         let hints = N.defaultHints {
             N.addrFlags = [N.AI_PASSIVE]
           , N.addrSocketType = N.Stream
+          , N.addrFamily = N.AF_INET
         }
         addr:_ <- N.getAddrInfo (Just hints) Nothing (Just "11211")
         N.bind sock $ N.addrAddress addr
