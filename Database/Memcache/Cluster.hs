@@ -21,7 +21,7 @@ servers available.
 -}
 module Database.Memcache.Cluster (
         -- * Cluster
-        Cluster, ServerSpec(..), Options(..), newCluster,
+        Cluster(cServers), ServerSpec(..), Options(..), newCluster,
 
         -- * Operations
         Retries, keyedOp, anyOp, allOp, allOp'
