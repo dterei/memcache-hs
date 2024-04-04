@@ -119,15 +119,6 @@ resolveCluster cfgClient = do
 
   unTry $ handleRawNodeInfo rawNodeInfo
 
--- serverSpecs <- unTry $ handleRawNodeInfo rawNodeInfo
---
--- client <- Client.newClient serverSpecs opts
---
--- -- Create MVar and Refresh Server List Periodically
--- serversMVar <- newMVar =<< getServers client
---
--- pure $ setServersclient $ Left serversMVar
-
 -- Handle raw response from /memached/
 --
 -- See: https://docs.aws.amazon.com/AmazonElastiCache/latest/mem-ug/AutoDiscovery.AddingToYourClientLibrary.html#AutoDiscovery.AddingToYourClientLibrary.OutputFormat
