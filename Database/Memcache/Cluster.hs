@@ -21,7 +21,7 @@ servers available.
 -}
 module Database.Memcache.Cluster (
         -- * Cluster
-        Cluster(cServers), ServerSpec(..), Options(..), newCluster,
+        Cluster, ServerSpec(..), Options(..), newCluster, getServers, setServers,
 
         -- * Operations
         Retries, keyedOp, anyOp, allOp, allOp'
@@ -32,6 +32,7 @@ import           Database.Memcache.Server
 import           Database.Memcache.Types
 
 import           Control.Concurrent       (threadDelay)
+import           Control.Concurrent.MVar  (MVar, readMVar)
 import           Control.Exception        (SomeException, handle, throwIO)
 import           Data.Default.Class
 import           Data.Fixed               (Milli)
@@ -102,7 +103,7 @@ instance Default Options where
 
 -- | Memcached cluster.
 data Cluster = Cluster {
-        cServers         :: V.Vector Server,
+        cServers         :: Either (MVar (V.Vector Server)) (V.Vector Server),
 
         -- See 'Options' for description of these values.
 
@@ -113,6 +114,12 @@ data Cluster = Cluster {
         cGetServerForKey :: Cluster -> Key -> IO (Maybe Server)
     }
 
+getServers :: Cluster -> IO (V.Vector Server)
+getServers = either readMVar pure . cServers
+
+setServers :: Cluster -> Either (MVar (V.Vector Server)) (V.Vector Server) -> Cluster
+setServers c servers = c { cServers = servers }
+
 -- | Establish a new connection to a group of Memcached servers.
 newCluster :: [ServerSpec] -> Options -> IO Cluster
 newCluster []    _ = throwIO $ ClientError NoServersReady
@@ -120,7 +127,7 @@ newCluster hosts Options{..} = do
     s <- optsServerSpecsToServers hosts
     return $
         Cluster {
-            cServers   = V.fromList $ sort s,
+            cServers   = Right $ V.fromList $ sort s,
             cRetries   = optsServerRetries ,
             cFailDelay = fromEnum optsFailRetryDelay,
             cDeadDelay = fromRational $ toRational optsDeadRetryDelay / 1000,
@@ -150,7 +157,8 @@ getServerForKeyDefault :: Cluster -> Key -> IO (Maybe Server)
 getServerForKeyDefault  c k = do
     let hashedKey = hash k
         searchF s = sid s < hashedKey
-    servers' <- V.filterM (serverAlive $ cDeadDelay c) $ cServers c
+    servers <- getServers c
+    servers' <- V.filterM (serverAlive $ cDeadDelay c) servers
     return $ if V.null servers'
         then Nothing
         else Just $ fromMaybe (V.last servers') (V.find searchF servers')
@@ -176,7 +184,8 @@ keyedOp c k req = do
 anyOp :: Cluster -> Request -> IO Response
 {-# INLINE anyOp #-}
 anyOp c req = do
-    servers' <- V.filterM (serverAlive $ cDeadDelay c) $ cServers c
+    servers <- getServers c
+    servers' <- V.filterM (serverAlive $ cDeadDelay c) servers
     if V.null servers'
         then throwIO $ ClientError NoServersReady
         else serverOp c (V.head servers') req
@@ -186,7 +195,8 @@ anyOp c req = do
 allOp :: Cluster -> Request -> IO [(Server, Response)]
 {-# INLINE allOp #-}
 allOp c req = do
-    servers' <- V.filterM (serverAlive $ cDeadDelay c) $ cServers c
+    servers <- getServers c
+    servers' <- V.filterM (serverAlive $ cDeadDelay c) servers
     if V.null servers'
         then throwIO $ ClientError NoServersReady
         else do
@@ -200,7 +210,8 @@ allOp c req = do
 allOp' :: Cluster -> (Server -> IO a) -> IO [(Server, a)]
 {-# INLINE allOp' #-}
 allOp' c op = do
-    servers' <- V.filterM (serverAlive $ cDeadDelay c) $ cServers c
+    servers <- getServers c
+    servers' <- V.filterM (serverAlive $ cDeadDelay c) servers
     if V.null servers'
         then throwIO $ ClientError NoServersReady
         else do
