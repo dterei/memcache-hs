@@ -1,3 +1,4 @@
+{-# LANGUAGE NumericUnderscores #-}
 {-# LANGUAGE OverloadedStrings #-}
 
 module Database.Memcache.ElastiCacheClient
@@ -6,6 +7,8 @@ module Database.Memcache.ElastiCacheClient
   )
 where
 
+import Control.Concurrent (forkIO, threadDelay)
+import Control.Concurrent.MVar (MVar, newMVar, putMVar)
 import Control.Error.Util (note)
 import Control.Exception (bracket)
 import Control.Monad (guard, when, (<=<))
@@ -13,6 +16,7 @@ import Data.Bifunctor (first)
 import Data.ByteString (ByteString)
 import qualified Data.ByteString as B
 import qualified Data.ByteString.Char8 as C
+import Data.List (sort)
 import qualified Data.List.NonEmpty as NE
 import Data.Text (Text)
 import qualified Data.Text as T
@@ -20,10 +24,10 @@ import qualified Data.Text.Encoding as T
 import qualified Data.Vector as V
 import Data.Version (Version, makeVersion)
 import qualified Data.Version as Version
-import Database.Memcache.Client (Client)
+import Database.Memcache.Client (Client, optsServerSpecsToServers)
 import qualified Database.Memcache.Client as Client
-import Database.Memcache.Cluster (Cluster (cServers), Options)
-import Database.Memcache.Server (withSocket)
+import Database.Memcache.Cluster (Options, getServers, setServers)
+import Database.Memcache.Server (Server, withSocket)
 import Database.Memcache.Types.ServerSpec (ServerSpec, parseServerSpec)
 import Network.Socket (Socket)
 import qualified Network.Socket.ByteString as N
@@ -64,13 +68,44 @@ newtype ConfigurationEndpoint
 --
 -- This function discovers all the nodes in a cluster.
 newClient :: Options -> ConfigurationEndpoint -> IO Client
-newClient options cfgEndpoint = bracket acquireCfgClient releaseCfgClient $ resolveCluster options
+newClient options cfgEndpoint = bracket acquireCfgClient releaseCfgClient resolveCluster'
   where
     acquireCfgClient = Client.newClient [unConfigurationEndpoint cfgEndpoint] options
     releaseCfgClient = Client.quit
+    resolveCluster' cfgClient = do
+      serverSpecs <- resolveCluster cfgClient
 
-resolveCluster :: Options -> Client -> IO Client
-resolveCluster opts cfgClient = do
+      -- Create client where cServers = Right <Vector Server>
+      client <- Client.newClient serverSpecs options
+
+      -- Prepare MVar
+      serversMVar <- newMVar =<< getServers client
+      _ <- forkIO $ repeatAutoDiscover options cfgEndpoint serversMVar
+
+      -- Update client where cServers = Left <MVar <Vector Server>>
+      pure $ setServers client $ Left serversMVar
+
+repeatAutoDiscover :: Options -> ConfigurationEndpoint -> MVar (V.Vector Server) -> IO ()
+repeatAutoDiscover opts cfgEndpoint mVar = do
+  cfgClient <- Client.newClient [unConfigurationEndpoint cfgEndpoint] opts
+  repeatAutoDiscover' cfgClient
+  where
+    repeatAutoDiscover' client = do
+      threadDelay autoDiscoverInterval
+      serverSpecs <- resolveCluster client
+      servers <- optsServerSpecsToServers opts serverSpecs
+      putMVar mVar $ V.fromList $ sort servers
+      repeatAutoDiscover' client
+
+-- Units: Microseconds
+autoDiscoverInterval :: Int
+autoDiscoverInterval = oneMinute * 3
+  where
+    oneMinute = oneSecond * 60
+    oneSecond = 1_000_000 -- Number of Microseconds in a Second
+
+resolveCluster :: Client -> IO [ServerSpec]
+resolveCluster cfgClient = do
   eitherVersion <- parseVersion . C.unpack <$> Client.version cfgClient
 
   version <- unTry eitherVersion
@@ -82,9 +117,16 @@ resolveCluster opts cfgClient = do
 
   rawNodeInfo <- unTry $ handleRawResponse rawResponse
 
-  serverSpecs <- unTry $ handleRawNodeInfo rawNodeInfo
+  unTry $ handleRawNodeInfo rawNodeInfo
 
-  Client.newClient serverSpecs opts
+-- serverSpecs <- unTry $ handleRawNodeInfo rawNodeInfo
+--
+-- client <- Client.newClient serverSpecs opts
+--
+-- -- Create MVar and Refresh Server List Periodically
+-- serversMVar <- newMVar =<< getServers client
+--
+-- pure $ setServersclient $ Left serversMVar
 
 -- Handle raw response from /memached/
 --
@@ -135,8 +177,9 @@ autoDiscoveryKey = "AmazonElastiCache:cluster"
 
 resolveViaConfigCmd :: Client -> IO ByteString
 resolveViaConfigCmd c = do
+  servers <- getServers c
   server <-
-    case V.uncons (cServers c) of
+    case V.uncons servers of
       Nothing -> throwString "No servers were found"
       Just (s, _) -> pure s
 
