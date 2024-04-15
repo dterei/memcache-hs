@@ -1,121 +1,110 @@
+cabal-version: 1.18
+
+-- This file has been generated from package.yaml by hpack version 0.36.0.
+--
+-- see: https://github.com/sol/hpack
+
 name:           memcache
 version:        0.3.0.2
-homepage:       https://github.com/dterei/memcache-hs
-bug-reports:    https://github.com/dterei/memcache-hs/issues
 synopsis:       A memcached client library.
-description:
-  A client library for a Memcached cluster. Memcached is an in-memory key-value
-  store typically used as a distributed and shared cache. Clients connect to a
-  group of Memcached servers and perform out-of-band caching for things like
-  SQL results, rendered pages, or third-party APIs.
-  .
-  It supports the binary Memcached protocol and SASL authentication. No support
-  for the ASCII protocol is provided. It supports connecting to a single, or a
-  cluster of Memcached servers. When connecting to a cluser, consistent hashing
-  is used for routing requests to the appropriate server. Timeouts, retrying
-  failed operations, and failover to a different server are all supported.
-  .
-  Complete coverage of the Memcached protocol is provided except for multi-get
-  and other pipelined operations.
-  .
-  Basic usage is:
-  .
-  > import qualified Database.Memcache.Client as M
-  >
-  > mc <- M.newClient [M.ServerSpec "localhost" "11211" M.NoAuth] M.def
-  > M.set mc "key" "value" 0 0
-  > v <- M.get mc "key"
-  .
-  You should only need to import 'Database.Memcache.Client', but for now other
-  modules are exposed.
-license:        BSD3
-license-file:   LICENSE
+category:       Database
+homepage:       https://github.com/dterei/memcache-hs#readme
+bug-reports:    https://github.com/dterei/memcache-hs/issues
 author:         David Terei <code@davidterei.com>
 maintainer:     David Terei <code@davidterei.com>
 copyright:      2016 David Terei.
-category:       Database
+license:        BSD3
+license-file:   LICENSE
 build-type:     Simple
-cabal-version:  >= 1.10
 extra-source-files:
-  README.md, CHANGELOG.md, TODO.md
-
-Source-repository this
-  type: git
-  location: https://github.com/dterei/memcache-hs.git
-  tag: 0.3.0.2
+    package.yaml
+extra-doc-files:
+    README.md
+    CHANGELOG.md
+    TODO.md
 
 source-repository head
-  type:     git
-  location: https://github.com/dterei/memcache-hs.git
+  type: git
+  location: https://github.com/dterei/memcache-hs
 
 library
   exposed-modules:
-    Database.Memcache.Client
-    Database.Memcache.ElastiCacheClient
-    Database.Memcache.Cluster
-    Database.Memcache.Errors
-    Database.Memcache.SASL
-    Database.Memcache.Server
-    Database.Memcache.Socket
-    Database.Memcache.Types
+      Database.Memcache.Client
+      Database.Memcache.Cluster
+      Database.Memcache.ElastiCacheClient
+      Database.Memcache.Errors
+      Database.Memcache.SASL
+      Database.Memcache.Server
+      Database.Memcache.Socket
+      Database.Memcache.Types
   other-modules:
-    Database.Memcache.Types.Authentication
-    Database.Memcache.Types.ServerSpec
-  build-depends:
-    base               <  5,
-    binary             >= 0.6.2.0,
-    blaze-builder      >= 0.3.1.0,
-    bytestring         >= 0.9.2.1,
-    data-default-class >= 0.1.0,
-    errors             >= 2.3.0,
-    hashable           >= 1.2.0.3,
-    network            >= 3.1.0.0,
-    network-uri        >= 2.6.4.2,
-    resource-pool      >= 0.2.1.0,
-    vector             >= 0.7,
-    time               >= 1.4,
-    text               >= 2.0.2,
-    unliftio           >= 0.2.25.0
-  default-language: Haskell2010
+      Database.Memcache.Types.Authentication
+      Database.Memcache.Types.ServerSpec
+  hs-source-dirs:
+      ./
   other-extensions:
-    BangPatterns,
-    CPP,
-    DeriveDataTypeable,
-    FlexibleInstances,
-    RecordWildCards,
-    ScopedTypeVariables
+      BangPatterns
+      CPP
+      DeriveDataTypeable
+      FlexibleInstances
+      RecordWildCards
+      ScopedTypeVariables
   ghc-options: -Wall -fwarn-tabs
-
-test-suite full
-  type:           exitcode-stdio-1.0
-  hs-source-dirs: test
-  main-is:        Full.hs
   build-depends:
-    base          <  5,
-    binary        >= 0.6.2.0,
-    blaze-builder >= 0.3.1.0,
-    bytestring    >= 0.9.2.1,
-    memcache,
-    network       >= 2.4
-  other-modules:
-    MockServer
+      base <5
+    , binary
+    , blaze-builder
+    , bytestring
+    , data-default-class
+    , errors
+    , hashable
+    , network
+    , network-uri
+    , resource-pool
+    , text
+    , time
+    , unliftio
+    , vector
   default-language: Haskell2010
+
+test-suite spec
+  type: exitcode-stdio-1.0
+  main-is: Full.hs
+  other-modules:
+      MockServer
+  hs-source-dirs:
+      test
   other-extensions:
-    BangPatterns,
-    CPP,
-    OverloadedStrings
-  ghc-options: -fwarn-tabs
+      BangPatterns
+      CPP
+      OverloadedStrings
+  ghc-options: -threaded -rtsopts "-with-rtsopts=-N"
+  build-depends:
+      base <5
+    , binary
+    , blaze-builder
+    , bytestring
+    , memcache
+    , network
+  default-language: Haskell2010
 
 benchmark parser
-  type:           exitcode-stdio-1.0
-  hs-source-dirs: bench
-  main-is:        Parser.hs
-  build-depends:
-    base       <  5,
-    bytestring >= 0.9.2.1,
-    criterion  >  0.6.0.0,
-    memcache
-  default-language: Haskell2010
+  type: exitcode-stdio-1.0
+  main-is: Parser.hs
+  other-modules:
+      Paths_memcache
+  hs-source-dirs:
+      bench
   other-extensions:
-    OverloadedStrings
-  ghc-options: -fwarn-tabs
+      BangPatterns
+      CPP
+      OverloadedStrings
+  build-depends:
+      base <5
+    , binary
+    , blaze-builder
+    , bytestring
+    , criterion
+    , memcache
+    , network
+  default-language: Haskell2010
