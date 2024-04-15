@@ -1,0 +1,75 @@
+name: memcache
+version: 0.3.0.2
+github: dterei/memcache-hs
+synopsis: A memcached client library.
+license: BSD3
+license-file: LICENSE
+author: David Terei <code@davidterei.com>
+maintainer: David Terei <code@davidterei.com>
+copyright: 2016 David Terei.
+category: Database
+build-type: Simple
+extra-doc-files:
+  - README.md
+  - CHANGELOG.md
+  - TODO.md
+extra-source-files:
+  - package.yaml
+
+dependencies:
+  - base < 5
+  - binary
+  - blaze-builder
+  - bytestring
+  - network
+
+other-extensions:
+  - BangPatterns
+  - CPP
+
+library:
+  source-dirs: .
+  dependencies:
+    - data-default-class
+    - errors
+    - hashable
+    - network-uri
+    - resource-pool
+    - text
+    - time
+    - unliftio
+    - vector
+  other-modules:
+    - Database.Memcache.Types.Authentication
+    - Database.Memcache.Types.ServerSpec
+  other-extensions:
+    - DeriveDataTypeable
+    - FlexibleInstances
+    - RecordWildCards
+    - ScopedTypeVariables
+  ghc-options:
+    - -Wall
+    - -fwarn-tabs
+
+tests:
+  spec:
+    main: Full.hs
+    source-dirs: test
+    ghc-options: -threaded -rtsopts "-with-rtsopts=-N"
+    other-extensions:
+      - OverloadedStrings
+    other-modules:
+      - MockServer
+    dependencies:
+      - memcache
+      - network
+
+benchmarks:
+  parser:
+    main: Parser.hs
+    source-dirs: bench
+    other-extensions:
+      - OverloadedStrings
+    dependencies:
+      - memcache
+      - criterion
