@@ -1,7 +1,8 @@
 {-# LANGUAGE OverloadedStrings #-}
 
 module Database.Memcache.ElastiCacheClient
-  ( parseConfigurationEndpoint,
+  ( ConfigurationEndpoint
+  , parseConfigurationEndpoint,
     newClient,
   )
 where
