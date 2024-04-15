@@ -1,4 +1,3 @@
-{-# LANGUAGE NumericUnderscores #-}
 {-# LANGUAGE OverloadedStrings #-}
 
 module Database.Memcache.ElastiCacheClient
@@ -8,13 +7,12 @@ module Database.Memcache.ElastiCacheClient
 where
 
 import Control.Concurrent (forkIO, threadDelay)
-import Control.Concurrent.MVar (MVar, newMVar, putMVar)
+import Control.Concurrent.MVar (MVar, modifyMVar_, newMVar)
 import Control.Error.Util (note)
 import Control.Exception (bracket)
-import Control.Monad (guard, when, (<=<))
+import Control.Monad (forever, guard, when, (<=<))
 import Data.Bifunctor (first)
 import Data.ByteString (ByteString)
-import qualified Data.ByteString as B
 import qualified Data.ByteString.Char8 as C
 import Data.List (sort)
 import qualified Data.List.NonEmpty as NE
@@ -43,16 +41,19 @@ parseConfigurationEndpoint url = do
   note "URI does not contain '.cfg'" $ guard $ ".cfg" `T.isInfixOf` T.pack url
   ConfigurationEndpoint <$> parseServerSpec url
 
--- Parse the /memached/ version string
-parseVersion :: String -> Either String Version
-parseVersion s = do
-  versions <- note "Parse was empty" $ NE.nonEmpty $ delegateParse s
-
-  case NE.last versions of
-    (version, "") -> pure version
-    (_version, rest) -> Left $ "Unread input: " <> rest
+-- Please see:
+-- https://github.com/memcached/memcached/blob/77709d04dd4fc7d59f59425802cb9645b2cfe0f8/doc/protocol.txt#L1805-L1812
+-- ByteString format: "VERSION <version>\r\n"
+parseVersion :: ByteString -> Either String Version
+parseVersion = interpretParseResults . delegateParse . C.unpack . C.dropEnd (C.length "\r\n") . C.drop (C.length "VERSION ")
   where
     delegateParse = readP_to_S Version.parseVersion
+    interpretParseResults parseResults = do
+      results <- note "Unable to parse input" $ NE.nonEmpty parseResults
+      let tail' = NE.last results
+      case tail' of
+        (version, "") -> pure version
+        (_, rest) -> Left $ "eof expected. Got: " <> rest
 
 -- | Newtype over a 'ServerSpec'.
 --
@@ -66,9 +67,11 @@ newtype ConfigurationEndpoint
 
 -- | Create a new client using service discovery.
 --
--- This function discovers all the nodes in a cluster.
-newClient :: Options -> ConfigurationEndpoint -> IO Client
-newClient options cfgEndpoint = bracket acquireCfgClient releaseCfgClient resolveCluster'
+-- This function discovers all the nodes in a cluster and sets up a new thread to run autodsicovery on an interval.
+--
+-- N.B. The interval is in the same units as 'threadDelay'
+newClient :: Options -> Int -> ConfigurationEndpoint -> IO Client
+newClient options interval cfgEndpoint = bracket acquireCfgClient releaseCfgClient resolveCluster'
   where
     acquireCfgClient = Client.newClient [unConfigurationEndpoint cfgEndpoint] options
     releaseCfgClient = Client.quit
@@ -80,50 +83,50 @@ newClient options cfgEndpoint = bracket acquireCfgClient releaseCfgClient resolv
 
       -- Prepare MVar
       serversMVar <- newMVar =<< getServers client
-      _ <- forkIO $ repeatAutoDiscover options cfgEndpoint serversMVar
+      _ <- forkIO $ repeatAutoDiscover options interval cfgEndpoint serversMVar
 
       -- Update client where cServers = Left <MVar <Vector Server>>
       pure $ setServers client $ Left serversMVar
 
-repeatAutoDiscover :: Options -> ConfigurationEndpoint -> MVar (V.Vector Server) -> IO ()
-repeatAutoDiscover opts cfgEndpoint mVar = do
+repeatAutoDiscover :: Options -> Int -> ConfigurationEndpoint -> MVar (V.Vector Server) -> IO ()
+repeatAutoDiscover opts interval cfgEndpoint mVar = do
   cfgClient <- Client.newClient [unConfigurationEndpoint cfgEndpoint] opts
-  repeatAutoDiscover' cfgClient
-  where
-    repeatAutoDiscover' client = do
-      threadDelay autoDiscoverInterval
-      serverSpecs <- resolveCluster client
-      servers <- optsServerSpecsToServers opts serverSpecs
-      putMVar mVar $ V.fromList $ sort servers
-      repeatAutoDiscover' client
-
--- Units: Microseconds
-autoDiscoverInterval :: Int
-autoDiscoverInterval = oneMinute * 3
-  where
-    oneMinute = oneSecond * 60
-    oneSecond = 1_000_000 -- Number of Microseconds in a Second
+  forever $ modifyMVar_ mVar $ \_curServers -> do
+    threadDelay interval
+    serverSpecs <- resolveCluster cfgClient
+    servers <- optsServerSpecsToServers opts serverSpecs
+    pure $ V.fromList $ sort servers
 
 resolveCluster :: Client -> IO [ServerSpec]
 resolveCluster cfgClient = do
-  eitherVersion <- parseVersion . C.unpack <$> Client.version cfgClient
+  servers <- getServers cfgClient
 
-  version <- unTry eitherVersion
+  server <-
+    case V.uncons servers of
+      Nothing -> throwString "No servers were found"
+      Just (s, _) -> pure s
 
-  rawResponse <-
-    if version >= firstCfgCmdVersion
-      then resolveViaConfigCmd cfgClient
-      else resolveViaAutoDiscoveryKey cfgClient
+  withSocket server $ \socket -> do
+    -- Get version
+    N.sendAll socket "version\r\n"
+    rawVersion <- recvAll "\r\n" socket
+    version <- unTry $ parseVersion rawVersion
 
-  rawNodeInfo <- unTry $ handleRawResponse rawResponse
+    -- Get nodes
+    rawResponse <-
+      if version >= firstCfgCmdVersion
+        then resolveViaConfigCmd socket
+        else resolveViaAutoDiscoveryKey cfgClient
 
-  unTry $ handleRawNodeInfo rawNodeInfo
+    rawNodeInfo <- unTry $ handleConfigGetClusterResponse rawResponse
+
+    unTry $ handleRawNodeInfo rawNodeInfo
 
 -- Handle raw response from /memached/
 --
 -- See: https://docs.aws.amazon.com/AmazonElastiCache/latest/mem-ug/AutoDiscovery.AddingToYourClientLibrary.html#AutoDiscovery.AddingToYourClientLibrary.OutputFormat
-handleRawResponse :: ByteString -> Either String Text
-handleRawResponse bs = do
+handleConfigGetClusterResponse :: ByteString -> Either String Text
+handleConfigGetClusterResponse bs = do
   text <- first show $ T.decodeUtf8' bs
 
   case T.lines text of
@@ -166,37 +169,26 @@ resolveViaAutoDiscoveryKey cfg = do
 autoDiscoveryKey :: ByteString
 autoDiscoveryKey = "AmazonElastiCache:cluster"
 
-resolveViaConfigCmd :: Client -> IO ByteString
-resolveViaConfigCmd c = do
-  servers <- getServers c
-  server <-
-    case V.uncons servers of
-      Nothing -> throwString "No servers were found"
-      Just (s, _) -> pure s
+-- See: https://docs.aws.amazon.com/AmazonElastiCache/latest/mem-ug/AutoDiscovery.AddingToYourClientLibrary.html#AutoDiscovery.AddingToYourClientLibrary.OutputFormat
+resolveViaConfigCmd :: Socket -> IO ByteString
+resolveViaConfigCmd socket = do
+  N.sendAll socket "config get cluster\r\n"
+  recvAll "END\r\n" socket
 
-  withSocket server $ \socket -> do
-    N.sendAll socket "config get cluster"
-    recvAll socket
+-- Receive all data from the socket, stopping when we reach a pre-determind /tail/.
+recvAll :: ByteString -> Socket -> IO ByteString
+recvAll recvMsgEnd socket = go ""
   where
-    recvAll :: Socket -> IO ByteString
-    recvAll socket = go ""
-      where
-        go accumulator = do
-          if recvMsgEnd `B.isSuffixOf` accumulator
-            then pure accumulator
-            else do
-              received <- N.recv socket recvMsgSize
-              when (B.null received) $ throwString "Expected more data from the socket, but socket is empty."
-              go (accumulator <> received)
+    go accumulator = do
+      if recvMsgEnd `C.isSuffixOf` accumulator
+        then pure accumulator
+        else do
+          received <- N.recv socket recvMsgSize
+          when (C.null received) $ throwString "Expected more data from the socket, but socket is empty."
+          go (accumulator <> received)
 
 recvMsgSize :: Int
 recvMsgSize = 4096
-
--- The last part of the ByteString that we should receive when asking for node info.
---
--- See: https://docs.aws.amazon.com/AmazonElastiCache/latest/mem-ug/AutoDiscovery.AddingToYourClientLibrary.html#AutoDiscovery.AddingToYourClientLibrary.OutputFormat
-recvMsgEnd :: B.ByteString
-recvMsgEnd = "END\r\n"
 
 unTry :: Either String a -> IO a
 unTry = either throwString pure
