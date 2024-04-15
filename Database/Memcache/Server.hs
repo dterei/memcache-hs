@@ -1,4 +1,5 @@
 {-# LANGUAGE RecordWildCards #-}
+{-# LANGUAGE CPP             #-}
 
 {-|
 Module      : Database.Memcache.Server
@@ -27,7 +28,8 @@ import           Database.Memcache.Socket
 import           Control.Exception
 import           Data.Hashable
 import           Data.IORef
-import           Data.Pool
+import qualified Data.Pool as P
+import           Data.Pool (Pool)
 import           Data.Time.Clock.POSIX    (POSIXTime)
 import           Database.Memcache.Types  (ServerSpec (..))
 
@@ -39,11 +41,11 @@ import qualified Network.Socket           as S
 numResources :: Int
 numResources = 1
 
-keepAlive :: Double
+keepAlive :: Num a => a
 keepAlive = 300
 
-numStripes :: Maybe Int
-numStripes = Just 1
+numStripes :: Int
+numStripes = 1
 
 -- | Memcached server connection.
 data Server = Server {
@@ -79,12 +81,9 @@ instance Ord Server where
 
 -- | Create a new Memcached server connection.
 newServerDefault :: ServerSpec -> IO Server
-newServerDefault ServerSpec{..} = do
+newServerDefault ss@ServerSpec{..} = do
     fat <- newIORef 0
-    pSock <-
-      newPool
-        $ setNumStripes numStripes
-        $ defaultPoolConfig connectSocket releaseSocket keepAlive numResources
+    pSock <- getNewPool ss
     return Server
         { sid      = serverHash
         , pool     = pSock
@@ -96,23 +95,6 @@ newServerDefault ServerSpec{..} = do
   where
     serverHash = hash (ssHost, ssPort)
 
-    connectSocket = do
-        let hints = S.defaultHints {
-          S.addrSocketType = S.Stream
-        }
-        addr:_ <- getAddrInfo (Just hints) (Just ssHost) (Just ssPort)
-        bracketOnError
-            (S.socket (S.addrFamily addr) (S.addrSocketType addr) (S.addrProtocol addr))
-            releaseSocket
-            (\s -> do
-                S.connect s $ S.addrAddress addr
-                S.setSocketOption s S.KeepAlive 1
-                S.setSocketOption s S.NoDelay 1
-                authenticate s ssAuth
-                return s
-            )
-
-    releaseSocket = S.close
 
 -- | Send and receive a single request/response pair to the Memcached server.
 sendRecv :: Server -> Request -> IO Response
@@ -125,10 +107,42 @@ sendRecv svr msg = withSocket svr $ \s -> do
 -- 'recv'.
 withSocket :: Server -> (Socket -> IO a) -> IO a
 {-# INLINE withSocket #-}
-withSocket svr = withResource $ pool svr
+withSocket svr = P.withResource $ pool svr
 
 -- | Close the server connection. If you perform another operation after this,
 -- the connection will be re-established.
 close :: Server -> IO ()
 {-# INLINE close #-}
-close srv = destroyAllResources $ pool srv
+close srv = P.destroyAllResources $ pool srv
+
+#if MIN_VERSION_resource_pool(0,3,0)
+getNewPool :: ServerSpec -> IO (Pool Socket)
+getNewPool ss =
+  P.newPool
+    $ P.setNumStripes (Just numStripes)
+    $ P.defaultPoolConfig (connectSocket ss) releaseSocket keepAlive numResources
+#else
+getNewPool :: ServerSpec -> IO (Pool Socket)
+getNewPool ss =
+  P.createPool (connectSocket ss) releaseSocket numStripes keepAlive numResources
+#endif
+
+connectSocket :: ServerSpec -> IO Socket
+connectSocket ServerSpec{..} = do
+    let hints = S.defaultHints {
+      S.addrSocketType = S.Stream
+    }
+    addr:_ <- getAddrInfo (Just hints) (Just ssHost) (Just ssPort)
+    bracketOnError
+        (S.socket (S.addrFamily addr) (S.addrSocketType addr) (S.addrProtocol addr))
+        releaseSocket
+        (\s -> do
+            S.connect s $ S.addrAddress addr
+            S.setSocketOption s S.KeepAlive 1
+            S.setSocketOption s S.NoDelay 1
+            authenticate s ssAuth
+            return s
+        )
+
+releaseSocket :: Socket -> IO ()
+releaseSocket = S.close
