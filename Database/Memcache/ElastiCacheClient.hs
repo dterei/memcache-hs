@@ -92,11 +92,11 @@ newClient options interval cfgEndpoint = bracket acquireCfgClient releaseCfgClie
 repeatAutoDiscover :: Options -> Int -> ConfigurationEndpoint -> MVar (V.Vector Server) -> IO ()
 repeatAutoDiscover opts interval cfgEndpoint mVar = do
   cfgClient <- Client.newClient [unConfigurationEndpoint cfgEndpoint] opts
-  forever $ modifyMVar_ mVar $ \_curServers -> do
+  forever $ do
     threadDelay interval
     serverSpecs <- resolveCluster cfgClient
     servers <- optsServerSpecsToServers opts serverSpecs
-    pure $ V.fromList $ sort servers
+    modifyMVar_ mVar $ \_curServers -> pure $ V.fromList $ sort servers
 
 resolveCluster :: Client -> IO [ServerSpec]
 resolveCluster cfgClient = do
