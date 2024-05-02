@@ -39,9 +39,7 @@ import           Database.Memcache.Types  (ServerSpec (..))
 
 import           Network.Socket           (HostName, ServiceName, getAddrInfo)
 import qualified Network.Socket           as S
-
-keepAlive :: Num a => a
-keepAlive = 300
+import           Data.Time.Clock          (NominalDiffTime)
 
 -- | Memcached server connection.
 data Server = Server {
@@ -83,12 +81,18 @@ data ServerOptions
   = ServerOptions
   { soNumResources :: Int
   , soNumStripes :: Int
+#if MIN_VERSION_resource_pool(0,3,0)
+  , soKeepAlive :: Double
+#else
+  , soKeepAlive :: NominalDiffTime
+#endif
   }
 
 instance Default ServerOptions where
   def = ServerOptions
       { soNumResources = 1
       , soNumStripes = 1
+      , soKeepAlive = 300
       }
 
 newServerDefault :: ServerOptions -> ServerSpec -> IO Server
@@ -131,11 +135,11 @@ getNewPool :: ServerOptions -> ServerSpec -> IO (Pool Socket)
 getNewPool serverOptions ss =
   P.newPool
     $ P.setNumStripes (Just $ soNumStripes serverOptions)
-    $ P.defaultPoolConfig (connectSocket ss) releaseSocket keepAlive (soNumResources serverOptions)
+    $ P.defaultPoolConfig (connectSocket ss) releaseSocket (soKeepAlive serverOptions) (soNumResources serverOptions)
 #else
 getNewPool :: ServerOptions -> ServerSpec -> IO (Pool Socket)
 getNewPool serverOptions ss =
-  P.createPool (connectSocket ss) releaseSocket (soNumStripes serverOptions) keepAlive (soNumResources serverOptions)
+  P.createPool (connectSocket ss) releaseSocket (soNumStripes serverOptions) (soKeepAlive serverOptions) (soNumResources serverOptions)
 #endif
 
 connectSocket :: ServerSpec -> IO Socket
