@@ -39,7 +39,10 @@ import           Database.Memcache.Types  (ServerSpec (..))
 
 import           Network.Socket           (HostName, ServiceName, getAddrInfo)
 import qualified Network.Socket           as S
+#if MIN_VERSION_resource_pool(0,3,0)
+#else
 import           Data.Time.Clock          (NominalDiffTime)
+#endif
 
 -- | Memcached server connection.
 data Server = Server {
