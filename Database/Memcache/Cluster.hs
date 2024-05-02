@@ -80,7 +80,9 @@ data Options = Options {
         -- | Convert a 'ServerSpec' into a 'Server'.
         --
         -- Default uses 'newServerDefault'.
-        optsServerSpecsToServers :: [ServerSpec] -> IO [Server]
+        optsServerSpecsToServers :: ServerOptions -> [ServerSpec] -> IO [Server],
+
+        optsServerOptions :: ServerOptions
         -- TODO: socket_timeout
         -- TODO: failover
         -- TODO: expires_in
@@ -98,7 +100,8 @@ instance Default Options where
             optsDeadRetryDelay = 1500,
             optsServerTimeout  = 750,
             optsGetServerForKey = getServerForKeyDefault,
-            optsServerSpecsToServers = mapM newServerDefault
+            optsServerSpecsToServers = \serverOpts serverSpecs -> mapM (newServerDefault serverOpts) serverSpecs,
+            optsServerOptions = def
         }
 
 -- | Memcached cluster.
@@ -124,7 +127,7 @@ setServers c servers = c { cServers = servers }
 newCluster :: [ServerSpec] -> Options -> IO Cluster
 newCluster []    _ = throwIO $ ClientError NoServersReady
 newCluster hosts Options{..} = do
-    s <- optsServerSpecsToServers hosts
+    s <- optsServerSpecsToServers optsServerOptions hosts
     return $
         Cluster {
             cServers   = Right $ V.fromList $ sort s,
