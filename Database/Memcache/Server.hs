@@ -19,13 +19,17 @@ retries, it's up to consumers to use this.
 -}
 module Database.Memcache.Server (
       -- * Server
-        Server(sid, failed), newServerDefault, sendRecv, withSocket, close
+        Server(sid, failed), newServerDefault, sendRecv, withSocket, close,
+
+      -- * ServerOptions
+        ServerOptions(..)
     ) where
 
 import           Database.Memcache.SASL
 import           Database.Memcache.Socket
 
 import           Control.Exception
+import Data.Default.Class
 import           Data.Hashable
 import           Data.IORef
 import qualified Data.Pool as P
@@ -36,16 +40,8 @@ import           Database.Memcache.Types  (ServerSpec (..))
 import           Network.Socket           (HostName, ServiceName, getAddrInfo)
 import qualified Network.Socket           as S
 
--- Connection pool constants.
--- TODO: make configurable
-numResources :: Int
-numResources = 1
-
 keepAlive :: Num a => a
 keepAlive = 300
-
-numStripes :: Int
-numStripes = 1
 
 -- | Memcached server connection.
 data Server = Server {
@@ -79,11 +75,26 @@ instance Eq Server where
 instance Ord Server where
     compare x y = compare (sid x) (sid y)
 
--- | Create a new Memcached server connection.
-newServerDefault :: ServerSpec -> IO Server
-newServerDefault ss@ServerSpec{..} = do
+-- | Configurable options when creating a 'Server'
+--
+-- At the moment, this only applies to the 'Pool' information. This can be expanded in the future.
+--
+data ServerOptions
+  = ServerOptions
+  { soNumResources :: Int
+  , soNumStripes :: Int
+  }
+
+instance Default ServerOptions where
+  def = ServerOptions
+      { soNumResources = 1
+      , soNumStripes = 1
+      }
+
+newServerDefault :: ServerOptions -> ServerSpec -> IO Server
+newServerDefault serverOptions ss@ServerSpec{..} = do
     fat <- newIORef 0
-    pSock <- getNewPool ss
+    pSock <- getNewPool serverOptions ss
     return Server
         { sid      = serverHash
         , pool     = pSock
@@ -116,15 +127,15 @@ close :: Server -> IO ()
 close srv = P.destroyAllResources $ pool srv
 
 #if MIN_VERSION_resource_pool(0,3,0)
-getNewPool :: ServerSpec -> IO (Pool Socket)
-getNewPool ss =
+getNewPool :: ServerOptions -> ServerSpec -> IO (Pool Socket)
+getNewPool serverOptions ss =
   P.newPool
-    $ P.setNumStripes (Just numStripes)
-    $ P.defaultPoolConfig (connectSocket ss) releaseSocket keepAlive numResources
+    $ P.setNumStripes (Just $ soNumStripes serverOptions)
+    $ P.defaultPoolConfig (connectSocket ss) releaseSocket keepAlive (soNumResources serverOptions)
 #else
-getNewPool :: ServerSpec -> IO (Pool Socket)
-getNewPool ss =
-  P.createPool (connectSocket ss) releaseSocket numStripes keepAlive numResources
+getNewPool :: ServerOptions -> ServerSpec -> IO (Pool Socket)
+getNewPool serverOptions ss =
+  P.createPool (connectSocket ss) releaseSocket (soNumStripes serverOptions) keepAlive (soNumResources serverOptions)
 #endif
 
 connectSocket :: ServerSpec -> IO Socket

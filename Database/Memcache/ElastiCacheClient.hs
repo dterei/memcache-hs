@@ -23,7 +23,7 @@ import qualified Data.Text.Encoding as T
 import qualified Data.Vector as V
 import Data.Version (Version, makeVersion)
 import qualified Data.Version as Version
-import Database.Memcache.Client (Client, optsServerSpecsToServers)
+import Database.Memcache.Client (Client, optsServerSpecsToServers, optsServerOptions)
 import qualified Database.Memcache.Client as Client
 import Database.Memcache.Cluster (Options, getServers, setServers)
 import Database.Memcache.Server (Server, withSocket)
@@ -95,7 +95,7 @@ repeatAutoDiscover opts interval cfgEndpoint mVar = do
   forever $ do
     threadDelay interval
     serverSpecs <- resolveCluster cfgClient
-    servers <- optsServerSpecsToServers opts serverSpecs
+    servers <- optsServerSpecsToServers opts (optsServerOptions opts) serverSpecs
     modifyMVar_ mVar $ \_curServers -> pure $ V.fromList $ sort servers
 
 resolveCluster :: Client -> IO [ServerSpec]
