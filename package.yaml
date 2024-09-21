@@ -63,6 +63,7 @@ tests:
     dependencies:
       - memcache
       - network
+      - unliftio
 
 benchmarks:
   parser:

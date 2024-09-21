@@ -10,7 +10,6 @@ where
 import Control.Concurrent (forkIO, threadDelay)
 import Control.Concurrent.MVar (MVar, modifyMVar_, newMVar)
 import Control.Error.Util (note)
-import Control.Exception (bracket)
 import Control.Monad (forever, guard, when, (<=<))
 import Data.Bifunctor (first)
 import Data.ByteString (ByteString)
@@ -31,7 +30,7 @@ import Database.Memcache.Types.ServerSpec (ServerSpec, parseServerSpec)
 import Network.Socket (Socket)
 import qualified Network.Socket.ByteString as N
 import Text.ParserCombinators.ReadP (readP_to_S)
-import UnliftIO.Exception (throwString)
+import UnliftIO.Exception (bracket, throwString)
 
 -- A /Configuration Endpoint/ will always contain /.cfg/ in its address:
 --

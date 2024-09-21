@@ -34,7 +34,7 @@ import           Blaze.ByteString.Builder
 #if __GLASGOW_HASKELL__ < 710
 import           Control.Applicative
 #endif
-import           Control.Exception         (throw, throwIO)
+import           Control.Exception         (throw)
 import           Control.Monad
 import           Data.Binary.Get
 import qualified Data.ByteString           as B
@@ -42,6 +42,7 @@ import qualified Data.ByteString.Lazy      as L
 import           Data.Word
 import           Network.Socket            (Socket)
 import qualified Network.Socket.ByteString as N
+import           UnliftIO.Exception        (throwIO)
 
 -- | Send a request to the Memcached server.
 send :: Socket -> Request -> IO ()
