@@ -25,8 +25,7 @@ module Database.Memcache.Errors (
 
 import           Database.Memcache.Types
 
-import           Control.Exception
-import           Data.Typeable
+import           UnliftIO.Exception
 
 -- | All exceptions that a Memcached client may throw.
 data MemcacheError

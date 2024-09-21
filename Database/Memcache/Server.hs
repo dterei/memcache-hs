@@ -28,14 +28,14 @@ module Database.Memcache.Server (
 import           Database.Memcache.SASL
 import           Database.Memcache.Socket
 
-import           Control.Exception
-import Data.Default.Class
+import           Data.Default.Class
 import           Data.Hashable
 import           Data.IORef
 import qualified Data.Pool as P
 import           Data.Pool (Pool)
 import           Data.Time.Clock.POSIX    (POSIXTime)
 import           Database.Memcache.Types  (ServerSpec (..))
+import           UnliftIO.Exception
 
 import           Network.Socket           (HostName, ServiceName, getAddrInfo)
 import qualified Network.Socket           as S

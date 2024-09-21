@@ -114,12 +114,12 @@ import           Database.Memcache.Types   hiding (cas)
 #if __GLASGOW_HASKELL__ < 710
 import           Control.Applicative
 #endif
-import           Control.Exception         (SomeException, handle, throwIO)
 import           Control.Monad             (forM_, void, when)
 import           Data.ByteString           (ByteString)
 import qualified Data.ByteString           as B (null)
 import           Data.Default.Class
 import           Data.Word
+import           UnliftIO.Exception         (SomeException, handle, throwIO)
 
 -- | A Memcached client, connected to a collection of Memcached servers.
 type Client = Cluster

@@ -15,8 +15,6 @@ import           Blaze.ByteString.Builder
 import           Control.Applicative
 #endif
 import           Control.Concurrent
-import           Control.Exception         (SomeException, bracket, handle,
-                                            throwIO)
 import           Control.Monad
 import           Data.Binary.Get
 import qualified Data.ByteString           as B
@@ -24,6 +22,8 @@ import qualified Data.ByteString.Lazy      as L
 import           Data.IORef
 import qualified Network.Socket            as N
 import qualified Network.Socket.ByteString as N
+import           UnliftIO.Exception         (SomeException, bracket, handle,
+                                            throwIO)
 
 import           Database.Memcache.Errors
 

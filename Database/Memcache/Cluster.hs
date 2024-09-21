@@ -33,7 +33,6 @@ import           Database.Memcache.Types
 
 import           Control.Concurrent       (threadDelay)
 import           Control.Concurrent.MVar  (MVar, readMVar)
-import           Control.Exception        (SomeException, handle, throwIO)
 import           Data.Default.Class
 import           Data.Fixed               (Milli)
 import           Data.Hashable            (hash)
@@ -44,6 +43,7 @@ import           Data.Time.Clock          (NominalDiffTime)
 import           Data.Time.Clock.POSIX    (getPOSIXTime)
 import qualified Data.Vector              as V
 import           System.Timeout
+import           UnliftIO.Exception        (SomeException, handle, throwIO)
 
 -- | Number of times to retry an operation before considering it failed.
 type Retries = Int

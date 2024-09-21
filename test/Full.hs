@@ -11,10 +11,10 @@ import           Database.Memcache.Errors
 import           Database.Memcache.Socket
 import           Database.Memcache.Types
 
-import           Control.Exception
 import           Control.Monad
 import qualified Data.ByteString.Char8    as BC
 import           System.Exit
+import           UnliftIO.Exception
 
 main :: IO ()
 main = do
