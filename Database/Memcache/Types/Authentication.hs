@@ -1,17 +1,32 @@
+{-|
+Module      : Database.Memcache.Types.Authentication
+Description : Meta Text authentication types
+Copyright   : (c) David Terei, 2016
+License     : BSD
+Maintainer  : code@davidterei.com
+Stability   : stable
+Portability : GHC
+-}
 module Database.Memcache.Types.Authentication (
-        -- * SASL Authentication
+        -- * Text authentication
         Authentication(..), Username, Password,
     ) where
 
 import           Data.ByteString          (ByteString)
--- | SASL Authentication information for a server.
+-- | Username and password information for text auth-file authentication.
 data Authentication
-    = Auth { username :: !Username, password :: !Password }
+    = Auth
+        { -- | Username to send to the server.
+          username :: !Username
+          -- | Password to send to the server.
+        , password :: !Password
+        }
+    -- | Do not authenticate the connection.
     | NoAuth
     deriving (Eq, Show)
 
--- | Username for authentication.
+-- | Username for text authentication.
 type Username = ByteString
 
--- | Password for authentication.
+-- | Password for text authentication.
 type Password = ByteString

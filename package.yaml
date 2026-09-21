@@ -1,7 +1,8 @@
 name: memcache
-version: 0.3.0.2
+version: 0.4.0.0
 github: dterei/memcache-hs
 synopsis: A memcached client library.
+description: A buffered Meta Text protocol client for single servers and clusters.
 license: BSD3
 license-file: LICENSE
 author: David Terei <code@davidterei.com>
@@ -18,10 +19,10 @@ extra-source-files:
 
 dependencies:
   - base < 5
-  - binary
-  - blaze-builder
+  - base64-bytestring
   - bytestring
   - network
+  - time
 
 other-extensions:
   - BangPatterns
@@ -49,26 +50,36 @@ library:
     - ScopedTypeVariables
   ghc-options:
     - -Wall
+    - -Wextra
     - -fwarn-tabs
 
 tests:
   spec:
-    main: Full.hs
+    main: Spec.hs
     source-dirs: test
-    ghc-options: -threaded -rtsopts "-with-rtsopts=-N"
+    ghc-options:
+      - -Wall
+      - -Wextra
+      - -threaded
+      - -rtsopts "-with-rtsopts=-N"
     other-extensions:
       - OverloadedStrings
     other-modules:
       - MockServer
     dependencies:
       - memcache
+      - hspec
       - network
       - unliftio
 
   integration:
     main: Integration.hs
     source-dirs: test-integration
-    ghc-options: -threaded -rtsopts "-with-rtsopts=-N"
+    ghc-options:
+      - -Wall
+      - -Wextra
+      - -threaded
+      - -rtsopts "-with-rtsopts=-N"
     other-extensions:
       - OverloadedStrings
     dependencies:

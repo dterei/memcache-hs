@@ -1,3 +1,31 @@
+# 0.4.0.0
+
+- Replace the deprecated binary protocol with buffered Meta Text requests.
+- Add base64 binary-key support, `getMany`, hspec tests, and `Auth`.
+- Remove binary protocol and builder dependencies.
+- Replace request/response wrapper types with direct Meta Text encoders and `Response`.
+- Authentication now uses the server's experimental `-Y authfile` mode
+  (introduced in memcached 1.5.15) instead of binary `-S` SASL.
+- `encodeKey` now returns a validated `WireKey`; request builders and the
+  low-level `keyedOp` APIs accept encoded keys to avoid partial validation and
+  repeated encoding.
+- Requires memcached 1.6.0 or newer for the meta commands.
+- `stats` returns `[(Server, StatResults)]` rather than
+  `[(Server, Maybe StatResults)]`; the `Nothing` case was unreachable. Stat
+  values containing spaces are no longer truncated, and stats arguments may
+  now contain spaces (`stats cachedump 1 100`).
+- `Status` loses `ErrInvalidArgs` and `ErrUnknownCommand`, which have no Meta
+  Text equivalent and now surface as `ProtocolError`. `ErrValueTooLarge`,
+  `ErrOutOfMemory` and `ErrValueNonNumeric` are recovered from the server's
+  error text so they keep being reported as `OpError`.
+- A command the server rejects (`ERROR`, `CLIENT_ERROR`) or answers with an
+  operation status is no longer retried, and no longer counts towards marking
+  a server dead.
+- `getMany` writes each batch in a single bounded send, so a large key list
+  cannot deadlock against the server's replies.
+- Response lines are capped at 8KiB, bounding memory use on a desynchronised
+  connection.
+
 # 0.3.0.2 - March 27th, 2024
 
 - Make the key hashing algorithm configurable by clients -- that is, let

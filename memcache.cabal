@@ -1,12 +1,13 @@
 cabal-version: 1.18
 
--- This file has been generated from package.yaml by hpack version 0.36.0.
+-- This file has been generated from package.yaml by hpack version 0.39.6.
 --
 -- see: https://github.com/sol/hpack
 
 name:           memcache
-version:        0.3.0.2
+version:        0.4.0.0
 synopsis:       A memcached client library.
+description:    A buffered Meta Text protocol client for single servers and clusters.
 category:       Database
 homepage:       https://github.com/dterei/memcache-hs#readme
 bug-reports:    https://github.com/dterei/memcache-hs/issues
@@ -29,11 +30,11 @@ source-repository head
 
 library
   exposed-modules:
+      Database.Memcache.Auth
       Database.Memcache.Client
       Database.Memcache.Cluster
       Database.Memcache.ElastiCacheClient
       Database.Memcache.Errors
-      Database.Memcache.SASL
       Database.Memcache.Server
       Database.Memcache.Socket
       Database.Memcache.Types
@@ -49,11 +50,10 @@ library
       FlexibleInstances
       RecordWildCards
       ScopedTypeVariables
-  ghc-options: -Wall -fwarn-tabs
+  ghc-options: -Wall -Wextra -fwarn-tabs
   build-depends:
       base <5
-    , binary
-    , blaze-builder
+    , base64-bytestring
     , bytestring
     , data-default-class
     , errors
@@ -78,7 +78,7 @@ test-suite integration
       BangPatterns
       CPP
       OverloadedStrings
-  ghc-options: -threaded -rtsopts "-with-rtsopts=-N"
+  ghc-options: -Wall -Wextra -threaded -rtsopts "-with-rtsopts=-N"
   build-depends:
       base <5
     , base64-bytestring
@@ -93,7 +93,7 @@ test-suite integration
 
 test-suite spec
   type: exitcode-stdio-1.0
-  main-is: Full.hs
+  main-is: Spec.hs
   other-modules:
       MockServer
   hs-source-dirs:
@@ -102,14 +102,15 @@ test-suite spec
       BangPatterns
       CPP
       OverloadedStrings
-  ghc-options: -threaded -rtsopts "-with-rtsopts=-N"
+  ghc-options: -Wall -Wextra -threaded -rtsopts "-with-rtsopts=-N"
   build-depends:
       base <5
-    , binary
-    , blaze-builder
+    , base64-bytestring
     , bytestring
+    , hspec
     , memcache
     , network
+    , time
     , unliftio
   default-language: Haskell2010
 
@@ -126,10 +127,10 @@ benchmark parser
       OverloadedStrings
   build-depends:
       base <5
-    , binary
-    , blaze-builder
+    , base64-bytestring
     , bytestring
     , criterion
     , memcache
     , network
+    , time
   default-language: Haskell2010

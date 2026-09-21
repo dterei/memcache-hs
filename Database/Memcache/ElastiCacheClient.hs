@@ -1,5 +1,16 @@
 {-# LANGUAGE OverloadedStrings #-}
 
+{-|
+Module      : Database.Memcache.ElastiCacheClient
+Description : Amazon ElastiCache service discovery
+Copyright   : (c) David Terei, 2016
+License     : BSD
+Maintainer  : code@davidterei.com
+Stability   : stable
+Portability : GHC
+
+Client creation and automatic node discovery for Amazon ElastiCache clusters.
+-}
 module Database.Memcache.ElastiCacheClient
   ( ConfigurationEndpoint
   , parseConfigurationEndpoint,
@@ -10,7 +21,7 @@ where
 import Control.Concurrent (forkIO, threadDelay)
 import Control.Concurrent.MVar (MVar, modifyMVar_, newMVar)
 import Control.Error.Util (note)
-import Control.Monad (forever, guard, when, (<=<))
+import Control.Monad (forever, guard, (<=<))
 import Data.Bifunctor (first)
 import Data.ByteString (ByteString)
 import qualified Data.ByteString.Char8 as C
@@ -26,12 +37,13 @@ import Database.Memcache.Client (Client, optsServerSpecsToServers, optsServerOpt
 import qualified Database.Memcache.Client as Client
 import Database.Memcache.Cluster (Options, getServers, setServers)
 import Database.Memcache.Server (Server, withSocket)
+import Database.Memcache.Socket (Connection, crlf, recvRawUntil, sendRaw, versionRequest)
 import Database.Memcache.Types.ServerSpec (ServerSpec, parseServerSpec)
-import Network.Socket (Socket)
-import qualified Network.Socket.ByteString as N
 import Text.ParserCombinators.ReadP (readP_to_S)
 import UnliftIO.Exception (bracket, throwString)
 
+-- | Parse an ElastiCache configuration endpoint.
+--
 -- A /Configuration Endpoint/ will always contain /.cfg/ in its address:
 --
 -- https://docs.aws.amazon.com/AmazonElastiCache/latest/mem-ug/AutoDiscovery.Using.html
@@ -45,7 +57,7 @@ parseConfigurationEndpoint url = do
 -- https://github.com/memcached/memcached/blob/77709d04dd4fc7d59f59425802cb9645b2cfe0f8/doc/protocol.txt#L1805-L1812
 -- ByteString format: "VERSION <version>\r\n"
 parseVersion :: ByteString -> Either String Version
-parseVersion = interpretParseResults . delegateParse . C.unpack . C.dropEnd (C.length "\r\n") . C.drop (C.length "VERSION ")
+parseVersion = interpretParseResults . delegateParse . C.unpack . C.dropEnd (C.length crlf) . C.drop (C.length "VERSION ")
   where
     delegateParse = readP_to_S Version.parseVersion
     interpretParseResults parseResults = do
@@ -55,11 +67,9 @@ parseVersion = interpretParseResults . delegateParse . C.unpack . C.dropEnd (C.l
         (version, "") -> pure version
         (_, rest) -> Left $ "eof expected. Got: " <> rest
 
--- | Newtype over a 'ServerSpec'.
+-- | A validated ElastiCache configuration endpoint.
 --
--- We avoid exposing this so that we can make sure it meets AWS specifications.
---
--- See 'parseConfigurationEndpoint'.
+-- Use the smart constructor @parseConfigurationEndpoint@ to create one.
 newtype ConfigurationEndpoint
   = ConfigurationEndpoint
   { unConfigurationEndpoint :: ServerSpec
@@ -67,9 +77,9 @@ newtype ConfigurationEndpoint
 
 -- | Create a new client using service discovery.
 --
--- This function discovers all the nodes in a cluster and sets up a new thread to run autodsicovery on an interval.
+-- This function discovers all the nodes in a cluster and sets up a new thread to run autodiscovery on an interval.
 --
--- N.B. The interval is in the same units as 'threadDelay'
+-- N.B. The interval is in the same units as 'threadDelay'.
 newClient :: Options -> Int -> ConfigurationEndpoint -> IO Client
 newClient options interval cfgEndpoint = bracket acquireCfgClient releaseCfgClient resolveCluster'
   where
@@ -108,8 +118,8 @@ resolveCluster cfgClient = do
 
   withSocket server $ \socket -> do
     -- Get version
-    N.sendAll socket "version\r\n"
-    rawVersion <- recvAll "\r\n" socket
+    sendRaw socket versionRequest
+    rawVersion <- recvRawUntil crlf socket
     version <- unTry $ parseVersion rawVersion
 
     -- Get nodes
@@ -122,7 +132,7 @@ resolveCluster cfgClient = do
 
     unTry $ handleRawNodeInfo rawNodeInfo
 
--- Handle raw response from /memached/
+-- Handle the raw response from /memcached/.
 --
 -- See: https://docs.aws.amazon.com/AmazonElastiCache/latest/mem-ug/AutoDiscovery.AddingToYourClientLibrary.html#AutoDiscovery.AddingToYourClientLibrary.OutputFormat
 handleConfigGetClusterResponse :: ByteString -> Either String Text
@@ -170,25 +180,13 @@ autoDiscoveryKey :: ByteString
 autoDiscoveryKey = "AmazonElastiCache:cluster"
 
 -- See: https://docs.aws.amazon.com/AmazonElastiCache/latest/mem-ug/AutoDiscovery.AddingToYourClientLibrary.html#AutoDiscovery.AddingToYourClientLibrary.OutputFormat
-resolveViaConfigCmd :: Socket -> IO ByteString
+resolveViaConfigCmd :: Connection -> IO ByteString
 resolveViaConfigCmd socket = do
-  N.sendAll socket "config get cluster\r\n"
-  recvAll "END\r\n" socket
+  sendRaw socket (configGetCluster <> crlf)
+  recvRawUntil ("END" <> crlf) socket
 
--- Receive all data from the socket, stopping when we reach a pre-determind /tail/.
-recvAll :: ByteString -> Socket -> IO ByteString
-recvAll recvMsgEnd socket = go ""
-  where
-    go accumulator = do
-      if recvMsgEnd `C.isSuffixOf` accumulator
-        then pure accumulator
-        else do
-          received <- N.recv socket recvMsgSize
-          when (C.null received) $ throwString "Expected more data from the socket, but socket is empty."
-          go (accumulator <> received)
-
-recvMsgSize :: Int
-recvMsgSize = 4096
+configGetCluster :: ByteString
+configGetCluster = "config get cluster"
 
 unTry :: Either String a -> IO a
 unTry = either throwString pure

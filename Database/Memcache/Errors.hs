@@ -19,8 +19,7 @@ module Database.Memcache.Errors (
         ProtocolError(..),
 
         -- * Error creation
-        throwStatus,
-        wrongOp
+        throwStatus
     ) where
 
 import           Database.Memcache.Types
@@ -45,20 +44,26 @@ data ClientError
     = NoServersReady
     -- | Timeout occurred sending request to server.
     | Timeout
+    | InvalidAuthentication String
+    | KeyTooLong String
     deriving (Eq, Show, Typeable)
 
 -- | Errors related to Memcached protocol and bytes on the wire.
 data ProtocolError
-    -- | Received an unknown response packet.
+    -- | Received an unknown response line.
     = UnknownPkt    { protocolError :: String }
     -- | Unknown Memcached operation.
     | UnknownOp     { protocolError :: String }
     -- | Unknown Memcached status field value.
     | UnknownStatus { protocolError :: String }
-    -- | Unexpected length of a Memcached field (extras, key, or value).
+    -- | Unexpected length of a Meta Text value or other field.
     | BadLength     { protocolError :: String }
-    -- | Response packet is for a different operation than expected.
-    | WrongOp       { protocolError :: String }
+    -- | Response is for a different operation than expected.
+    | UnexpectedResponse { protocolError :: String }
+    -- | Memcached reported a server failure.
+    | ServerError   { protocolError :: String }
+    -- | Memcached rejected the command.
+    | BadCommand    { protocolError :: String }
     -- | Network socket closed without receiving enough bytes.
     | UnexpectedEOF { protocolError :: String }
     deriving (Eq, Show, Typeable)
@@ -66,10 +71,3 @@ data ProtocolError
 -- | Convert a status to 'MemcacheError' exception.
 throwStatus :: Status -> IO a
 throwStatus s = throwIO $ OpError s
-
--- | Create a properly formatted 'WrongOp' protocol error.
-wrongOp :: Response -> String -> MemcacheError
-wrongOp r msg = ProtocolError $
-    WrongOp {
-        protocolError  = "Expected " ++ msg ++ "! Got: " ++ show (resOp r)
-    }

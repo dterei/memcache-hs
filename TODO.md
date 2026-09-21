@@ -11,8 +11,7 @@ Optional:
 
 Protocol:
 
-- Multi-get
-- Generic multi operation support
+- Review quiet multi-get behavior when a server closes before `mn`.
 
 Performance:
 
@@ -21,7 +20,6 @@ Performance:
 
 Nice-to-have:
 
-- Smarter connection handling to minimize system calls (buffered)
 - Customizable server sharding -- mod & virtual servers
 - Server weights
 - Asynchronous support?
@@ -29,7 +27,6 @@ Nice-to-have:
 - Max value validation
 - Optimizations -- http://code.google.com/p/spymemcached/wiki/Optimizations
 - UDP
-- ASCII
 - Server error handling mode where we return misses and ignore sets
 
 Maybe:

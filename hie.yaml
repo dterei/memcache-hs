@@ -1,0 +1,8 @@
+cradle:
+  cabal:
+    - path: "test-integration"
+      component: "memcache:test:integration"
+    - path: "test"
+      component: "memcache:test:spec"
+    - path: "."
+      component: "memcache:lib:memcache"

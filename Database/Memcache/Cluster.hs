@@ -3,6 +3,7 @@
 {-# LANGUAGE FlexibleInstances   #-}
 {-# LANGUAGE RecordWildCards     #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE OverloadedStrings   #-}
 
 {-|
 Module      : Database.Memcache.Cluster
@@ -16,15 +17,16 @@ Portability : GHC
 Handles a group of connections to different Memcached servers.
 
 We use consistent hashing to choose which server to route a request to. On an
-error, we mark the server as failed and remove it temporarialy from the set of
+error, we mark the server as failed and remove it temporarily from the set of
 servers available.
 -}
 module Database.Memcache.Cluster (
         -- * Cluster
+        -- | A collection of Memcached servers with retry and routing state.
         Cluster, ServerSpec(..), Options(..), newCluster, getServers, setServers,
 
         -- * Operations
-        Retries, keyedOp, anyOp, allOp, allOp'
+        Retries, keyedOp, keyedBatchOp, anyOp, allOp, allOp'
     ) where
 
 import           Database.Memcache.Errors
@@ -33,17 +35,21 @@ import           Database.Memcache.Types
 
 import           Control.Concurrent       (threadDelay)
 import           Control.Concurrent.MVar  (MVar, readMVar)
+import           Control.Monad            (foldM, void)
+import           Data.ByteString          (ByteString)
+import qualified Data.ByteString          as B
 import           Data.Default.Class
 import           Data.Fixed               (Milli)
 import           Data.Hashable            (hash)
 import           Data.IORef
-import           Data.List                (sort)
+import           Data.List                (find, sort)
 import           Data.Maybe               (fromMaybe)
 import           Data.Time.Clock          (NominalDiffTime)
 import           Data.Time.Clock.POSIX    (getPOSIXTime)
 import qualified Data.Vector              as V
 import           System.Timeout
-import           UnliftIO.Exception        (SomeException, handle, throwIO)
+import           UnliftIO.Exception       (SomeException, fromException, handle, throwIO)
+import           Database.Memcache.Socket (Response(..), WireKey(..), encodeKey, noOpRequest, recvResponse, responseStatus, send, sendRaw)
 
 -- | Number of times to retry an operation before considering it failed.
 type Retries = Int
@@ -74,14 +80,15 @@ data Options = Options {
         --
         -- | Figure out which server to talk to for a given key.
         --
-        -- Default is 'getServerForKeyDefault'.
+        -- Default is @getServerForKeyDefault@.
         optsGetServerForKey      :: Cluster -> Key -> IO (Maybe Server),
         --
-        -- | Convert a 'ServerSpec' into a 'Server'.
+        -- | Convert server specifications into servers.
         --
         -- Default uses 'newServerDefault'.
         optsServerSpecsToServers :: ServerOptions -> [ServerSpec] -> IO [Server],
 
+        -- | Connection-pool options for each server.
         optsServerOptions :: ServerOptions
         -- TODO: socket_timeout
         -- TODO: failover
@@ -100,7 +107,7 @@ instance Default Options where
             optsDeadRetryDelay = 1500,
             optsServerTimeout  = 750,
             optsGetServerForKey = getServerForKeyDefault,
-            optsServerSpecsToServers = \serverOpts serverSpecs -> mapM (newServerDefault serverOpts) serverSpecs,
+            optsServerSpecsToServers = mapM . newServerDefault,
             optsServerOptions = def
         }
 
@@ -108,7 +115,7 @@ instance Default Options where
 data Cluster = Cluster {
         cServers         :: Either (MVar (V.Vector Server)) (V.Vector Server),
 
-        -- See 'Options' for description of these values.
+        -- See @Options@ for description of these values.
 
         cRetries         :: {-# UNPACK #-} !Int,
         cFailDelay       :: {-# UNPACK #-} !Int, -- ^ microseconds
@@ -117,9 +124,11 @@ data Cluster = Cluster {
         cGetServerForKey :: Cluster -> Key -> IO (Maybe Server)
     }
 
+-- | Get the currently configured servers.
 getServers :: Cluster -> IO (V.Vector Server)
 getServers = either readMVar pure . cServers
 
+-- | Replace the cluster's server set, preserving its routing and retry options.
 setServers :: Cluster -> Either (MVar (V.Vector Server)) (V.Vector Server) -> Cluster
 setServers c servers = c { cServers = servers }
 
@@ -168,23 +177,82 @@ getServerForKeyDefault  c k = do
 
 -- | Run a Memcached operation against a particular server, handling any
 -- failures that occur, retrying the specified number of times.
-serverOp :: Cluster -> Server -> Request -> IO Response
+serverOp :: Cluster -> Server -> ByteString -> IO Response
 {-# INLINE serverOp #-}
-serverOp c s req = retryOp c s $ sendRecv s req
+serverOp c s req = retryOp c s $ withSocket s $ \connection -> do
+  send connection req
+  response <- recvResponse connection
+  rejectProtocolError response
+  return response
 
--- | Run a Memcached operation against a particular server, handling any
--- failures that occur, retrying the specified number of times.
-keyedOp :: Cluster -> Key -> Request -> IO Response
+rejectProtocolError :: Response -> IO ()
+rejectProtocolError response
+  | responseCode response `elem` ["ERROR", "CLIENT_ERROR", "SERVER_ERROR"] =
+    void (responseStatus response)
+  | otherwise = return ()
+
+-- | Run a keyed request against the server selected for the key.
+keyedOp :: Cluster -> Key -> (WireKey -> ByteString) -> IO Response
 {-# INLINE keyedOp #-}
-keyedOp c k req = do
+keyedOp c k makeReq = do
+    wire <- either (throwIO . ClientError) return (encodeKey k)
     s' <- cGetServerForKey c c k
     case s' of
-        Just s  -> serverOp c s req
+        Just s  -> serverOp c s (makeReq wire)
         Nothing -> throwIO $ ClientError NoServersReady
+
+-- | Run keyed requests grouped by their selected server.
+keyedBatchOp :: Cluster -> [(Key, WireKey -> ByteString)] -> IO [(Key, Response)]
+keyedBatchOp c requests = do
+    groups <- foldM add [] requests
+    concat <$> mapM run groups
+  where
+    add groups (key, makeRequest) = do
+      wire <- either (throwIO . ClientError) return (encodeKey key)
+      server <- cGetServerForKey c c key
+      case server of
+        Nothing -> throwIO $ ClientError NoServersReady
+        Just s -> return (insertGroup s (key, wire, makeRequest) groups)
+
+    insertGroup s item [] = [(s, [item])]
+    insertGroup s item ((s', items):rest)
+      | s == s' = (s', item:items) : rest
+      | otherwise = (s', items) : insertGroup s item rest
+
+    run (server, items) = concat <$> mapM (runBatch server) (chunksOf batchSize (reverse items))
+
+    -- Write the whole batch in one go, then read it back. Batches are bounded
+    -- so the server's replies cannot fill the socket buffers while we are
+    -- still writing, which would deadlock both ends until the op times out.
+    runBatch server items = retryOp c server $ withSocket server $ \connection -> do
+      sendRaw connection (B.concat (map request items) <> noOpRequest)
+      replies <- recvUntilMN connection []
+      return [(key, response) | response <- replies, Just key <- [responseKey response items]]
+
+    recvUntilMN connection acc = do
+      response <- recvResponse connection
+      rejectProtocolError response
+      if responseCode response == "MN"
+        then return (reverse acc)
+        else recvUntilMN connection (response : acc)
+
+    responseKey response items = do
+      echoed <- find (B.isPrefixOf "k") (responseTokens response)
+      (key, _, _) <- find ((== B.drop 1 echoed) . wireKey . snd3) items
+      return key
+
+    request (_, wire, makeRequest) = makeRequest wire
+    snd3 (_, wire, _) = wire
+
+    batchSize = 256 :: Int
+
+    chunksOf n xs = case splitAt n xs of
+      (chunk, []) -> [chunk]
+      (chunk, rest) -> chunk : chunksOf n rest
 
 -- | Run a Memcached operation against any single server in the cluster,
 -- handling any failures that occur, retrying the specified number of times.
-anyOp :: Cluster -> Request -> IO Response
+anyOp :: Cluster -> ByteString -> IO Response
 {-# INLINE anyOp #-}
 anyOp c req = do
     servers <- getServers c
@@ -195,7 +263,7 @@ anyOp c req = do
 
 -- | Run a Memcached operation against all servers in the cluster, handling any
 -- failures that occur, retrying the specified number of times.
-allOp :: Cluster -> Request -> IO [(Server, Response)]
+allOp :: Cluster -> ByteString -> IO [(Server, Response)]
 {-# INLINE allOp #-}
 allOp c req = do
     servers <- getServers c
@@ -237,9 +305,19 @@ retryOp Cluster{..} s op = go cRetries
 
     handleErrs :: Int -> SomeException -> IO a
     {-# INLINE handleErrs #-}
-    handleErrs 0 err = do t <- getPOSIXTime
-                          writeIORef (failed s) t
-                          throwIO err
-    handleErrs n _ = do
-        threadDelay cFailDelay
-        go n
+    handleErrs n err
+        | clientFault err = throwIO err
+        | n <= 0 = do
+            writeIORef (failed s) =<< getPOSIXTime
+            throwIO err
+        | otherwise = threadDelay cFailDelay >> go n
+
+-- | A rejected command or a reported operation status is an answer, not a
+-- server failure: retrying it will fail identically and must not count towards
+-- marking the server dead.
+clientFault :: SomeException -> Bool
+clientFault err = case fromException err of
+    Just (ProtocolError BadCommand{}) -> True
+    Just (ProtocolError UnknownOp{})  -> True
+    Just (OpError _)                  -> True
+    _                                 -> False

@@ -13,8 +13,9 @@ import           System.Environment
 import           System.Exit
 
 import           Data.ByteString.Char8      (unpack)
-import           Database.Memcache.Protocol
-import           Database.Memcache.Server
+import           Database.Memcache.Client   hiding (Options)
+import           Database.Memcache.Types
+import           Data.Default.Class         (def)
 import           Network.Socket             (PortNumber)
 
 data Options = Options { itemSize   :: Int64
@@ -87,3 +88,6 @@ main = do
 
     -- wait on them all.
     forM_ children wait
+
+newMemcacheClient :: String -> PortNumber -> IO Client
+newMemcacheClient host p = newClient [ServerSpec host (show p) NoAuth] def

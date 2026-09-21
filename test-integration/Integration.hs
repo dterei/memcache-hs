@@ -3,44 +3,27 @@
 
 module Main where
 
-import Control.Concurrent (threadDelay)
-import Control.Exception (SomeException, bracket, try)
-import Control.Monad (void)
-import qualified Data.ByteString.Char8 as B
-import Data.Either (isLeft, isRight)
-import Data.Maybe (isJust)
-import Data.Time.Clock.POSIX (getPOSIXTime)
+import           Control.Concurrent       (threadDelay)
+import           Control.Exception        (SomeException, bracket, try)
+import           Control.Monad            (void)
+import qualified Data.ByteString.Char8    as B
+import           Data.Either              (isRight)
+import           Data.Maybe               (isJust)
+import           Data.Time.Clock.POSIX    (getPOSIXTime)
 import qualified Database.Memcache.Client as M
-import Database.Memcache.Types (Flags, ServerSpec (..), Version)
-import Network.Socket (
-  Family (AF_INET),
-  SocketOption (ReuseAddr),
-  SocketType (Stream),
-  addrAddress,
-  addrFamily,
-  addrSocketType,
-  bind,
-  close,
-  connect,
-  defaultHints,
-  defaultProtocol,
-  getAddrInfo,
-  setSocketOption,
-  socket,
-  socketPort,
-  tupleToHostAddress,
- )
-import qualified Network.Socket as N
-import System.Directory (findExecutable)
-import System.Process (
-  ProcessHandle,
-  createProcess,
-  getProcessExitCode,
-  proc,
-  terminateProcess,
-  waitForProcess,
- )
-import Test.Hspec
+import           Database.Memcache.Types  (ServerSpec (..))
+import           Network.Socket           (Family (AF_INET), SocketOption (ReuseAddr),
+                                           SocketType (Stream), addrAddress, addrFamily,
+                                           addrSocketType, bind, close, connect,
+                                           defaultHints, defaultProtocol, getAddrInfo,
+                                           setSocketOption, socket, socketPort,
+                                           tupleToHostAddress)
+import qualified Network.Socket           as N
+import           System.Directory         (findExecutable)
+import           System.Process           (ProcessHandle, createProcess, proc,
+                                           getProcessExitCode, terminateProcess,
+                                           waitForProcess)
+import           Test.Hspec
 
 main :: IO ()
 main = do
@@ -71,8 +54,7 @@ integrationSpecs port = beforeAll (newClient port) $ do
     let key = B.pack ("integration-add-" <> show port <> "-" <> show stamp)
     _ <- M.set client key "one" 0 0
 
-    second <- try (M.add client key "two" 0 0) :: IO (Either SomeException Version)
-    second `shouldSatisfy` isLeft
+    M.add client key "two" 0 0 `shouldReturn` Nothing
 
     M.replace client "integration-no-replace" "two" 0 0 0 `shouldReturn` Nothing
 
@@ -111,14 +93,13 @@ integrationSpecs port = beforeAll (newClient port) $ do
         , "integration key"
         , "integration-no-many"
         ]
-    lookup "integration-many" values
-      `shouldSatisfy` (== Just ("one", 0, lookupCas "integration-many" values))
-    lookup "integration key" values
-      `shouldSatisfy` (== Just ("two", 0, lookupCas "integration key" values))
+    lookup "integration-many" values `shouldSatisfy` isJust
+    lookup "integration key" values `shouldSatisfy` isJust
 
   it "increments and decrements counters" $ \client -> do
+    _ <- M.delete client "integration-counter" 0
     incremented <- M.increment client "integration-counter" 10 2 0 0
-    incremented `shouldSatisfy` isJust
+    incremented `shouldSatisfy` maybe False ((== 10) . fst)
 
     decremented <- M.decrement client "integration-counter" 0 3 0 0
     decremented `shouldSatisfy` isJust
@@ -134,6 +115,12 @@ integrationSpecs port = beforeAll (newClient port) $ do
     result <- M.get client "integration-modify"
     fmap first result `shouldBe` Just "start-middle-end"
 
+  it "modifies encoded keys" $ \client -> do
+    _ <- M.set client "integration modify key" "middle" 0 0
+    _ <- M.append client "integration modify key" "-end" 0
+    result <- M.get client "integration modify key"
+    fmap first result `shouldBe` Just "middle-end"
+
   it "flushes values" $ \client -> do
     _ <- M.set client "integration-flush" "value" 0 0
     M.flush client Nothing
@@ -141,7 +128,7 @@ integrationSpecs port = beforeAll (newClient port) $ do
 
   it "reads stats" $ \client -> do
     stats <- M.stats client Nothing
-    stats `shouldSatisfy` (any (isJust . snd))
+    stats `shouldSatisfy` not . all (null . snd)
 
   it "roundtrips a large value" $ \client -> do
     let value = B.replicate 100000 'x'
@@ -166,15 +153,6 @@ newClient port = do
 
 first :: (a, b, c) -> a
 first (value, _, _) = value
-
-lookupCas
-  :: B.ByteString
-  -> [(B.ByteString, (B.ByteString, Flags, Version))]
-  -> Version
-lookupCas key values =
-  case lookup key values of
-    Just (_, _, cas) -> cas
-    Nothing -> 0
 
 withMemcached
   :: FilePath

@@ -10,13 +10,25 @@
 
 A client library for a memcached cluster.
 
-It supports the binary memcached protocol and SASL authentication. No support
-for the ASCII protocol is provided. It supports connecting to a single, or a
-cluster of memcached servers. When connecting to a cluser, consistent hashing
-is used for routing requests to the appropriate server.
+It supports the Meta Text memcached protocol and username/password
+authentication. Keys containing whitespace or control bytes, or exceeding the
+protocol's key-length limit, are sent using its base64 binary-key mode. The
+encoded key must still fit within 250 bytes. It supports connecting to a
+single, or a cluster of memcached servers. When connecting to a cluster,
+consistent hashing is used for routing requests to the appropriate server.
 
-Complete coverage of the memcached protocol is provided except for multi-get
-and other pipelined operations.
+**This library requires memcached 1.6.0 or newer**, the first release with the
+meta commands. Against older servers every operation is rejected with `ERROR`.
+
+Authentication uses a memcached auth file with `-Y authfile`, an experimental
+ASCII-protocol auth mode added in memcached 1.5.15; the old binary protocol
+`-S` SASL mode is not supported. Enabling `-Y` also disables binary and UDP
+protocols on the server. `getMany` uses quiet misses, so a server connection
+failure can be indistinguishable from a cache miss.
+
+The client operations, including `getMany`, use direct Meta Text encoders and
+the `Response` type; the former request and response wrapper types are no longer
+provided.
 
 ## Licensing
 
@@ -35,15 +47,14 @@ memcached servers.
 
 ## Architecture Notes
 
-We're relying on `Data.Pool` for thread safety right now, which is fine but is
-a blocking API in that when we grab a socket (`withResource`) we are blocking
-any other requests being sent over that connection until we get a response.
-That is, we can't pipeline.
+We're relying on `Data.Pool` for thread safety right now. Grabbing a connection
+from the pool (`withResource`) blocks other requests using that connection
+until the operation completes. `getMany` is the exception: it pipelines quiet
+Meta Text requests over one pooled connection.
 
-Now, use of multiple connections through the pool abstraction is an easy way to
-solve this and perhaps the right approach. But, could also implement own pool
-abstraction that allowed pipelining. This wouldn't be a pool abstraction so
-much as just round-robbining over multiple connections for performance.
+Multiple connections through the pool abstraction allow concurrent operations
+and provide a simple performance path without requiring a separate pool
+implementation.
 
 Either way, a pool is fine for now.
 

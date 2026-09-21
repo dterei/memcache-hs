@@ -9,8 +9,8 @@ module Database.Memcache.LClient (
         get, set, set', delete, delete'
     ) where
 
-import qualified Database.Memcache.Protocol as P
-import           Database.Memcache.SASL
+import qualified Database.Memcache.Client as P
+import           Database.Memcache.Auth
 import           Database.Memcache.Server
 import           Database.Memcache.Types
 

@@ -1,4 +1,3 @@
-{-# LANGUAGE BangPatterns      #-}
 {-# LANGUAGE CPP               #-}
 {-# LANGUAGE OverloadedStrings #-}
 
@@ -7,30 +6,23 @@ module MockServer (
         MockResponse(..), mockMCServer, withMCServer
     ) where
 
-import           Database.Memcache.Socket
-import           Database.Memcache.Types
-
-import           Blaze.ByteString.Builder
 #if __GLASGOW_HASKELL__ < 710
 import           Control.Applicative
 #endif
 import           Control.Concurrent
 import           Control.Monad
-import           Data.Binary.Get
 import qualified Data.ByteString           as B
-import qualified Data.ByteString.Lazy      as L
+import qualified Data.ByteString.Char8     as C
 import           Data.IORef
 import qualified Network.Socket            as N
 import qualified Network.Socket.ByteString as N
+import           Text.Read                  (readMaybe)
 import           UnliftIO.Exception         (SomeException, bracket, handle,
                                             throwIO)
 
-import           Database.Memcache.Errors
-
-
 -- | Actions the mock server can take to a request.
 data MockResponse
-    = MR Response
+    = MR B.ByteString
     | CloseConnection
     | DelayMS Int MockResponse
     | Noop
@@ -89,7 +81,7 @@ mockMCServer loop resp' sem = forkIO $ bracket
       where
         mrHandler r = case r of
             Noop            -> clientHandler client ref resp
-            (MR mr)         -> sendRes client mr >> clientHandler client ref resp
+            (MR mr)         -> N.sendAll client mr >> clientHandler client ref resp
             (DelayMS ms mr) -> do
                 writeIORef ref resp -- client may reset connection
                 threadDelay (ms * 1000)
@@ -99,29 +91,31 @@ mockMCServer loop resp' sem = forkIO $ bracket
                 writeIORef ref resp
                 return $ not $ null resp
 
-
-
-sendRes :: N.Socket -> Response -> IO ()
-sendRes s m = N.sendAll s (toByteString $ szResponse m)
-
 recvReq :: N.Socket -> IO ()
 recvReq s = do
-    header <- recvAll s memcacheHeaderSize mempty
-    let h = runGet (dzHeader PktRequest) (L.fromChunks [header])
-        bytesToRead = fromIntegral $ bodyLen h
-    when (bytesToRead > 0) $
-        void $ recvAll s bytesToRead mempty
-
-recvAll :: N.Socket -> Int -> Builder -> IO B.ByteString
-recvAll _ 0 !acc = return $! toByteString acc
-recvAll s !n !acc = do
-    buf <- N.recv s n
-    case B.length buf of
-        0  -> throwIO errEOF
-        bl | bl == n ->
-            return $! (toByteString $! acc <> fromByteString buf)
-        bl -> recvAll s (n - bl) (acc <> fromByteString buf)
-
+  line <- recvLine s []
+  case payloadLen (C.words line) of
+    Just n  -> void (recvAll s n >> recvLine s [])
+    Nothing -> return ()
   where
-    errEOF :: MemcacheError
-    errEOF = ProtocolError UnexpectedEOF { protocolError = "" }
+    -- Only these carry a data block; guessing by token position instead sees
+    -- a payload in commands like @stats cachedump 1 100@ and then hangs.
+    payloadLen ("ms":_:size:_)      = readMaybe (C.unpack size)
+    payloadLen ("set":_:_:_:size:_) = readMaybe (C.unpack size)
+    payloadLen _                    = Nothing
+
+recvAll :: N.Socket -> Int -> IO B.ByteString
+recvAll _ 0 = return B.empty
+recvAll socket n = do
+  chunk <- N.recv socket n
+  if B.null chunk
+    then throwIO eof
+    else (chunk <>) <$> recvAll socket (n - B.length chunk)
+  where eof = userError "mock server EOF"
+
+recvLine :: N.Socket -> [B.ByteString] -> IO B.ByteString
+recvLine socket acc = do
+  chunk <- N.recv socket 1
+  if B.null chunk then throwIO (userError "mock server EOF")
+  else if chunk == "\n" then return (B.concat (reverse acc))
+       else recvLine socket (chunk:acc)

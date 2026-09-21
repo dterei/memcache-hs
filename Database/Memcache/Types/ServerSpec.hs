@@ -1,5 +1,17 @@
 {-# LANGUAGE OverloadedStrings #-}
 
+{-|
+Module      : Database.Memcache.Types.ServerSpec
+Description : Memcached server specifications
+Copyright   : (c) David Terei, 2016
+License     : BSD
+Maintainer  : code@davidterei.com
+Stability   : stable
+Portability : GHC
+
+Server connection settings, including optional Meta Text auth-file
+credentials.
+-}
 module Database.Memcache.Types.ServerSpec
   ( ServerSpec (..),
     parseServerSpec,
@@ -17,19 +29,18 @@ import Network.Socket (HostName, ServiceName)
 import Network.URI (URI (..), URIAuth (..), parseAbsoluteURI)
 import Data.Bifunctor (second)
 
--- | ServerSpec specifies a server configuration for connection.
+-- | A Memcached server connection configuration.
 data ServerSpec = ServerSpec
   { -- | Hostname of server to connect to.
     ssHost :: HostName,
     -- | Port number server is running on.
     ssPort :: ServiceName,
-    -- | Authentication values to use for SASL authentication with this
-    -- server.
+    -- | Credentials to use for text auth-file authentication with this server.
     ssAuth :: Authentication
   }
   deriving (Eq, Show)
 
--- | Parse a 'String' into a 'ServerSpec'
+-- | Parse a @memcached://@ URI into a @ServerSpec@.
 parseServerSpec :: String -> Either String ServerSpec
 parseServerSpec s = do
   uri <- note ("Not a valid URI: " <> s) $ parseAbsoluteURI s
