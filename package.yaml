@@ -65,6 +65,20 @@ tests:
       - network
       - unliftio
 
+  integration:
+    main: Integration.hs
+    source-dirs: test-integration
+    ghc-options: -threaded -rtsopts "-with-rtsopts=-N"
+    other-extensions:
+      - OverloadedStrings
+    dependencies:
+      - memcache
+      - directory
+      - hspec
+      - network
+      - process
+      - time
+
 benchmarks:
   parser:
     main: Parser.hs
