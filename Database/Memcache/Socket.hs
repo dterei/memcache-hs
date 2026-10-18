@@ -20,7 +20,7 @@ module Database.Memcache.Socket (
 
         -- * Operations
         newConnection, closeConnection,
-        send, sendRaw,
+        sendRaw,
         recvExact, recvLine, recvRawUntil, recvResponse,
 
         -- * Response readers
@@ -47,7 +47,7 @@ import qualified Data.ByteString.Char8     as C
 import           Data.IORef
 import           Data.List                 (find, isInfixOf)
 import           Data.Maybe                (fromMaybe)
-import           Data.Word                 (Word32, Word64)
+import           Data.Word                 (Word64)
 import qualified Network.Socket            as N
 import qualified Network.Socket.ByteString as N
 import           Text.Read                 (readMaybe)
@@ -73,10 +73,6 @@ newConnection s = Connection s <$> newIORef B.empty
 -- | Close the underlying socket.
 closeConnection :: Connection -> IO ()
 closeConnection (Connection s _) = N.close s
-
--- | Send a Meta Text request.
-send :: Connection -> ByteString -> IO ()
-send = sendRaw
 
 -- | Send raw bytes on the underlying socket.
 sendRaw :: Connection -> ByteString -> IO ()
@@ -112,11 +108,6 @@ responseStatus (Response code tokens _) = case code of
   "NS"           -> return ErrItemNotStored
   "ST"           -> return NoError
   "STORED"       -> return NoError
-  "NOT_STORED"   -> return ErrItemNotStored
-  "EXISTS"       -> return ErrKeyExists
-  "NOT_FOUND"    -> return ErrKeyNotFound
-  "TOUCHED"      -> return NoError
-  "DELETED"      -> return NoError
   "VERSION"      -> return NoError
   "STAT"         -> return NoError
   "OK"           -> return NoError
@@ -171,7 +162,7 @@ recvLine s = do
     Nothing
       | B.length buffer > maxLineLength ->
         throwIO $ ProtocolError BadLength { protocolError = "response line too long" }
-      | otherwise -> readChunk s >> recvLine s
+      | otherwise -> readChunk 0 s >> recvLine s
 
 -- | Receive exactly the requested number of bytes.
 recvExact :: Connection -> Int -> IO ByteString
@@ -185,7 +176,7 @@ recvExact s n
       let takeN = min wanted (B.length buffer)
       if takeN > 0
         then writeBuffer s (B.drop takeN buffer) >> go (wanted - takeN) (B.take takeN buffer : acc)
-        else readChunk s >> go wanted acc
+        else readChunk wanted s >> go wanted acc
 
 -- | Receive through the first occurrence of a delimiter, including it.
 recvRawUntil :: ByteString -> Connection -> IO ByteString
@@ -198,11 +189,11 @@ recvRawUntil end s = go B.empty
         (before, rest) | not (B.null rest) -> do
           writeBuffer s (B.drop (B.length end) rest)
           return (before <> end)
-        _ -> writeBuffer s B.empty >> readChunk s >> go combined
+        _ -> writeBuffer s B.empty >> readChunk 0 s >> go combined
 
-readChunk :: Connection -> IO ()
-readChunk (Connection s ref) = do
-  chunk <- N.recv s 4096
+readChunk :: Int -> Connection -> IO ()
+readChunk n (Connection s ref) = do
+  chunk <- N.recv s (max 4096 n)
   if B.null chunk then throwIO eofError else modifyIORef' ref (<> chunk)
 
 readBuffer :: Connection -> IO ByteString
@@ -224,12 +215,14 @@ data WireKey = WireKey
 
 -- | Encode a key, using base64 when it contains protocol-invalid bytes.
 encodeKey :: Key -> Either ClientError WireKey
-encodeKey key =
-  let b64 = B.length key > 250 || B.any (\c -> c <= 0x20 || c == 0x7f) key
-      wire = if b64 then Base64.encode key else key
-  in if B.length wire > 250
-       then Left (KeyTooLong "encoded key exceeds 250 bytes")
-       else Right (WireKey wire b64)
+encodeKey key
+  | B.null key = Left (KeyTooLong "empty key")
+  | B.length key > 250 = Left (KeyTooLong "key exceeds 250 bytes")
+  | B.length wire > 250 = Left (KeyTooLong "encoded key exceeds 250 bytes")
+  | otherwise = Right (WireKey wire b64)
+  where
+    b64 = B.any (\c -> c <= 0x20 || c == 0x7f) key
+    wire = if b64 then Base64.encode key else key
 
 keyArgs :: WireKey -> ByteString
 keyArgs (WireKey wire b64) = wire <> if b64 then " b" else B.empty
@@ -291,33 +284,30 @@ cmdQuit = "quit"
 cmdStats = "stats"
 cmdSet = "set"
 
-opaque :: Word32 -> ByteString
-opaque n = if n == 0 then B.empty else " O" <> dec n
-
 cas :: Version -> ByteString
 cas n = if n == 0 then B.empty else " C" <> dec n
 
 -- | Encode a get request for one key.
-getRequest :: WireKey -> Word32 -> ByteString
-getRequest key o = cmdMetaGet <> " " <> keyArgs key <> " v f c" <> opaque o <> crlf
+getRequest :: WireKey -> ByteString
+getRequest key = cmdMetaGet <> " " <> keyArgs key <> " v f c" <> crlf
 
 -- | Encode a quiet multi-get request for one key.
-getManyRequest :: WireKey -> Word32 -> ByteString
-getManyRequest key o = cmdMetaGet <> " " <> keyArgs key <> " v f c k q" <> opaque o <> crlf
+getManyRequest :: WireKey -> ByteString
+getManyRequest key = cmdMetaGet <> " " <> keyArgs key <> " v f c k q" <> crlf
 
 -- | Encode a get-and-touch request.
-gatRequest :: WireKey -> Expiration -> Word32 -> ByteString
-gatRequest key expiry o = cmdMetaGet <> " " <> keyArgs key <> " v f c T" <> dec expiry <> opaque o <> crlf
+gatRequest :: WireKey -> Expiration -> ByteString
+gatRequest key expiry = cmdMetaGet <> " " <> keyArgs key <> " v f c T" <> dec expiry <> crlf
 
 -- | Encode a touch request.
-touchRequest :: WireKey -> Expiration -> Word32 -> ByteString
-touchRequest key expiry o = cmdMetaGet <> " " <> keyArgs key <> " T" <> dec expiry <> " c" <> opaque o <> crlf
+touchRequest :: WireKey -> Expiration -> ByteString
+touchRequest key expiry = cmdMetaGet <> " " <> keyArgs key <> " T" <> dec expiry <> " c" <> crlf
 
 -- | Encode a storage request.
-storeRequest :: StoreMode -> WireKey -> Value -> Flags -> Expiration -> Version -> Word32 -> ByteString
-storeRequest mode key value flags expiry version o =
+storeRequest :: StoreMode -> WireKey -> Value -> Flags -> Expiration -> Version -> ByteString
+storeRequest mode key value flags expiry version =
   cmdMetaSet <> " " <> wireKey key <> " " <> dec (B.length value) <> " F" <> dec flags <> " T" <> dec expiry
-  <> cas version <> " M" <> storeMode mode <> keyFlag key <> " c" <> opaque o <> crlf <> value <> crlf
+  <> cas version <> " M" <> storeMode mode <> keyFlag key <> " c" <> crlf <> value <> crlf
 
 -- | Encode an increment or decrement request.
 arithmeticRequest :: ArithMode -> WireKey -> Initial -> Delta -> Expiration -> Version -> ByteString
@@ -351,10 +341,10 @@ statsRequest :: Maybe Key -> ByteString
 statsRequest Nothing = cmdStats <> crlf
 statsRequest (Just key) = cmdStats <> " " <> key <> crlf
 
--- | Encode the text auth-file request. The key argument is ignored; the command
--- always authenticates using the value as its space-separated credentials.
-authRequest :: Key -> Value -> ByteString
-authRequest _ value = cmdSet <> " auth 0 0 " <> dec (B.length value) <> crlf <> value <> crlf
+-- | Encode the text auth-file request, authenticating using the value as its
+-- space-separated credentials.
+authRequest :: Value -> ByteString
+authRequest value = cmdSet <> " auth 0 0 " <> dec (B.length value) <> crlf <> value <> crlf
 
 -- | Encode a Meta Text no-op request.
 noOpRequest :: ByteString

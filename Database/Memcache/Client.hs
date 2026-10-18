@@ -144,7 +144,7 @@ newClient scs = newCluster $ if null scs then [def] else scs
 -- | Close all client connections, ignoring individual shutdown failures.
 quit :: Cluster -> IO ()
 quit c = void $ allOp' c $ \server -> handle ignore $ do
-  withSocket server $ \socket -> send socket quitRequest
+  withSocket server $ \socket -> sendRaw socket quitRequest
   close server
   where ignore :: SomeException -> IO ()
         ignore = const (pure ())
@@ -153,7 +153,7 @@ quit c = void $ allOp' c $ \server -> handle ignore $ do
 -- | Also return its flags and CAS version; return 'Nothing' on a miss.
 get :: Cluster -> Key -> IO (Maybe (Value, Flags, Version))
 get c k = do
-  response <- keyedOp c k (`getRequest` 0)
+  response <- keyedOp c k getRequest
   status <- responseStatus response
   case (responseCode response, status) of
     ("VA", NoError) -> return $ Just (responseValue response, responseFlags response, responseCas response)
@@ -163,9 +163,7 @@ get c k = do
 -- | Fetch many keys. Missing keys are omitted from the result.
 getMany :: Cluster -> [Key] -> IO [(Key, (Value, Flags, Version))]
 getMany c keys = do
-  replies <-
-    keyedBatchOp c
-    [(key, (`getManyRequest` opaque)) | (opaque, key) <- zip [1 :: Word32 ..] keys]
+  replies <- keyedBatchOp c [(key, getManyRequest) | key <- keys]
   reverse <$> foldM collect [] replies
   where
     collect values (key, response) = do
@@ -181,7 +179,7 @@ getMany c keys = do
 -- expiration value of @0@ to store forever.
 gat :: Cluster -> Key -> Expiration -> IO (Maybe (Value, Flags, Version))
 gat c k e = do
-  response <- keyedOp c k (\wire -> gatRequest wire e 0)
+  response <- keyedOp c k (`gatRequest` e)
   status <- responseStatus response
   case (responseCode response, status) of
     ("VA", NoError) ->
@@ -194,7 +192,7 @@ gat c k e = do
 -- Use an expiration value of @0@ to store forever.
 touch :: Cluster -> Key -> Expiration -> IO (Maybe Version)
 touch c k e = do
-  response <- keyedOp c k (\wire -> touchRequest wire e 0)
+  response <- keyedOp c k (`touchRequest` e)
   status <- responseStatus response
   case status of
     NoError | responseCode response == "HD" -> return $ Just (responseCas response)
@@ -213,7 +211,7 @@ set c k v f e = store c k v f e 0 Set "SET"
 -- forever.
 cas :: Cluster -> Key -> Value -> Flags -> Expiration -> Version -> IO (Maybe Version)
 cas c k v f e ver = do
-  response <- keyedOp c k (\wire -> storeRequest Set wire v f e ver 0)
+  response <- keyedOp c k (\wire -> storeRequest Set wire v f e ver)
   status <- responseStatus response
   case status of
     NoError -> return $ Just (responseCas response)
@@ -226,7 +224,7 @@ cas c k v f e ver = do
 -- expiration value of @0@ to store forever.
 add :: Cluster -> Key -> Value -> Flags -> Expiration -> IO (Maybe Version)
 add c k v f e = do
-  response <- keyedOp c k (\wire -> storeRequest Add wire v f e 0 0)
+  response <- keyedOp c k (\wire -> storeRequest Add wire v f e 0)
   status <- responseStatus response
   case status of
     NoError -> return $ Just (responseCas response)
@@ -238,7 +236,7 @@ add c k v f e = do
 -- Use an expiration value of @0@ to store forever.
 replace :: Cluster -> Key -> Value -> Flags -> Expiration -> Version -> IO (Maybe Version)
 replace c k v f e ver = do
-  response <- keyedOp c k (\wire -> storeRequest Replace wire v f e ver 0)
+  response <- keyedOp c k (\wire -> storeRequest Replace wire v f e ver)
   status <- responseStatus response
   case status of
     NoError -> return $ Just (responseCas response)
@@ -249,7 +247,7 @@ replace c k v f e ver = do
 
 store :: Cluster -> Key -> Value -> Flags -> Expiration -> Version -> StoreMode -> String -> IO Version
 store c k v f e ver mode operation = do
-  response <- keyedOp c k (\wire -> storeRequest mode wire v f e ver 0)
+  response <- keyedOp c k (\wire -> storeRequest mode wire v f e ver)
   status <- responseStatus response
   case status of
     NoError -> return $ responseCas response
@@ -294,6 +292,7 @@ modify c k v ver mode operation = do
   case status of
     NoError -> return $ Just (responseCas response)
     ErrKeyNotFound -> return Nothing
+    ErrItemNotStored -> return Nothing
     _ -> failResponse response operation
 
 -- | Delete a key, returning whether it was deleted.
@@ -325,7 +324,7 @@ stats :: Cluster -> Maybe Key -> IO [(Server, StatResults)]
 stats c key = validateStatsArgs key >> allOp' c (runStats key)
   where
     runStats statsArgs server = withSocket server $ \socket -> do
-      send socket (statsRequest statsArgs)
+      sendRaw socket (statsRequest statsArgs)
       collect socket []
 
     -- Arguments may contain spaces (@stats cachedump 1 100@), but control
@@ -340,11 +339,12 @@ stats c key = validateStatsArgs key >> allOp' c (runStats key)
 
     collect socket values = do
       response <- recvResponse socket
-      status <- responseStatus response
-      case (responseCode response, responseTokens response, status) of
-        ("STAT", field:value, NoError) -> collect socket ((field, C.unwords value) : values)
-        ("END", _, NoError) -> return (reverse values)
-        _ -> failResponse response "STATS"
+      case (responseCode response, responseTokens response) of
+        (code, _) | code `elem` ["ERROR", "CLIENT_ERROR", "SERVER_ERROR"] ->
+          responseStatus response >> failResponse response "STATS"
+        (code, _) | code `elem` ["END", "RESET", "OK"] -> return (reverse values)
+        ("STAT", field:value) -> collect socket ((field, C.unwords value) : values)
+        (code, tokens) -> collect socket ((code, C.unwords tokens) : values)
 
 -- | Return the version string of the Memcached cluster. Only queries
 -- one server and assumes all servers in the cluster run the same version.
@@ -357,5 +357,9 @@ version c = do
     else failResponse response "VERSION"
 
 failResponse :: Response -> String -> IO a
-failResponse response operation = throwIO $ ProtocolError UnexpectedResponse
-  { protocolError = "Expected " <> operation <> ", got: " <> show (responseCode response) }
+failResponse response operation = do
+  status <- responseStatus response
+  throwIO $ if status /= NoError
+    then OpError status
+    else ProtocolError UnexpectedResponse
+      { protocolError = "Expected " <> operation <> ", got: " <> show (responseCode response) }
