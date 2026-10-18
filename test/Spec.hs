@@ -3,6 +3,7 @@
 module Main where
 
 import           MockServer
+import qualified Database.Memcache.Auth    as Auth
 import qualified Database.Memcache.Client  as Client
 import           Database.Memcache.Errors
 import qualified Database.Memcache.Errors  as E
@@ -29,6 +30,9 @@ main = hspec $ do
     it "validates encoded key length" $
       encodeKey (C.replicate 251 'a') `shouldSatisfy` isLeft
 
+    it "rejects empty keys" $
+      encodeKey "" `shouldSatisfy` isLeft
+
     it "rejects over-long keys without contacting the server" $
       withMCServer False [MR "VA 3 f2 c7\r\nfoo\r\n"] $ do
         client <- Client.newClient [Client.def] Client.def
@@ -41,9 +45,9 @@ main = hspec $ do
         `shouldThrow` isKeyTooLong
 
     it "encodes all core request forms" $ do
-      getRequest (wire "key") 2 `shouldBe` "mg key v f c O2\r\n"
-      gatRequest (wire "key") 30 0 `shouldBe` "mg key v f c T30\r\n"
-      touchRequest (wire "key") 30 0 `shouldBe` "mg key T30 c\r\n"
+      getRequest (wire "key") `shouldBe` "mg key v f c\r\n"
+      gatRequest (wire "key") 30 `shouldBe` "mg key v f c T30\r\n"
+      touchRequest (wire "key") 30 `shouldBe` "mg key T30 c\r\n"
       deleteRequest (wire "key") 9 `shouldBe` "md key C9\r\n"
       flushRequest Nothing `shouldBe` "flush_all\r\n"
       flushRequest (Just 30) `shouldBe` "flush_all 30\r\n"
@@ -53,16 +57,15 @@ main = hspec $ do
       quitRequest `shouldBe` "quit\r\n"
 
     it "places the binary-key flag after the data length" $
-       storeRequest Set (wire "a b") "value" 3 20 0 0
+       storeRequest Set (wire "a b") "value" 3 20 0
          `shouldBe` "ms " <> Base64.encode "a b" <> " 5 F3 T20 MS b c\r\nvalue\r\n"
 
     it "omits arithmetic defaults at the maximum expiration" $
       arithmeticRequest Incr (wire "key") 0 1 maxBound 0
       `shouldBe` "ma key D1 MI v c\r\n"
 
-    it "omits zero CAS and opaque values" $ do
-      storeRequest Set (wire "key") "v" 0 0 0 0 `shouldBe` "ms key 1 F0 T0 MS c\r\nv\r\n"
-      getRequest (wire "key") 0 `shouldBe` "mg key v f c\r\n"
+    it "omits zero CAS values" $
+      storeRequest Set (wire "key") "v" 0 0 0 `shouldBe` "ms key 1 F0 T0 MS c\r\nv\r\n"
 
   describe "response parsing" $ do
     it "parses values and protocol errors" $ do
@@ -162,10 +165,30 @@ main = hspec $ do
         client <- Client.newClient [Client.def] Client.def
         Client.increment client "counter" 0 1 30 0 `shouldReturn` Nothing
 
+    it "returns Nothing appending to a missing key" $
+      withMCServer False [MR "NS\r\n"] $ do
+        client <- Client.newClient [Client.def] Client.def
+        Client.append client "key" "more" 0 `shouldReturn` Nothing
+
     it "reports an oversized value as a status, not a protocol failure" $
       withMCServer False [MR "SERVER_ERROR object too large for cache\r\n"] $ do
         client <- Client.newClient [Client.def] Client.def
         Client.set client "key" "foo" 0 0 `shouldThrow` (== OpError ErrValueTooLarge)
+
+    it "returns no stats on a reset reply" $
+      withMCServer False [MR "RESET\r\n"] $ do
+        client <- Client.newClient [Client.def] Client.def
+        result <- Client.stats client Nothing
+        map snd result `shouldBe` [[]]
+
+  describe "authenticate" $
+    it "refuses to send credentials when the server is not auth-gated" $
+      bracket
+      (N.socketPair N.AF_UNIX N.Stream 0)
+      (\(left, right) -> N.close left >> N.close right) $ \(left, right) -> do
+        connection <- newConnection left
+        _ <- forkIO $ N.sendAll right "VERSION 1.6\r\n"
+        Auth.authenticate connection (Auth.Auth "user" "pass") `shouldThrow` isInvalidAuthentication
   where
     recvResponseFrom bytes =
       bracket
@@ -177,6 +200,8 @@ main = hspec $ do
     wire key = either (error . show) id (encodeKey key)
     isKeyTooLong (ClientError (KeyTooLong _)) = True
     isKeyTooLong _ = False
+    isInvalidAuthentication (ClientError (InvalidAuthentication _)) = True
+    isInvalidAuthentication _ = False
     isServerError (ProtocolError (E.ServerError _)) = True
     isServerError _ = False
     isBadCommand (ProtocolError (E.BadCommand _)) = True

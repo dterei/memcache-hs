@@ -11,10 +11,10 @@
 A client library for a memcached cluster.
 
 It supports the Meta Text memcached protocol and username/password
-authentication. Keys containing whitespace or control bytes, or exceeding the
-protocol's key-length limit, are sent using its base64 binary-key mode. The
-encoded key must still fit within 250 bytes. It supports connecting to a
-single, or a cluster of memcached servers. When connecting to a cluster,
+authentication. Keys containing whitespace or control bytes are sent using its
+base64 binary-key mode. The encoded key must still fit within 250 bytes. It
+supports connecting to a single, or a cluster of memcached servers. When
+connecting to a cluster,
 consistent hashing is used for routing requests to the appropriate server.
 
 **This library requires memcached 1.6.0 or newer**, the first release with the

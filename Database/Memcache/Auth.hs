@@ -23,6 +23,7 @@ import Database.Memcache.Errors
 import Database.Memcache.Socket
 import Database.Memcache.Types
 
+import Control.Monad (unless)
 import qualified Data.ByteString.Char8 as B8
 import UnliftIO.Exception (catch, throwIO)
 
@@ -33,8 +34,15 @@ authenticate socket (Auth user pass) = do
   case validateCredentials user pass of
     Left message -> throwIO $ ClientError (InvalidAuthentication message)
     Right () -> return ()
+  -- Without -Y authfile, "set auth ..." is just a normal store, so credentials
+  -- would be readable via "get auth"; probe with a real command first so we
+  -- never send them to a server that isn't gating on auth-file mode.
+  sendRaw socket versionRequest
+  probe <- recvResponse socket
+  unless (responseCode probe == "CLIENT_ERROR") $ throwIO $ ClientError
+    (InvalidAuthentication "server is not in auth-file mode; refusing to send credentials")
   let credentials = user <> B8.singleton ' ' <> pass
-  send socket (authRequest "PLAIN" credentials)
+  sendRaw socket (authRequest credentials)
   response <- recvResponse socket
   result <- responseStatus response `catch` handleAuthFailure
   case result of

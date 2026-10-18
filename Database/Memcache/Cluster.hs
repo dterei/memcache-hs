@@ -49,7 +49,7 @@ import           Data.Time.Clock.POSIX    (getPOSIXTime)
 import qualified Data.Vector              as V
 import           System.Timeout
 import           UnliftIO.Exception       (SomeException, fromException, handle, throwIO)
-import           Database.Memcache.Socket (Response(..), WireKey(..), encodeKey, noOpRequest, recvResponse, responseStatus, send, sendRaw)
+import           Database.Memcache.Socket (Response(..), WireKey(..), encodeKey, noOpRequest, recvResponse, responseStatus, sendRaw)
 
 -- | Number of times to retry an operation before considering it failed.
 type Retries = Int
@@ -180,7 +180,7 @@ getServerForKeyDefault  c k = do
 serverOp :: Cluster -> Server -> ByteString -> IO Response
 {-# INLINE serverOp #-}
 serverOp c s req = retryOp c s $ withSocket s $ \connection -> do
-  send connection req
+  sendRaw connection req
   response <- recvResponse connection
   rejectProtocolError response
   return response
@@ -320,4 +320,5 @@ clientFault err = case fromException err of
     Just (ProtocolError BadCommand{}) -> True
     Just (ProtocolError UnknownOp{})  -> True
     Just (OpError _)                  -> True
+    Just (ClientError InvalidAuthentication{}) -> True
     _                                 -> False

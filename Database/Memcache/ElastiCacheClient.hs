@@ -126,7 +126,7 @@ resolveCluster cfgClient = do
     rawResponse <-
       if version >= firstCfgCmdVersion
         then resolveViaConfigCmd socket
-        else resolveViaAutoDiscoveryKey cfgClient
+        else resolveViaAutoDiscoveryKey socket
 
     rawNodeInfo <- unTry $ handleConfigGetClusterResponse rawResponse
 
@@ -164,13 +164,11 @@ handleRawNodeInfo = mapM (parseServerSpec <=< pure . T.unpack <=< convertToUri) 
 firstCfgCmdVersion :: Version
 firstCfgCmdVersion = makeVersion [1, 4, 14]
 
-resolveViaAutoDiscoveryKey :: Client -> IO ByteString
-resolveViaAutoDiscoveryKey cfg = do
-  mResponse <- Client.get cfg autoDiscoveryKey
-
-  case mResponse of
-    Nothing -> throwString "AmazonElastiCache:cluster get failed"
-    Just (v, _, _) -> pure v
+-- Pre-1.4.14 engines don't support meta commands, so use a plain text get.
+resolveViaAutoDiscoveryKey :: Connection -> IO ByteString
+resolveViaAutoDiscoveryKey socket = do
+  sendRaw socket ("get " <> autoDiscoveryKey <> crlf)
+  recvRawUntil ("END" <> crlf) socket
 
 -- Before 'firstCfgCmdVersion', /ElastiCache/ stored configuration in a special-purpose key within the /Configuration Endpoint/.
 --
