@@ -74,8 +74,7 @@ library
   other-extensions:
       BangPatterns
       CPP
-      DeriveDataTypeable
-      FlexibleInstances
+      OverloadedStrings
       RecordWildCards
       ScopedTypeVariables
   ghc-options: -Wall -Wextra -fwarn-tabs
@@ -103,9 +102,8 @@ test-suite integration
   hs-source-dirs:
       test-integration
   other-extensions:
-      BangPatterns
-      CPP
       OverloadedStrings
+      TypeApplications
   ghc-options: -Wall -Wextra -threaded -rtsopts "-with-rtsopts=-N"
   build-depends:
       base >=4.16 && <5
@@ -127,8 +125,6 @@ test-suite spec
   hs-source-dirs:
       test
   other-extensions:
-      BangPatterns
-      CPP
       OverloadedStrings
   ghc-options: -Wall -Wextra -threaded -rtsopts "-with-rtsopts=-N"
   build-depends:
@@ -150,8 +146,6 @@ benchmark parser
   hs-source-dirs:
       bench
   other-extensions:
-      BangPatterns
-      CPP
       OverloadedStrings
   build-depends:
       base >=4.16 && <5

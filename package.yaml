@@ -53,10 +53,6 @@ dependencies:
   - network >= 3.1.4.0
   - time >= 1.11.1.1
 
-other-extensions:
-  - BangPatterns
-  - CPP
-
 library:
   source-dirs: .
   dependencies:
@@ -72,8 +68,9 @@ library:
     - Database.Memcache.Types.Authentication
     - Database.Memcache.Types.ServerSpec
   other-extensions:
-    - DeriveDataTypeable
-    - FlexibleInstances
+    - BangPatterns
+    - CPP
+    - OverloadedStrings
     - RecordWildCards
     - ScopedTypeVariables
   ghc-options:
@@ -110,6 +107,7 @@ tests:
       - -rtsopts "-with-rtsopts=-N"
     other-extensions:
       - OverloadedStrings
+      - TypeApplications
     dependencies:
       - memcache
       - directory

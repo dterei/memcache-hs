@@ -1,6 +1,4 @@
 {-# LANGUAGE BangPatterns        #-}
-{-# LANGUAGE CPP                 #-}
-{-# LANGUAGE FlexibleInstances   #-}
 {-# LANGUAGE RecordWildCards     #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE OverloadedStrings   #-}
@@ -77,12 +75,10 @@ data Options = Options {
         --
         -- Default is 750ms.
         optsServerTimeout        :: Milli,
-        --
         -- | Figure out which server to talk to for a given key.
         --
         -- Default is @getServerForKeyDefault@.
         optsGetServerForKey      :: Cluster -> Key -> IO (Maybe Server),
-        --
         -- | Convert server specifications into servers.
         --
         -- Default uses 'newServerDefault'.
@@ -90,14 +86,6 @@ data Options = Options {
 
         -- | Connection-pool options for each server.
         optsServerOptions :: ServerOptions
-        -- TODO: socket_timeout
-        -- TODO: failover
-        -- TODO: expires_in
-        -- TODO: namespace
-        -- TODO: compress
-        -- TODO: compress_min_size
-        -- TODO: compress_max_size
-        -- TODO: value_max_bytes
     }
 
 instance Default Options where
@@ -162,6 +150,11 @@ serverAlive deadDelay s = do
                     writeIORef (failed s) 0
                     return True
 
+-- | The servers not currently marked as failed.
+aliveServers :: Cluster -> IO (V.Vector Server)
+{-# INLINE aliveServers #-}
+aliveServers c = getServers c >>= V.filterM (serverAlive $ cDeadDelay c)
+
 -- | Figure out which server to talk to for this key. I.e., the distribution
 -- method. We use consistent hashing based on the CHORD approach.
 getServerForKeyDefault :: Cluster -> Key -> IO (Maybe Server)
@@ -169,8 +162,7 @@ getServerForKeyDefault :: Cluster -> Key -> IO (Maybe Server)
 getServerForKeyDefault  c k = do
     let hashedKey = hash k
         searchF s = sid s < hashedKey
-    servers <- getServers c
-    servers' <- V.filterM (serverAlive $ cDeadDelay c) servers
+    servers' <- aliveServers c
     return $ if V.null servers'
         then Nothing
         else Just $ fromMaybe (V.last servers') (V.find searchF servers')
@@ -255,8 +247,7 @@ keyedBatchOp c requests = do
 anyOp :: Cluster -> ByteString -> IO Response
 {-# INLINE anyOp #-}
 anyOp c req = do
-    servers <- getServers c
-    servers' <- V.filterM (serverAlive $ cDeadDelay c) servers
+    servers' <- aliveServers c
     if V.null servers'
         then throwIO $ ClientError NoServersReady
         else serverOp c (V.head servers') req
@@ -265,14 +256,7 @@ anyOp c req = do
 -- failures that occur, retrying the specified number of times.
 allOp :: Cluster -> ByteString -> IO [(Server, Response)]
 {-# INLINE allOp #-}
-allOp c req = do
-    servers <- getServers c
-    servers' <- V.filterM (serverAlive $ cDeadDelay c) servers
-    if V.null servers'
-        then throwIO $ ClientError NoServersReady
-        else do
-            res <- V.forM servers' $ \s -> serverOp c s req
-            return $ V.toList $ V.zip servers' res
+allOp c req = forAliveServers c $ \s -> serverOp c s req
 
 -- | Run a Memcached operation against all servers in the cluster, handling any
 -- failures that occur, retrying the specified number of times. Similar to
@@ -280,13 +264,18 @@ allOp c req = do
 -- request and response.
 allOp' :: Cluster -> (Server -> IO a) -> IO [(Server, a)]
 {-# INLINE allOp' #-}
-allOp' c op = do
-    servers <- getServers c
-    servers' <- V.filterM (serverAlive $ cDeadDelay c) servers
+allOp' c op = forAliveServers c $ \s -> retryOp c s (op s)
+
+-- | Run an action against every server not marked as failed, pairing each
+-- result with its server. Throws 'NoServersReady' if there are none.
+forAliveServers :: Cluster -> (Server -> IO a) -> IO [(Server, a)]
+{-# INLINE forAliveServers #-}
+forAliveServers c f = do
+    servers' <- aliveServers c
     if V.null servers'
         then throwIO $ ClientError NoServersReady
         else do
-            res <- V.forM servers' $ \s -> retryOp c s (op s)
+            res <- V.mapM f servers'
             return $ V.toList $ V.zip servers' res
 
 -- | Run an IO operation multiple times if an exception is thrown, marking the

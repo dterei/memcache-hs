@@ -57,12 +57,6 @@ data Server = Server {
         auth   :: !Authentication,
         -- | When did the server fail? 0 if it is alive.
         failed :: IORef POSIXTime
-
-        -- TODO:
-        -- weight   :: Double
-        -- tansport :: Transport (UDP vs. TCP)
-        -- poolLim  :: Int (pooled connection limit)
-        -- cnxnBuf   :: IORef ByteString
     }
 
 instance Show Server where

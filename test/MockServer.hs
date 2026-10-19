@@ -1,4 +1,3 @@
-{-# LANGUAGE CPP               #-}
 {-# LANGUAGE OverloadedStrings #-}
 
 -- | Mock Memcached server - just enough for testing client.
@@ -6,9 +5,6 @@ module MockServer (
         MockResponse(..), mockMCServer, withMCServer
     ) where
 
-#if __GLASGOW_HASKELL__ < 710
-import           Control.Applicative
-#endif
 import           Control.Concurrent
 import           Control.Monad
 import qualified Data.ByteString           as B

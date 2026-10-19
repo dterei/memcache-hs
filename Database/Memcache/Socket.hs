@@ -1,4 +1,3 @@
-{-# LANGUAGE CPP #-}
 {-# LANGUAGE OverloadedStrings #-}
 
 {-|
@@ -36,9 +35,6 @@ module Database.Memcache.Socket (
 import           Database.Memcache.Errors
 import           Database.Memcache.Types
 
-#if __GLASGOW_HASKELL__ < 710
-import           Control.Applicative
-#endif
 import           Control.Monad             (unless)
 import           Data.ByteString           (ByteString)
 import qualified Data.ByteString           as B
