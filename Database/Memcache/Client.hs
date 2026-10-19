@@ -95,7 +95,7 @@ module Database.Memcache.Client (
         -- 'defaultServerSpec', 'defaultOptions' and 'defaultServerOptions',
         -- picked by the type it is used at.
         def,
-        quit,
+        quit, withClient,
 
         -- ** Configuration types
         Retries, ServerOptions(..), defaultServerOptions, Server,
@@ -137,7 +137,7 @@ import qualified Data.ByteString.Char8     as C (unwords)
 import           Data.Default
 import           Data.Maybe                (fromMaybe, listToMaybe)
 import           Data.Word
-import           UnliftIO.Exception        (throwIO)
+import           UnliftIO.Exception        (bracket, throwIO)
 
 -- | A Memcached cluster client.
 type Client = Cluster
@@ -163,6 +163,22 @@ newClient scs = newCluster $ if null scs then [defaultServerSpec] else scs
 -- server, returns promptly and doesn't throw, even when a server is down.
 quit :: Client -> IO ()
 quit c = getServers c >>= mapM_ closeAll
+
+-- | Create a client with 'newClient', run an action with it, and close the
+-- client's connections with 'quit' when the action returns or throws.
+--
+-- 'newClient' doesn't connect to any server (connections are opened on first
+-- use), so if it throws there is nothing to close. 'quit' doesn't throw, so
+-- 'withClient' returns the action's result, or rethrows its exception,
+-- unchanged.
+--
+-- Don't use the client after 'withClient' returns, or from threads that
+-- outlive the action. A request such a thread is making when the action ends
+-- completes, and its connection is then closed; requests it starts afterwards
+-- open new connections, which stay open until they have been idle for
+-- 'soKeepAlive'.
+withClient :: [ServerSpec] -> Options -> (Client -> IO a) -> IO a
+withClient specs opts = bracket (newClient specs opts) quit
 
 -- | Retrieve the value for the given key from Memcached, along with its
 -- flags and CAS version. Returns 'Nothing' on a miss.
