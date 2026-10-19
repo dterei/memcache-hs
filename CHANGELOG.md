@@ -1,3 +1,10 @@
+# Unreleased
+
+- Document that a `Version` of `0` skips the CAS check, and when `increment`
+  and `decrement` create a missing key. Fix the usage example in
+  `Database.Memcache.Client`, and add usage and development instructions to
+  the README.
+
 # 0.4.1.0 - October 19th, 2026
 
 No API or behaviour changes from 0.4.0.0.
@@ -71,6 +78,15 @@ No API or behaviour changes from 0.4.0.0.
   builds against (GHC 9.2, Stackage LTS 20.26).
 - Depend on `data-default` instead of the deprecated `data-default-class`,
   which is now a compatibility shim over `data-default` 0.8.
+- Add `Database.Memcache.ElastiCacheClient`, which creates a client from an
+  Amazon ElastiCache configuration endpoint and refreshes its node list on an
+  interval.
+- Add `parseServerSpec`, which reads a `ServerSpec` from a `memcached://` URI.
+- `Options` gains `optsServerOptions`, whose `ServerOptions` set the size,
+  stripes and keep-alive of each server's connection pool, and
+  `optsServerSpecsToServers`, which controls how servers are created.
+  `Database.Memcache.Server` exports `newServerDefault` in place of
+  `newServer`.
 
 # 0.3.0.2 - March 27th, 2024
 
@@ -88,7 +104,7 @@ No API or behaviour changes from 0.4.0.0.
 
 # 0.2.0.1 - November 2nd, 2016
 
-- Fix compatability with latest `data-default-class`
+- Fix compatibility with latest `data-default-class`
 - Add new ReqRaw type for external clients to implement custom requests. Quite
   a hack right now, so behind a WARNING pragma.
 
@@ -100,9 +116,9 @@ No API or behaviour changes from 0.4.0.0.
   retry an operation against the same server, but after N consecutive failures,
   we mark the server as dead and don't try using it again until M seconds has
   passed.
-- Simplify exception hierachy - just one type `MemcacheError` now for
-- Remove `defaultOptions` and `defaultServerSpec`, will revist usefulness.
+- Simplify exception hierarchy - just one type `MemcacheError` now for
   exceptions.
+- Remove `defaultOptions` and `defaultServerSpec`, will revisit usefulness.
 - Remove many `Typeable` instances.
 - Support better testing with a mock Memcached server.
 - Fix bug in socket handling - detected EOF properly.
