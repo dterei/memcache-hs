@@ -5,7 +5,7 @@ module Main where
 
 import           Control.Concurrent       (threadDelay)
 import           Control.Exception        (SomeException, bracket, try)
-import           Control.Monad            (void)
+import           Control.Monad            (forM_, void)
 import qualified Data.ByteString.Char8    as B
 import           Data.Either              (isRight)
 import           Data.Maybe               (isJust)
@@ -19,7 +19,8 @@ import           Network.Socket           (Family (AF_INET), SocketOption (Reuse
                                            setSocketOption, socket, socketPort,
                                            tupleToHostAddress)
 import qualified Network.Socket           as N
-import           System.Directory         (findExecutable)
+import           System.Directory         (findExecutable, getTemporaryDirectory, removeFile)
+import           System.IO                (hClose, hPutStr, openTempFileWithDefaultPermissions)
 import           System.Process           (ProcessHandle, createProcess, proc,
                                            getProcessExitCode, terminateProcess,
                                            waitForProcess)
@@ -33,8 +34,15 @@ main = do
       hspec $
         it "requires memcached" $
           pendingWith "memcached command not found"
-    Just path -> withMemcached path $ \port ->
-      hspec (integrationSpecs port)
+    Just path ->
+      withMemcached path [] $ \port ->
+      withAuthfile $ \authfile ->
+      withMemcached path ["-Y", authfile] $ \authPort ->
+      withMemcacheds path 3 $ \clusterPorts ->
+        hspec $ do
+          describe "single server" $ integrationSpecs port
+          describe "auth-file authentication" $ authSpecs authPort
+          describe "three-server cluster" $ clusterSpecs clusterPorts
 
 integrationSpecs :: Int -> Spec
 integrationSpecs port = beforeAll (newClient port) $ do
@@ -145,6 +153,60 @@ integrationSpecs port = beforeAll (newClient port) $ do
 
   it "supports quit" M.quit
 
+authSpecs :: Int -> Spec
+authSpecs port = do
+  it "serves a client with the right credentials" $ do
+    client <- M.newClient [server (M.Auth "user" "secret")] M.def
+    _ <- M.set client "integration-auth" "value" 0 0
+    fmap first <$> M.get client "integration-auth" `shouldReturn` Just "value"
+
+  it "rejects a wrong password" $ do
+    client <- M.newClient [server (M.Auth "user" "wrong")] M.def
+    M.get client "integration-auth" `shouldThrow` (== M.OpError M.TextAuthFail)
+
+  it "rejects a client without credentials" $ do
+    client <- M.newClient [server M.NoAuth] M.def
+    M.get client "integration-auth" `shouldThrow` isBadCommand
+ where
+  server = ServerSpec "127.0.0.1" (show port)
+  isBadCommand (M.ProtocolError (M.BadCommand _)) = True
+  isBadCommand _ = False
+
+-- | Tests against several servers. Key routing currently leaves at least one
+-- server without keys (#46), so these don't assume keys reach every server.
+clusterSpecs :: [Int] -> Spec
+clusterSpecs ports = beforeAll newClusterClient $ do
+  it "stores and reads back keys" $ \client -> do
+    storeKeys client
+    forM_ keys $ \key -> fmap first <$> M.get client key `shouldReturn` Just key
+
+  it "gets many keys" $ \client -> do
+    storeKeys client
+    values <- M.getMany client keys
+    map fst values `shouldMatchList` keys
+
+  it "reads stats from every server" $ \client -> do
+    stats <- M.stats client Nothing
+    length stats `shouldBe` length ports
+
+  it "flushes every server" $ \client -> do
+    storeKeys client
+    counts <- flushCounts client
+    M.flush client Nothing
+    flushCounts client `shouldReturn` map (+ 1) counts
+    M.getMany client keys `shouldReturn` []
+ where
+  keys = [B.pack ("integration-cluster-" <> show n) | n <- [1 .. 300 :: Int]]
+  storeKeys client = forM_ keys $ \key -> M.set client key key 0 0
+  -- How many times each server has run flush_all, in server order.
+  flushCounts client = do
+    stats <- M.stats client Nothing
+    return [maybe 0 (read @Int . B.unpack) (lookup "cmd_flush" s) | (_, s) <- stats]
+  newClusterClient = do
+    client <- M.newClient [ServerSpec "127.0.0.1" (show port) M.NoAuth | port <- ports] M.def
+    M.flush client Nothing
+    return client
+
 newClient :: Int -> IO M.Client
 newClient port = do
   client <- M.newClient [ServerSpec "127.0.0.1" (show port) M.NoAuth] M.def
@@ -154,21 +216,42 @@ newClient port = do
 first :: (a, b, c) -> a
 first (value, _, _) = value
 
+-- | Run an action against a memcached started with the given extra
+-- arguments on a free port.
 withMemcached
   :: FilePath
-  -> (Int -> IO ())
-  -> IO ()
-withMemcached executable action = bracket acquire release (action . fst)
+  -> [String]
+  -> (Int -> IO a)
+  -> IO a
+withMemcached executable args action = bracket acquire release (action . fst)
  where
   acquire = do
     port <- freePort
     (_, _, _, process) <-
-      createProcess (proc executable ["-l", "127.0.0.1", "-p", show port, "-U", "0"])
+      createProcess (proc executable (["-l", "127.0.0.1", "-p", show port, "-U", "0"] ++ args))
     waitForPort port process
     return (port, process)
   release (_, process) = do
     terminateProcess process
     void (waitForProcess process)
+
+-- | Run an action against @n@ memcached servers.
+withMemcacheds :: FilePath -> Int -> ([Int] -> IO a) -> IO a
+withMemcacheds _ 0 action = action []
+withMemcacheds executable n action =
+  withMemcached executable [] $ \port ->
+    withMemcacheds executable (n - 1) $ \ports -> action (port : ports)
+
+-- | Run an action with an auth file allowing @user@ / @secret@.
+withAuthfile :: (FilePath -> IO a) -> IO a
+withAuthfile action = do
+  tmp <- getTemporaryDirectory
+  -- Default permissions, so a memcached that drops privileges (e.g. when
+  -- started as root with -u) can still read it.
+  bracket (openTempFileWithDefaultPermissions tmp "memcached-auth") (removeFile . fst) $ \(path, handle) -> do
+    hPutStr handle "user:secret\n"
+    hClose handle
+    action path
 
 freePort :: IO Int
 freePort = bracket (socket AF_INET Stream defaultProtocol) close $ \sock -> do
@@ -184,8 +267,10 @@ waitForPort port process = go 50
  where
   go :: Int -> IO ()
   go 0 = do
-    status <- waitForProcess process
-    fail $ "memcached exited before becoming ready: " <> show status
+    -- Still running but never listening: stop it rather than waiting on it.
+    terminateProcess process
+    void (waitForProcess process)
+    fail $ "memcached did not start listening on port " <> show port
   go attempts = do
     ready <- tryConnect port
     if ready

@@ -5,6 +5,7 @@ module Main where
 import           MockServer
 import qualified Database.Memcache.Auth    as Auth
 import qualified Database.Memcache.Client  as Client
+import qualified Database.Memcache.ElastiCacheClient as EC
 import           Database.Memcache.Errors
 import qualified Database.Memcache.Errors  as E
 import           Database.Memcache.Socket
@@ -468,6 +469,73 @@ main = hspec $ do
     it "rejects other schemes and invalid URIs" $ do
       parseServerSpec "http://cache.example" `shouldSatisfy` isLeft
       parseServerSpec "not a uri" `shouldSatisfy` isLeft
+
+  describe "clusters" $ do
+    it "fails over to another server once one is marked dead" $
+      withMockServer [MR "VA 1 f0 c1\r\nA\r\n", CloseConnection, CloseConnection] $ \a ->
+      withMockServer [MR "VA 1 f0 c1\r\nB\r\n", CloseConnection, CloseConnection] $ \b -> do
+        client <- Client.newClient [mockServerSpec a, mockServerSpec b] fastFailover
+        first <- Client.get client "key"
+        -- The server that answered now drops two connections in a row, which
+        -- uses up its retries and marks it dead...
+        Client.get client "key" `shouldThrow` isUnexpectedEOF
+        -- ...so the same key is now served by the other server.
+        second <- Client.get client "key"
+        map (fmap fst3) [first, second] `shouldSatisfy` (`elem` [[Just "A", Just "B"], [Just "B", Just "A"]])
+
+    it "throws NoServersReady once every server is dead" $
+      withMockServer [CloseConnection, CloseConnection] $ \a -> do
+        client <- Client.newClient [mockServerSpec a] fastFailover
+        Client.get client "key" `shouldThrow` isUnexpectedEOF
+        Client.get client "key" `shouldThrow` (== ClientError NoServersReady)
+        Client.flush client Nothing `shouldThrow` (== ClientError NoServersReady)
+        Client.version client `shouldThrow` (== ClientError NoServersReady)
+
+    it "flushes every server" $
+      withMockServer [MR "OK\r\n"] $ \a ->
+      withMockServer [MR "OK\r\n"] $ \b -> do
+        client <- Client.newClient [mockServerSpec a, mockServerSpec b] Client.def
+        Client.flush client Nothing
+        mockRequests a `shouldReturn` ["flush_all\r\n"]
+        mockRequests b `shouldReturn` ["flush_all\r\n"]
+
+    it "collects stats from every server" $
+      withMockServer [MR "STAT pid 1\r\nEND\r\n"] $ \a ->
+      withMockServer [MR "STAT pid 2\r\nEND\r\n"] $ \b -> do
+        client <- Client.newClient [mockServerSpec a, mockServerSpec b] Client.def
+        results <- Client.stats client Nothing
+        concatMap snd results `shouldMatchList` [("pid", "1"), ("pid", "2")]
+
+    it "asks a single server for the version" $
+      withMockServer [MR "VERSION 1.6.1\r\n"] $ \a ->
+      withMockServer [MR "VERSION 1.6.1\r\n"] $ \b -> do
+        client <- Client.newClient [mockServerSpec a, mockServerSpec b] Client.def
+        Client.version client `shouldReturn` "1.6.1"
+        requests <- (++) <$> mockRequests a <*> mockRequests b
+        requests `shouldBe` ["version\r\n"]
+
+  describe "ElastiCache discovery" $ do
+    it "rejects an endpoint that is not a configuration endpoint" $
+      isLeft (EC.parseConfigurationEndpoint "memcached://cache.example:11211") `shouldBe` True
+
+    it "discovers nodes with the config command" $
+      withMockServer [MR "VA 3 f0 c1\r\nfoo\r\n"] $ \node -> do
+        let config = "CONFIG cluster 0 " <> nodeList node <> "END\r\n"
+        withMockServer [MR "VERSION 1.6.12\r\n", MR config, Noop] $ \cfg -> do
+          client <- EC.newClient Client.def hour (endpoint cfg)
+          Client.get client "key" `shouldReturn` Just ("foo", 0, 1)
+          waitForRequests cfg 3 `shouldReturn`
+            ["version\r\n", "config get cluster\r\n", "quit\r\n"]
+
+    it "discovers nodes from the cluster key on engines before 1.4.14" $
+      withMockServer [MR "VA 3 f0 c1\r\nfoo\r\n"] $ \node -> do
+        let value = "VALUE AmazonElastiCache:cluster 0 " <> nodeList node <> "END\r\n"
+        withMockServer [MR "VERSION 1.4.5\r\n", MR value, Noop] $ \cfg -> do
+          client <- EC.newClient Client.def hour (endpoint cfg)
+          Client.get client "key" `shouldReturn` Just ("foo", 0, 1)
+          waitForRequests cfg 3 `shouldReturn`
+            ["version\r\n", "get AmazonElastiCache:cluster\r\n", "quit\r\n"]
+
   where
     recvResponseFrom bytes =
       bracket
@@ -501,6 +569,17 @@ main = hspec $ do
     allStats [(_, [ ("curr_items", "2"), ("rusage_user", "0.1 0.2") ])] = True
     allStats _ = False
     expectedAuthRequests = "version\r\nset auth 0 0 9\r\nuser pass\r\n"
+    fastFailover = Client.def { Client.optsFailRetryDelay = 10, Client.optsDeadRetryDelay = 60000 }
+    fst3 (value, _, _) = value
+    hour = 3600 * 1000000
+    -- The endpoint check only looks for ".cfg" somewhere in the URI, so put it
+    -- in the path and keep the host a plain loopback address.
+    endpoint cfg = either error id $
+      EC.parseConfigurationEndpoint ("memcached://127.0.0.1:" <> show (mockPort cfg) <> "/x.cfg")
+    -- A config reply body listing one node, from its length line onwards.
+    nodeList node =
+      let body = "1\n127.0.0.1|127.0.0.1|" <> C.pack (show (mockPort node)) <> "\n"
+      in C.pack (show (B.length body)) <> "\r\n" <> body <> "\r\n"
 
 -- | Run an action with a client connected to a fresh mock server.
 withClient :: [MockResponse] -> (Client.Client -> IO a) -> IO a
