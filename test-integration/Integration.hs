@@ -174,6 +174,11 @@ authSpecs port = do
   it "rejects a client without credentials" $ do
     client <- M.newClient [server M.NoAuth] M.def
     M.get client "integration-auth" `shouldThrow` isBadCommand
+
+  it "accepts a password containing ':'" $ do
+    client <- M.newClient [server (M.Auth "colon" "se:cr:et")] M.def
+    _ <- M.set client "integration-auth-colon" "value" 0 0
+    fmap first <$> M.get client "integration-auth-colon" `shouldReturn` Just "value"
  where
   server = ServerSpec "127.0.0.1" (show port)
   isBadCommand (M.ProtocolError (M.BadCommand _)) = True
@@ -249,14 +254,15 @@ withMemcacheds executable n action =
   withMemcached executable [] $ \port ->
     withMemcacheds executable (n - 1) $ \ports -> action (port : ports)
 
--- | Run an action with an auth file allowing @user@ / @secret@.
+-- | Run an action with an auth file allowing @user@ / @secret@ and
+-- @colon@ / @se:cr:et@.
 withAuthfile :: (FilePath -> IO a) -> IO a
 withAuthfile action = do
   tmp <- getTemporaryDirectory
   -- Default permissions, so a memcached that drops privileges (e.g. when
   -- started as root with -u) can still read it.
   bracket (openTempFileWithDefaultPermissions tmp "memcached-auth") (removeFile . fst) $ \(path, handle) -> do
-    hPutStr handle "user:secret\n"
+    hPutStr handle "user:secret\ncolon:se:cr:et\n"
     hClose handle
     action path
 

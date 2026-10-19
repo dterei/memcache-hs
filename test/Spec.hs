@@ -486,10 +486,12 @@ main = hspec $ do
 
     it "validates credential delimiters" $ do
       Auth.validateCredentials "user" "pass" `shouldBe` Right ()
+      -- memcached's auth file splits each line at its first ':'.
+      Auth.validateCredentials "user" "pa:ss" `shouldBe` Right ()
       mapM_ (\c -> Auth.validateCredentials ("us" <> c <> "er") "pass" `shouldSatisfy` isLeft)
-        [" ", "\t", "\r", "\n", ":"]
+        [" ", "\t", "\r", "\n", "\0", ":"]
       mapM_ (\c -> Auth.validateCredentials "user" ("pa" <> c <> "ss") `shouldSatisfy` isLeft)
-        [" ", "\t", "\r", "\n"]
+        [" ", "\t", "\r", "\n", "\0"]
 
     it "authenticates each new client connection" $
       withMockServer [MR "CLIENT_ERROR unauthenticated\r\n", MR "STORED\r\n", MR "VA 3 f2 c7\r\nfoo\r\n"] $ \server -> do
@@ -500,29 +502,56 @@ main = hspec $ do
           ["version\r\n", "set auth 0 0 9\r\nuser pass\r\n", "mg key v f c\r\n"]
 
   describe "server URIs" $ do
-    it "parses host and port" $
-      parseServerSpec "memcached://cache.example:1234" `shouldBe`
-        Right (ServerSpec "cache.example" "1234" Auth.NoAuth)
+    let parses (uri, host, port, auth) =
+          it ("parses " <> uri) $ parseServerSpec uri `shouldBe` Right (ServerSpec host port auth)
+        rejects uri = it ("rejects " <> uri) $ parseServerSpec uri `shouldSatisfy` isLeft
 
-    it "defaults the port and host" $ do
-      parseServerSpec "memcached://cache.example" `shouldBe`
-        Right (ServerSpec "cache.example" "11211" Auth.NoAuth)
-      parseServerSpec "memcached://" `shouldBe`
-        Right (ServerSpec "127.0.0.1" "11211" Auth.NoAuth)
+    mapM_ parses
+      [ ("memcached://cache.example:1234", "cache.example", "1234", Auth.NoAuth)
+      , ("memcached://cache.example", "cache.example", "11211", Auth.NoAuth)
+      , ("memcached://", "127.0.0.1", "11211", Auth.NoAuth)
+      , ("memcached://user:secret@cache.example:1234", "cache.example", "1234", Auth.Auth "user" "secret")
+      -- Credentials need both a username and a password.
+      , ("memcached://user@cache.example", "cache.example", "11211", Auth.NoAuth)
+      , ("memcached://user:@cache.example", "cache.example", "11211", Auth.NoAuth)
+      , ("memcached://:secret@cache.example", "cache.example", "11211", Auth.NoAuth)
+      -- Credentials are percent-decoded to bytes, which needn't be UTF-8.
+      , ("memcached://us%65r:p%40ss@cache.example", "cache.example", "11211", Auth.Auth "user" "p@ss")
+      , ("memcached://user:%e2%82%ac%FF@cache.example", "cache.example", "11211", Auth.Auth "user" "\xe2\x82\xac\xff")
+      -- A password may contain ':', escaped or not.
+      , ("memcached://user:pa:ss@cache.example", "cache.example", "11211", Auth.Auth "user" "pa:ss")
+      , ("memcached://user:pa%3Ass@cache.example", "cache.example", "11211", Auth.Auth "user" "pa:ss")
+      -- IPv6 addresses lose their brackets.
+      , ("memcached://[::1]:1234", "::1", "1234", Auth.NoAuth)
+      , ("memcached://[2001:db8::1]", "2001:db8::1", "11211", Auth.NoAuth)
+      , ("memcached://user:secret@[::1]:1234", "::1", "1234", Auth.Auth "user" "secret")
+      , ("memcached://[fe80::1%25eth0]:1234", "fe80::1%eth0", "1234", Auth.NoAuth)
+      ]
 
-    it "parses credentials" $
-      parseServerSpec "memcached://user:secret@cache.example:1234" `shouldBe`
-        Right (ServerSpec "cache.example" "1234" (Auth.Auth "user" "secret"))
+    mapM_ rejects
+      [ "http://cache.example"
+      , "not a uri"
+      -- The URI parser rejects malformed escapes.
+      , "memcached://user:p%zzss@cache.example"
+      -- Decoded credentials must pass validateCredentials.
+      , "memcached://us%3Aer:secret@cache.example"
+      , "memcached://user:pa%20ss@cache.example"
+      , "memcached://user:pa%0Ass@cache.example"
+      , "memcached://user:pa%0Dss@cache.example"
+      , "memcached://us%00er:secret@cache.example"
+      , "memcached://user:pa%00ss@cache.example"
+      ]
 
-    it "ignores incomplete credentials" $ do
-      parseServerSpec "memcached://user@cache.example" `shouldBe`
-        Right (ServerSpec "cache.example" "11211" Auth.NoAuth)
-      parseServerSpec "memcached://:secret@cache.example" `shouldBe`
-        Right (ServerSpec "cache.example" "11211" Auth.NoAuth)
+    it "gives getAddrInfo an IPv6 address it accepts" $ do
+      spec <- either fail return $ parseServerSpec "memcached://[::1]:11211"
+      let hints = N.defaultHints { N.addrFlags = [N.AI_NUMERICHOST] }
+      addrs <- N.getAddrInfo (Just hints) (Just (ssHost spec)) (Just (ssPort spec))
+      map N.addrFamily addrs `shouldContain` [N.AF_INET6]
 
-    it "rejects other schemes and invalid URIs" $ do
-      parseServerSpec "http://cache.example" `shouldSatisfy` isLeft
-      parseServerSpec "not a uri" `shouldSatisfy` isLeft
+    prop "percent-decodes any credentials validateCredentials accepts" $
+      forAll ((,) <$> credentialGen ":" <*> credentialGen "") $ \(user, pass) ->
+        parseServerSpec ("memcached://" <> percentEncode user <> ":" <> percentEncode pass <> "@cache.example")
+          === Right (ServerSpec "cache.example" "11211" (Auth.Auth user pass))
 
   describe "Database.Memcache.Client alone" $
     -- Every name is qualified by Client, so this stops compiling if the module
@@ -711,6 +740,23 @@ keyGen :: Gen B.ByteString
 keyGen = B.pack <$> do
   len <- frequency [(4, choose (1, 64)), (1, choose (180, 260))]
   vectorOf len (frequency [(8, choose (0x21, 0x7e)), (1, arbitrary)])
+
+-- | Non-empty credentials of arbitrary bytes, biased towards ones a URI
+-- must escape, without the bytes 'validateCredentials' rejects (space, tab,
+-- CR, LF, NUL) or any in @extra@.
+credentialGen :: String -> Gen B.ByteString
+credentialGen extra = C.pack <$> listOf1 (byte `suchThat` (`notElem` (" \t\r\n\0" <> extra)))
+  where
+    byte = frequency [(4, choose ('\0', '\xff')), (1, elements ":@%/?#[]")]
+
+-- | Percent-encode every byte except RFC 3986's unreserved characters.
+percentEncode :: B.ByteString -> String
+percentEncode = concatMap encode . C.unpack
+  where
+    encode c
+      | c `elem` (['A' .. 'Z'] <> ['a' .. 'z'] <> ['0' .. '9'] <> "-._~") = [c]
+      | otherwise = ['%', hex (fromEnum c `div` 16), hex (fromEnum c `mod` 16)]
+    hex = C.index "0123456789ABCDEF"
 
 valueGen :: Gen B.ByteString
 valueGen = B.pack <$> do

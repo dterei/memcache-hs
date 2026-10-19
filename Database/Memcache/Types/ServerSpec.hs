@@ -20,15 +20,15 @@ module Database.Memcache.Types.ServerSpec
 where
 
 import Control.Monad (guard)
+import Data.ByteString (ByteString)
+import qualified Data.ByteString as B
+import Data.Char (digitToInt, isHexDigit, ord)
 import Data.Default
 import Data.Maybe (fromMaybe)
-import qualified Data.Text as T
-import Data.Text.Encoding (encodeUtf8)
-import Database.Memcache.Types.Authentication (Authentication (..))
+import Database.Memcache.Types.Authentication (Authentication (..), validateCredentials)
 import Database.Memcache.Util (note)
 import Network.Socket (HostName, ServiceName)
-import Network.URI (URI (..), URIAuth (..), parseAbsoluteURI)
-import Data.Bifunctor (second)
+import Network.URI (URI (..), URIAuth (..), parseAbsoluteURI, unEscapeString)
 
 -- | A Memcached server connection configuration.
 data ServerSpec = ServerSpec
@@ -42,37 +42,55 @@ data ServerSpec = ServerSpec
   deriving (Eq, Show)
 
 -- | Parse a @memcached://@ URI into a @ServerSpec@.
+--
+-- The username and password are percent-decoded, so
+-- @memcached:\/\/user:p%40ss\@cache.example@ has the password @p\@ss@, and
+-- must pass 'validateCredentials'; one given without the other is ignored.
+-- An IPv6 address goes in brackets, as in @memcached:\/\/[::1]:11211@.
 parseServerSpec :: String -> Either String ServerSpec
 parseServerSpec s = do
   uri <- note ("Not a valid URI: " <> s) $ parseAbsoluteURI s
   note "Must begin memcached://" $ guard $ uriScheme uri == "memcached:"
 
   let mAuth = uriAuthority uri
+  auth <- maybe (pure Nothing) (readAuthentication . uriUserInfo) mAuth
 
   pure
     . maybe id setHost mAuth
     . maybe id setPort mAuth
-    . maybe id setAuth (readAuthentication . uriUserInfo =<< mAuth)
+    . maybe id setAuth auth
     $ defaultServerSpec
 
-readAuthentication :: String -> Maybe Authentication
-readAuthentication = go . T.pack
+-- | Read the credentials from a URI's user information, @user:password\@@.
+-- There are none unless both parts are non-empty.
+readAuthentication :: String -> Either String (Maybe Authentication)
+readAuthentication userInfo = case break (== ':') (takeWhile (/= '@') userInfo) of
+  (u@(_ : _), ':' : p@(_ : _)) -> do
+    let user = unEscapeBytes u
+        pass = unEscapeBytes p
+    validateCredentials user pass
+    pure $ Just $ Auth user pass
+  _ -> pure Nothing
+
+-- | Percent-decode a string to the bytes it encodes. Unlike
+-- 'unEscapeString', this doesn't decode them as UTF-8, which would replace
+-- invalid sequences such as @%FF@ with U+FFFD. 'parseAbsoluteURI' has already
+-- rejected malformed escapes and any character outside ASCII.
+unEscapeBytes :: String -> ByteString
+unEscapeBytes = B.pack . go
   where
-    go a = do
-      (u, p) <- second (T.drop 1) . T.breakOn ":" <$> T.stripSuffix "@" a
-
-      guard $ not $ T.null u
-      guard $ not $ T.null p
-
-      pure
-        Auth
-          { username = encodeUtf8 u,
-            password = encodeUtf8 p
-          }
+    go ('%' : a : b : rest)
+      | isHexDigit a && isHexDigit b =
+          fromIntegral (digitToInt a * 16 + digitToInt b) : go rest
+    go (c : rest) = fromIntegral (ord c) : go rest
+    go [] = []
 
 setHost :: URIAuth -> ServerSpec -> ServerSpec
 setHost auth ss = case uriRegName auth of
   "" -> ss
+  -- An IP literal such as an IPv6 address: drop the brackets, and decode the
+  -- "%25" that introduces a zone ID (RFC 6874).
+  '[' : literal -> ss {ssHost = unEscapeString $ takeWhile (/= ']') literal}
   rn -> ss {ssHost = rn}
 
 setPort :: URIAuth -> ServerSpec -> ServerSpec
