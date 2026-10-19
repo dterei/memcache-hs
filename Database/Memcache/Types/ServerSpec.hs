@@ -20,7 +20,7 @@ where
 
 import Control.Error.Util (note)
 import Control.Monad (guard)
-import Data.Default.Class
+import Data.Default
 import Data.Maybe (fromMaybe)
 import qualified Data.Text as T
 import Data.Text.Encoding (encodeUtf8)

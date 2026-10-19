@@ -27,7 +27,7 @@ module Database.Memcache.Server (
 import           Database.Memcache.Auth
 import           Database.Memcache.Socket
 
-import           Data.Default.Class
+import           Data.Default
 import           Data.Hashable
 import           Data.IORef
 import qualified Data.Pool as P
@@ -38,7 +38,7 @@ import           UnliftIO.Exception
 
 import           Network.Socket           (HostName, ServiceName, getAddrInfo)
 import qualified Network.Socket           as S
-#if MIN_VERSION_resource_pool(0,3,0)
+#if MIN_VERSION_resource_pool(0,4,0)
 #else
 import           Data.Time.Clock          (NominalDiffTime)
 #endif
@@ -85,7 +85,7 @@ data ServerOptions
   { soNumResources :: Int
   -- | Number of pool stripes.
   , soNumStripes :: Int
-#if MIN_VERSION_resource_pool(0,3,0)
+#if MIN_VERSION_resource_pool(0,4,0)
   -- | Connection keep-alive duration.
   , soKeepAlive :: Double
 #else
@@ -128,7 +128,7 @@ close :: Server -> IO ()
 {-# INLINE close #-}
 close srv = P.destroyAllResources $ pool srv
 
-#if MIN_VERSION_resource_pool(0,3,0)
+#if MIN_VERSION_resource_pool(0,4,0)
 getNewPool :: ServerOptions -> ServerSpec -> IO (Pool Connection)
 getNewPool serverOptions ss =
   P.newPool

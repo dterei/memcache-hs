@@ -13,7 +13,7 @@ import           System.Exit
 import           Data.ByteString.Char8      (unpack)
 import           Database.Memcache.Client   hiding (Options)
 import           Database.Memcache.Types
-import           Data.Default.Class         (def)
+import           Data.Default               (def)
 import           Network.Socket             (PortNumber)
 
 data Operation = GET | STAT | NOOP deriving (Show, Eq)

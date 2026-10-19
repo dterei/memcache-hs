@@ -40,6 +40,10 @@
 - ElastiCache auto discovery no longer holds the server list lock while
   waiting for the next refresh.
 - Exception helpers now come from `unliftio`, which is a new dependency.
+- Library dependencies declare lower bounds, set to the oldest versions CI
+  builds against (GHC 9.2, Stackage LTS 20.26).
+- Depend on `data-default` instead of the deprecated `data-default-class`,
+  which is now a compatibility shim over `data-default` 0.8.
 
 # 0.3.0.2 - March 27th, 2024
 

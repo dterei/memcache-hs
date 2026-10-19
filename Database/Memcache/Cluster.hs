@@ -38,7 +38,7 @@ import           Control.Concurrent.MVar  (MVar, readMVar)
 import           Control.Monad            (foldM, void)
 import           Data.ByteString          (ByteString)
 import qualified Data.ByteString          as B
-import           Data.Default.Class
+import           Data.Default
 import           Data.Fixed               (Milli)
 import           Data.Hashable            (hash)
 import           Data.IORef

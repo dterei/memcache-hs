@@ -7,7 +7,7 @@ license: BSD3
 license-file: LICENSE
 author: David Terei <code@davidterei.com>
 maintainer: David Terei <code@davidterei.com>
-copyright: 2016 David Terei.
+copyright: 2012-2026 David Terei.
 category: Database
 build-type: Simple
 extra-doc-files:
@@ -18,11 +18,11 @@ extra-source-files:
   - package.yaml
 
 dependencies:
-  - base < 5
-  - base64-bytestring
-  - bytestring
-  - network
-  - time
+  - base >= 4.16 && < 5
+  - base64-bytestring >= 1.2.1.0
+  - bytestring >= 0.11.4.0
+  - network >= 3.1.4.0
+  - time >= 1.11.1.1
 
 other-extensions:
   - BangPatterns
@@ -31,15 +31,14 @@ other-extensions:
 library:
   source-dirs: .
   dependencies:
-    - data-default-class
-    - errors
-    - hashable
-    - network-uri
-    - resource-pool
-    - text
-    - time
-    - unliftio
-    - vector
+    - data-default >= 0.7.1.1
+    - errors >= 2.3.0
+    - hashable >= 1.4.2.0
+    - network-uri >= 2.6.4.2
+    - resource-pool >= 0.2.3.2
+    - text >= 1.2.5.0
+    - unliftio >= 0.2.25.0
+    - vector >= 0.12.3.1
   other-modules:
     - Database.Memcache.Types.Authentication
     - Database.Memcache.Types.ServerSpec

@@ -122,7 +122,7 @@ import           Control.Monad             (foldM, forM_, void, when)
 import           Data.ByteString           (ByteString)
 import qualified Data.ByteString           as B (any, empty, length, null)
 import qualified Data.ByteString.Char8     as C (unwords)
-import           Data.Default.Class
+import           Data.Default
 import           Data.Maybe                (fromMaybe)
 import           Data.Word
 import           UnliftIO.Exception        (SomeException, handle, throwIO)
