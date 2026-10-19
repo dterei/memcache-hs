@@ -308,8 +308,7 @@ arithmetic c k i d e ver mode operation = do
 -- doesn't exist.
 --
 -- A non-zero version must match the @Version@ of the key-value pair at the
--- server, otherwise 'OpError' 'ErrKeyExists' is thrown. A version of @0@ skips
--- the check.
+-- server, otherwise 'Nothing' is returned. A version of @0@ skips the check.
 append :: Client -> Key -> Value -> Version -> IO (Maybe Version)
 append c k v ver = modify c k v ver Append "APPEND"
 
@@ -318,8 +317,7 @@ append c k v ver = modify c k v ver Append "APPEND"
 -- doesn't exist.
 --
 -- A non-zero version must match the @Version@ of the key-value pair at the
--- server, otherwise 'OpError' 'ErrKeyExists' is thrown. A version of @0@ skips
--- the check.
+-- server, otherwise 'Nothing' is returned. A version of @0@ skips the check.
 prepend :: Client -> Key -> Value -> Version -> IO (Maybe Version)
 prepend c k v ver = modify c k v ver Prepend "PREPEND"
 
@@ -330,6 +328,7 @@ modify c k v ver mode operation = do
   case status of
     NoError -> return $ Just (responseCas response)
     ErrKeyNotFound -> return Nothing
+    ErrKeyExists -> return Nothing
     ErrItemNotStored -> return Nothing
     _ -> failResponse response operation
 
