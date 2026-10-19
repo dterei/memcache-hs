@@ -44,7 +44,13 @@ license-file:  LICENSE
 build-type:    Simple
 -- Keep in step with the GHC matrix in .github/workflows/cabal.yml.
 tested-with:
-  GHC ==9.2.* || ==9.4.* || ==9.6.* || ==9.8.* || ==9.10.* || ==9.12.*
+  GHC ==9.2.*
+   || ==9.4.*
+   || ==9.6.*
+   || ==9.8.*
+   || ==9.10.*
+   || ==9.12.*
+   || ==9.14.*
 
 extra-doc-files:
   CHANGELOG.md
