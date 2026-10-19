@@ -39,7 +39,11 @@ import           Control.Monad             (unless)
 import           Data.ByteString           (ByteString)
 import qualified Data.ByteString           as B
 import qualified Data.ByteString.Base64    as Base64
+import           Data.ByteString.Builder   (Builder, byteString, intDec, word32Dec, word64Dec)
+import           Data.ByteString.Builder.Extra (byteStringCopy, smallChunkSize, toLazyByteStringWith,
+                                                untrimmedStrategy)
 import qualified Data.ByteString.Char8     as C
+import qualified Data.ByteString.Lazy      as BL
 import           Data.IORef
 import           Data.List                 (find, isInfixOf)
 import           Data.Maybe                (fromMaybe)
@@ -232,8 +236,35 @@ keyArgs (WireKey wire b64) = wire <> if b64 then " b" else B.empty
 keyFlag :: WireKey -> ByteString
 keyFlag (WireKey _ b64) = if b64 then " b" else B.empty
 
-dec :: Show a => a -> ByteString
-dec = C.pack . show
+-- | Write a request that carries a value or a number into one buffer. The
+-- value is copied once (each strict 'ByteString' append copies both sides, so
+-- a value at the end of a chain of appends is copied once per piece before
+-- it), and numbers are written in place rather than through 'show'. The size
+-- is the length of the request's key and value. Values go in with
+-- 'byteStringCopy', as 'byteString' would add a large one as a chunk of its
+-- own for 'BL.toStrict' to copy again. Inlined so the pieces are written
+-- directly instead of first being allocated as closures.
+--
+-- Requests with neither keep plain appends, which are cheaper for a few short
+-- strings than running a 'Builder'.
+render :: Int -> Builder -> ByteString
+{-# INLINE render #-}
+render size = BL.toStrict . toLazyByteStringWith strategy BL.empty
+  where strategy = untrimmedStrategy (size + requestHeadroom) smallChunkSize
+
+-- | Room for everything in a request besides its key and value: the command,
+-- its meta flags and up to four numbers of at most 20 digits. Room left over
+-- stays with the request rather than being trimmed off by another copy. A
+-- request that needed more would still be encoded correctly, but copied once
+-- more.
+requestHeadroom :: Int
+requestHeadroom = 128
+
+-- | A piece of a request. Fixed pieces are 'ByteString' literals passed
+-- through this rather than 'Builder' literals, which are encoded a character
+-- at a time and measured noticeably slower.
+bytes :: ByteString -> Builder
+bytes = byteString
 
 -- | CRLF used to terminate Meta Text requests.
 crlf :: ByteString
@@ -286,8 +317,8 @@ cmdQuit = "quit"
 cmdStats = "stats"
 cmdSet = "set"
 
-cas :: Version -> ByteString
-cas n = if n == 0 then B.empty else " C" <> dec n
+cas :: Version -> Builder
+cas n = if n == 0 then mempty else bytes " C" <> word64Dec n
 
 -- | Encode a get request for one key.
 getRequest :: WireKey -> ByteString
@@ -299,39 +330,51 @@ getManyRequest key = cmdMetaGet <> " " <> keyArgs key <> " v f c k q" <> crlf
 
 -- | Encode a get-and-touch request.
 gatRequest :: WireKey -> Expiration -> ByteString
-gatRequest key expiry = cmdMetaGet <> " " <> keyArgs key <> " v f c T" <> dec expiry <> crlf
+gatRequest key expiry = render (B.length (wireKey key)) $
+  bytes cmdMetaGet <> bytes " " <> bytes (keyArgs key) <> bytes " v f c T" <> word32Dec expiry
+  <> bytes crlf
 
 -- | Encode a touch request.
 touchRequest :: WireKey -> Expiration -> ByteString
-touchRequest key expiry = cmdMetaGet <> " " <> keyArgs key <> " T" <> dec expiry <> " c" <> crlf
+touchRequest key expiry = render (B.length (wireKey key)) $
+  bytes cmdMetaGet <> bytes " " <> bytes (keyArgs key) <> bytes " T" <> word32Dec expiry
+  <> bytes " c" <> bytes crlf
 
 -- | Encode a storage request.
 storeRequest :: StoreMode -> WireKey -> Value -> Flags -> Expiration -> Version -> ByteString
-storeRequest mode key value flags expiry version =
-  cmdMetaSet <> " " <> wireKey key <> " " <> dec (B.length value) <> " F" <> dec flags <> " T" <> dec expiry
-  <> cas version <> " M" <> storeMode mode <> keyFlag key <> " c" <> crlf <> value <> crlf
+storeRequest mode key value flags expiry version = render (B.length (wireKey key) + B.length value) $
+  bytes cmdMetaSet <> bytes " " <> bytes (wireKey key) <> bytes " " <> intDec (B.length value)
+  <> bytes " F" <> word32Dec flags <> bytes " T" <> word32Dec expiry <> cas version
+  <> bytes " M" <> bytes (storeMode mode) <> bytes (keyFlag key) <> bytes " c"
+  <> bytes crlf <> byteStringCopy value <> bytes crlf
 
 -- | Encode an increment or decrement request.
 arithmeticRequest :: ArithMode -> WireKey -> Initial -> Delta -> Expiration -> Version -> ByteString
-arithmeticRequest mode key initial delta expiry version =
-  cmdMetaArith <> " " <> keyArgs key <> " D" <> dec delta <> cas version <> " M" <> arithMode mode <> " v c"
-  <> (if expiry == maxBound then B.empty else " N" <> dec expiry <> " J" <> dec initial)
-  <> crlf
+arithmeticRequest mode key initial delta expiry version = render (B.length (wireKey key)) $
+  bytes cmdMetaArith <> bytes " " <> bytes (keyArgs key) <> bytes " D" <> word64Dec delta
+  <> cas version <> bytes " M" <> bytes (arithMode mode) <> bytes " v c"
+  <> (if expiry == maxBound
+        then mempty
+        else bytes " N" <> word32Dec expiry <> bytes " J" <> word64Dec initial)
+  <> bytes crlf
 
 -- | Encode an append or prepend request.
 modifyRequest :: StoreMode -> WireKey -> Value -> Version -> ByteString
-modifyRequest mode key value version =
-  cmdMetaSet <> " " <> wireKey key <> " " <> dec (B.length value) <> " M" <> storeMode mode
-  <> keyFlag key <> cas version <> " c" <> crlf <> value <> crlf
+modifyRequest mode key value version = render (B.length (wireKey key) + B.length value) $
+  bytes cmdMetaSet <> bytes " " <> bytes (wireKey key) <> bytes " " <> intDec (B.length value)
+  <> bytes " M" <> bytes (storeMode mode) <> bytes (keyFlag key) <> cas version <> bytes " c"
+  <> bytes crlf <> byteStringCopy value <> bytes crlf
 
 -- | Encode a delete request.
 deleteRequest :: WireKey -> Version -> ByteString
-deleteRequest key version = cmdMetaDelete <> " " <> keyArgs key <> cas version <> crlf
+deleteRequest key 0 = cmdMetaDelete <> " " <> keyArgs key <> crlf
+deleteRequest key version = render (B.length (wireKey key)) $
+  bytes cmdMetaDelete <> bytes " " <> bytes (keyArgs key) <> cas version <> bytes crlf
 
 -- | Encode a flush request, optionally delayed until the given expiration.
 flushRequest :: Maybe Expiration -> ByteString
 flushRequest Nothing = cmdFlush <> crlf
-flushRequest (Just expiry) = cmdFlush <> " " <> dec expiry <> crlf
+flushRequest (Just expiry) = render 0 $ bytes cmdFlush <> bytes " " <> word32Dec expiry <> bytes crlf
 
 -- | Encode a version request.
 versionRequest, quitRequest :: ByteString
@@ -346,7 +389,9 @@ statsRequest (Just key) = cmdStats <> " " <> key <> crlf
 -- | Encode the text auth-file request, authenticating using the value as its
 -- space-separated credentials.
 authRequest :: Value -> ByteString
-authRequest value = cmdSet <> " auth 0 0 " <> dec (B.length value) <> crlf <> value <> crlf
+authRequest value = render (B.length value) $
+  bytes cmdSet <> bytes " auth 0 0 " <> intDec (B.length value)
+  <> bytes crlf <> byteStringCopy value <> bytes crlf
 
 -- | Encode a Meta Text no-op request.
 noOpRequest :: ByteString
