@@ -6,16 +6,12 @@ import           Control.Concurrent.Async
 import           Control.Monad
 import qualified Data.ByteString.Char8      as B8
 import           Data.Int
-import           Data.List
-import           Data.Maybe
+import qualified Data.List                  as L
 import           System.Console.GetOpt
 import           System.Environment
 import           System.Exit
 
-import           Data.ByteString.Char8      (unpack)
 import           Database.Memcache.Client   hiding (Options)
-import           Database.Memcache.Types
-import           Data.Default               (def)
 import           Network.Socket             (PortNumber)
 
 data Options = Options { itemSize   :: Int64
@@ -51,13 +47,12 @@ parseArguments :: IO Options
 parseArguments = do
     args <- getArgs
     case getOpt Permute options args of
-        (o, _, [])   -> return $ foldl' (flip ($)) defaultOptions o
-        (_, _, errs) -> do
-            unless (null errs) $ do
-                putStr $ "Error: " ++ head errs
-                forM_ (tail errs) $ \e ->
-                    putStr $ "       " ++ e
-                putStrLn ""
+        (o, _, [])         -> return $ L.foldl' (flip ($)) defaultOptions o
+        (_, _, err : errs) -> do
+            putStr $ "Error: " ++ err
+            forM_ errs $ \e ->
+                putStr $ "       " ++ e
+            putStrLn ""
 
             putStrLn $ usageInfo header options
             exitWith $ ExitFailure 1
