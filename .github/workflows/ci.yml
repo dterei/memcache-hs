@@ -6,6 +6,10 @@ on:
     branches:
       - main
 
+# Nothing in this workflow writes to the repository.
+permissions:
+  contents: read
+
 # If updates are pushed to a branch, cancel in-progress runs
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -16,9 +20,9 @@ jobs:
   generate:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - id: generate
-        uses: freckle/stack-action/generate-matrix@v4
+        uses: freckle/stack-action/generate-matrix@454226a86f7e22e21387ab950cdecaa865365425 # v5.7.31
     outputs:
       stack-yamls: ${{ steps.generate.outputs.stack-yamls }}
 
@@ -32,24 +36,46 @@ jobs:
       fail-fast: false
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - run: sudo apt-get update && sudo apt-get install -y memcached
       - run: sudo systemctl stop memcached || true
       - id: stack
-        uses: freckle/stack-action@v4
+        uses: freckle/stack-action@454226a86f7e22e21387ab950cdecaa865365425 # v5.7.31
         with:
           stack-yaml: ${{ matrix.stack-yaml }}
 
       - if: ${{ matrix.stack-yaml == 'stack.yaml' }}
-        uses: freckle/weeder-action@v2
+        uses: freckle/weeder-action@fc4ae04b473960ab78b14fdb01d6e235a8b62767 # v3.0.14
         with:
           ghc-version: ${{ steps.stack.outputs.compiler-version }}
+
+  # memcache.cabal is generated from package.yaml; fail if they disagree.
+  hpack:
+    runs-on: ubuntu-latest
+    env:
+      HPACK_VERSION: 0.39.6
+      HPACK_SHA256: 217042ab6bbbd831dd887baaefdeebe70841f601bda22d9ce013a35e1a1f7467
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install hpack
+        run: |
+          curl -sSfL -o hpack_linux.gz \
+            "https://github.com/sol/hpack/releases/download/${HPACK_VERSION}/hpack_linux.gz"
+          echo "${HPACK_SHA256}  hpack_linux.gz" | sha256sum --check
+          gunzip hpack_linux.gz
+          chmod +x hpack_linux
+      - name: Regenerate memcache.cabal
+        run: ./hpack_linux --force
+      - name: Check memcache.cabal is up to date
+        run: git diff --exit-code -- memcache.cabal
 
   lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: haskell/actions/hlint-setup@v2
-      - uses: haskell/actions/hlint-run@v2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: haskell-actions/hlint-setup@fe9cd1cd1af94a23900c06738e73f6ddb092966a # v2.4.10
+        with:
+          version: "3.10"
+      - uses: haskell-actions/hlint-run@eaca4cfbf4a69f4eb875df38b6bc3e1657020378 # v2.4.10
         with:
           fail-on: warning
