@@ -3,8 +3,8 @@
 .DS_Store
 dist/*
 dist-newstyle/*
-cabal.sandbox.config
-.cabal-sandbox/
+cabal.project.local
+cabal.project.local~
 .stack-work
 result
 *.tix

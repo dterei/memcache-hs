@@ -1,5 +1,8 @@
 ## ToDo
 
+Behavior and API fixes, including routing and virtual nodes, are tracked in
+[#46](https://github.com/dterei/memcache-hs/issues/46).
+
 Optional:
 
 - Typeclass abstracting key and values
@@ -15,18 +18,15 @@ Protocol:
 
 Performance:
 
-- Is System.Timeout still slow? Switch to Warp/Snap timeout handler?
-- Is NominalDiffTime slow? Switch to unix epoch time?
+- System.Timeout forks a thread per server request on the non-threaded RTS and
+  on Windows; consider a shared timer.
 
 Nice-to-have:
 
-- Customizable server sharding -- mod & virtual servers
+- Built-in modulo sharding (custom routing works through `optsGetServerForKey`)
 - Server weights
 - Asynchronous support?
-- Customizable -- timeout, max connection retries, hash algorithm
-- Max value validation
-- Optimizations -- http://code.google.com/p/spymemcached/wiki/Optimizations
-- UDP
+- Max value validation before sending
 - Server error handling mode where we return misses and ignore sets
 
 Maybe:
