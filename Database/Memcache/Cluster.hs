@@ -226,9 +226,12 @@ keyedBatchOp c requests = do
         then return (reverse acc)
         else recvUntilMN connection (response : acc)
 
+    -- Match the echoed key together with its base64 flag: a plain key can
+    -- have the same bytes as another key's base64 form.
     responseKey response items = do
       echoed <- find (B.isPrefixOf "k") (responseTokens response)
-      (key, _, _) <- find ((== B.drop 1 echoed) . wireKey . snd3) items
+      let wire = WireKey (B.drop 1 echoed) ("b" `elem` responseTokens response)
+      (key, _, _) <- find ((== wire) . snd3) items
       return key
 
     request (_, wire, makeRequest) = makeRequest wire

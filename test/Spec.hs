@@ -236,6 +236,11 @@ main = hspec $ do
       withClient [MR ("VA 3 f0 c4 k" <> encoded <> " b\r\nabc\r\n"), MR "MN\r\n"] $ \client ->
         Client.getMany client ["a b"] `shouldReturn` [("a b", ("abc", 0, 4))]
 
+    it "tells a plain key from another key's base64 form" $
+      -- " " is sent, and echoed, as IA== with the b flag.
+      withClient [MR "VA 1 f0 c1 kIA==\r\na\r\n", MR "VA 1 f0 c2 kIA== b\r\nb\r\n", MR "MN\r\n"] $ \client ->
+        Client.getMany client ["IA==", " "] `shouldReturn` [("IA==", ("a", 0, 1)), (" ", ("b", 0, 2))]
+
   describe "client operations" $ do
     it "gets a hit" $
       withServerAndClient [MR "VA 3 f2 c7\r\nfoo\r\n"] $ \server client -> do

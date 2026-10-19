@@ -89,6 +89,14 @@ integrationSpecs port = beforeAll (newClient port) $ do
 
     M.touch client "integration-no-touch" 60 `shouldReturn` Nothing
 
+  it "tells a plain key from another key's base64 form" $ \client -> do
+    -- " " is sent, and echoed, as IA== with the b flag.
+    _ <- M.set client "IA==" "plain" 0 0
+    _ <- M.set client " " "space" 0 0
+    values <- M.getMany client ["IA==", " "]
+    map (\(key, (value, _, _)) -> (key, value)) values
+      `shouldMatchList` [("IA==", "plain"), (" ", "space")]
+
   it "gets many keys, including encoded keys" $ \client -> do
     _ <- M.set client "integration-many" "one" 0 0
     _ <- M.set client "integration key" "two" 0 0
