@@ -69,6 +69,7 @@ library
   other-modules:
       Database.Memcache.Types.Authentication
       Database.Memcache.Types.ServerSpec
+      Database.Memcache.Util
   hs-source-dirs:
       ./
   other-extensions:
@@ -77,13 +78,12 @@ library
       OverloadedStrings
       RecordWildCards
       ScopedTypeVariables
-  ghc-options: -Wall -Wextra -fwarn-tabs
+  ghc-options: -Wall -Wextra -Wcompat -Widentities -Wincomplete-record-updates -Wredundant-constraints -fwarn-tabs
   build-depends:
       base >=4.16 && <5
     , base64-bytestring >=1.2.1.0
     , bytestring >=0.11.4.0
     , data-default >=0.7.1.1
-    , errors >=2.3.0
     , hashable >=1.4.2.0
     , network >=3.1.4.0
     , network-uri >=2.6.4.2

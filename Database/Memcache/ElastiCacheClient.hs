@@ -20,7 +20,6 @@ where
 
 import Control.Concurrent (forkIO, threadDelay)
 import Control.Concurrent.MVar (MVar, modifyMVar_, newMVar)
-import Control.Error.Util (note)
 import Control.Monad (forever, guard, (<=<))
 import Data.Bifunctor (first)
 import Data.ByteString (ByteString)
@@ -39,6 +38,7 @@ import Database.Memcache.Cluster (Options, getServers, setServers)
 import Database.Memcache.Server (Server, withSocket)
 import Database.Memcache.Socket (Connection, crlf, recvRawUntil, sendRaw, versionRequest)
 import Database.Memcache.Types.ServerSpec (ServerSpec, parseServerSpec)
+import Database.Memcache.Util (note)
 import Text.ParserCombinators.ReadP (readP_to_S)
 import UnliftIO.Exception (bracket, throwString)
 

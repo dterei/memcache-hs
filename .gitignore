@@ -7,3 +7,5 @@ cabal.sandbox.config
 .cabal-sandbox/
 .stack-work
 result
+*.tix
+.hpc/
