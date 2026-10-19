@@ -568,6 +568,28 @@ main = hspec $ do
         requests <- (++) <$> mockRequests a <*> mockRequests b
         requests `shouldBe` ["version\r\n"]
 
+  describe "connecting" $ do
+    -- These are pending unless localhost resolves to more than one address;
+    -- see withLocalhostAddresses. Connecting to an address where no mock
+    -- listens is refused.
+    it "tries the next address when one refuses the connection" $
+      withLocalhostAddresses $ \_ later ->
+      withMockServerAt later [MR "VA 3 f2 c7\r\nfoo\r\n"] $ \server -> do
+        client <- Client.newClient [localhostSpec server Auth.NoAuth] Client.def
+        Client.get client "key" `shouldReturn` Just ("foo", 2, 7)
+
+    -- A second mock, at the same port on the later address, records whether
+    -- the client tries there too once the credentials are rejected.
+    it "does not try the next address once authentication fails" $
+      withLocalhostAddresses $ \first later ->
+      withMockServerAt first
+        [MR "CLIENT_ERROR unauthenticated\r\n", MR "CLIENT_ERROR authentication failure\r\n"] $ \server ->
+      withMockServerAt (atPort (mockPort server) later) [CloseConnection] $ \other -> do
+        client <- Client.newClient [localhostSpec server (Auth.Auth "user" "pass")] Client.def
+        Client.get client "key" `shouldThrow` (== OpError TextAuthFail)
+        mockRequests server `shouldReturn` ["version\r\n", "set auth 0 0 9\r\nuser pass\r\n"]
+        mockRequests other `shouldReturn` []
+
   describe "ElastiCache discovery" $ do
     it "rejects an endpoint that is not a configuration endpoint" $
       isLeft (EC.parseConfigurationEndpoint "memcached://cache.example:11211") `shouldBe` True
@@ -625,6 +647,7 @@ main = hspec $ do
     expectedAuthRequests = "version\r\nset auth 0 0 9\r\nuser pass\r\n"
     fastFailover = Client.def { Client.optsFailRetryDelay = 10, Client.optsDeadRetryDelay = 60000 }
     fst3 (value, _, _) = value
+    localhostSpec server = ServerSpec "localhost" (show (mockPort server))
     hour = 3600 * 1000000
     -- The endpoint check only looks for ".cfg" somewhere in the URI, so put it
     -- in the path and keep the host a plain loopback address.
@@ -666,6 +689,30 @@ recvExactly socket n = do
   if B.null chunk
     then return B.empty
     else (chunk <>) <$> recvExactly socket (n - B.length chunk)
+
+-- | Run a test with the first address localhost resolves to and a later,
+-- different one, or mark it pending where there are no two such addresses that
+-- a mock server can listen on. There are where localhost resolves to both ::1
+-- and 127.0.0.1 and IPv6 is enabled, but not where it resolves to 127.0.0.1
+-- alone.
+withLocalhostAddresses :: (N.SockAddr -> N.SockAddr -> Expectation) -> Expectation
+withLocalhostAddresses test = do
+  addresses <- map N.addrAddress <$> N.getAddrInfo (Just hints) (Just "localhost") (Just "0")
+  case addresses of
+    first : rest | later : _ <- reverse (filter (/= first) rest) -> do
+      listenable <- and <$> mapM canListenAt [first, later]
+      if listenable
+        then test first later
+        else pendingWith $ "cannot listen on the addresses of localhost: " ++ show addresses
+    _ -> pendingWith $ "localhost resolves to a single address: " ++ show addresses
+  where
+    hints = N.defaultHints { N.addrSocketType = N.Stream }
+
+-- | The given address with its port replaced.
+atPort :: N.PortNumber -> N.SockAddr -> N.SockAddr
+atPort port (N.SockAddrInet _ host) = N.SockAddrInet port host
+atPort port (N.SockAddrInet6 _ flow host scope) = N.SockAddrInet6 port flow host scope
+atPort _ address = address
 
 -- | Keys of up to 260 arbitrary bytes, biased towards safe ones.
 keyGen :: Gen B.ByteString
