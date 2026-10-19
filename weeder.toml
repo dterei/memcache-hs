@@ -1,4 +1,4 @@
-roots = ["Main.main", "^Paths_weeder.*", "^Paths_.*", "^Database.Memcache.Client.*"]
+roots = ["Main.main", "^Paths_.*", "^Database.Memcache.Client.*"]
 
 type-class-roots = true
 
