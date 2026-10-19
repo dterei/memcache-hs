@@ -29,6 +29,7 @@ import           Data.IORef                (readIORef, writeIORef)
 import           GHC.Conc                  (ThreadStatus (..), threadStatus)
 import           System.Timeout            (timeout)
 import           UnliftIO.Async            (async, asyncThreadId, wait)
+import           UnliftIO.Exception        (StringException (..))
 
 main :: IO ()
 main = hspec $ do
@@ -583,6 +584,52 @@ main = hspec $ do
         Client.get client "key" `shouldReturn` Just ("foo", 2, 7)
         mockRequests server `shouldReturn`
           ["version\r\n", "set auth 0 0 9\r\nuser pass\r\n", "mg key v f c\r\n"]
+
+  describe "credentials in output" $ do
+    it "shows credentials without the password" $ do
+      let auth = Auth.Auth "user" "secret"
+      show auth `shouldBe` "Auth {username = \"user\", password = <redacted>}"
+      showsPrec 11 auth "" `shouldBe` "(Auth {username = \"user\", password = <redacted>})"
+      showsPrec 11 Auth.NoAuth "" `shouldBe` "NoAuth"
+      show (Just (ServerSpec "cache.example" "1234" auth)) `shouldBe`
+        "Just (ServerSpec {ssHost = \"cache.example\", ssPort = \"1234\", \
+        \ssAuth = Auth {username = \"user\", password = <redacted>}})"
+
+    prop "never shows the password" $
+      forAll ((,) <$> keyGen <*> keyGen) $ \(user, pass) ->
+        let render p =
+              let auth = Auth.Auth user p
+                  spec = ServerSpec "cache.example" "1234" auth
+              in map C.pack [show auth, showsPrec 11 auth "", show spec, show (Just spec)]
+            -- The password as raw bytes, and as escaped inside a string literal.
+            leaks = any (\out -> any (`B.isInfixOf` out) [pass, C.pack (init (drop 1 (show pass)))])
+        in not (leaks (render B.empty)) ==>
+             counterexample (unlines (map C.unpack (render pass))) (not (leaks (render pass)))
+
+    it "does not quote an invalid URI in the error" $ do
+      parseServerSpec "memcached://user:pa ss@cache.example:1234" `shouldBe` Left "Not a valid URI"
+      parseServerSpec "memcached://user:secret" `shouldBe` Left "Not a valid URI"
+      case EC.parseConfigurationEndpoint "memcached://user:pa ss@c.cfg.example" of
+        Left message -> message `shouldBe` "Not a valid URI"
+        Right _ -> expectationFailure "parsed an invalid URI"
+
+    -- ElastiCache node addresses come from the server and hold no
+    -- credentials, so errors still quote them.
+    it "names a malformed ElastiCache node in the error" $ do
+      let body = "1\nbad{host|127.0.0.1|11211\n"
+          config = "CONFIG cluster 0 " <> C.pack (show (B.length body)) <> "\r\n"
+            <> body <> "\r\nEND\r\n"
+      withMockServer [MR "VERSION 1.6.12\r\n", MR config, Noop] $ \cfg ->
+        EC.newClient Client.def hour (endpoint cfg) `shouldThrow`
+          \(StringException message _) -> message == "Not a valid URI: memcached://bad{host:11211"
+
+    prop "never echoes the password of an invalid URI" $
+      forAll keyGen $ \pass ->
+        -- The space makes the URI invalid whatever the password is.
+        let message p = either C.pack (const B.empty)
+              (parseServerSpec ("memcached://user:" <> C.unpack p <> " @cache.example"))
+        in not (pass `B.isInfixOf` message B.empty) ==>
+             counterexample (C.unpack (message pass)) (not (pass `B.isInfixOf` message pass))
 
   describe "server URIs" $ do
     it "parses host and port" $

@@ -149,8 +149,13 @@ handleConfigGetClusterResponse bs = do
 --
 -- See: https://docs.aws.amazon.com/AmazonElastiCache/latest/mem-ug/AutoDiscovery.AddingToYourClientLibrary.html#AutoDiscovery.AddingToYourClientLibrary.OutputFormat
 handleRawNodeInfo :: Text -> Either String [ServerSpec]
-handleRawNodeInfo = mapM (parseServerSpec <=< pure . T.unpack <=< convertToUri) . T.splitOn " "
+handleRawNodeInfo = mapM (parseNode . T.unpack <=< convertToUri) . T.splitOn " "
   where
+    -- Node addresses come from the server and hold no credentials, so name
+    -- the one that failed.
+    parseNode :: String -> Either String ServerSpec
+    parseNode uri = first (<> (": " <> uri)) (parseServerSpec uri)
+
     convertToUri :: Text -> Either String Text
     convertToUri t =
       case T.splitOn "|" t of
