@@ -30,6 +30,9 @@ data MockResponse
     | DelayMS Int MockResponse
     -- | Read the request but send nothing back.
     | Noop
+    -- | Send these bytes over and over until the client closes the
+    -- connection.
+    | Repeat B.ByteString
 
 -- | A running mock server.
 data MockServer = MockServer
@@ -104,6 +107,7 @@ withMockServer responses action = do
       MR bytes      -> N.sendAll client bytes >> return True
       DelayMS ms r' -> threadDelay (ms * 1000) >> respond client r'
       CloseConnection -> return False
+      Repeat bytes  -> forever (N.sendAll client bytes)
 
 -- | Read one request: its command line and, for storage commands, the data
 -- block that follows it.

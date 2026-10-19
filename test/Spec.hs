@@ -280,6 +280,12 @@ main = hspec $ do
         mockRequests server `shouldReturn`
           ["mg one v f c k q\r\n", "mg two v f c k q\r\n", "mn\r\n"]
 
+    it "rejects more replies than requests, then uses a new connection" $
+      withServerAndClientOpts singleAttempt
+        [Repeat "VA 1 kone\r\nx\r\n", MR "VA 1 kone\r\ny\r\nMN\r\n"] $ \_ client -> do
+        Client.getMany client ["one"] `shouldThrow` isUnexpectedResponse
+        Client.getMany client ["one"] `shouldReturn` [("one", ("y", 0, 0))]
+
     it "maps encoded keys back to the caller's key" $ do
       let encoded = Base64.encode "a b"
       withClient [MR ("VA 3 f0 c4 k" <> encoded <> " b\r\nabc\r\n"), MR "MN\r\n"] $ \client ->
@@ -380,6 +386,23 @@ main = hspec $ do
       withClient [MR "ITEM key [3 b; 0 s]\r\nEND\r\n"] $ \client -> do
         result <- Client.stats client (Just "cachedump 1 1")
         map snd result `shouldBe` [[("ITEM", "key [3 b; 0 s]")]]
+
+    it "accepts stats conns from a server with 65,536 connections" $
+      withServerAndClientOpts (slowStats Client.def)
+        [MR (B.concat (replicate 65536 connStats) <> "END\r\n")] $ \_ client -> do
+        result <- Client.stats client (Just "conns")
+        map (length . snd) result `shouldBe` [262144]
+
+    it "rejects an endless stats reply, then uses a new connection" $
+      withServerAndClientOpts (slowStats singleAttempt)
+        [Repeat (B.concat (replicate 100 "STAT pid 1\r\n")), MR "STAT pid 2\r\nEND\r\n"] $ \_ client -> do
+        Client.stats client Nothing `shouldThrow` isBadLength
+        map snd <$> Client.stats client Nothing `shouldReturn` [[("pid", "2")]]
+
+    it "rejects a stats reply of more than 16 MiB" $
+      withServerAndClientOpts singleAttempt
+        [Repeat ("STAT big " <> C.replicate 8000 'x' <> "\r\n")] $ \_ client ->
+        Client.stats client Nothing `shouldThrow` isBadLength
 
     it "returns Nothing when arithmetic cannot create the item" $
       withClient [MR "NS\r\n"] $ \client ->
@@ -611,6 +634,11 @@ main = hspec $ do
     it "rejects an endpoint that is not a configuration endpoint" $
       isLeft (EC.parseConfigurationEndpoint "memcached://cache.example:11211") `shouldBe` True
 
+    it "gives up on a config reply that never ends" $
+      withMockServer [MR "VERSION 1.6.12\r\n", Repeat (C.replicate 4096 'x')] $ \cfg ->
+        -- Discovery has no operation timeout, so bound the wait here.
+        timeout 5000000 (EC.newClient Client.def hour (endpoint cfg)) `shouldThrow` isBadLength
+
     it "discovers nodes with the config command" $
       withMockServer [MR "VA 3 f0 c1\r\nfoo\r\n"] $ \node -> do
         let config = "CONFIG cluster 0 " <> nodeList node <> "END\r\n"
@@ -663,6 +691,13 @@ main = hspec $ do
     allStats _ = False
     expectedAuthRequests = "version\r\nset auth 0 0 9\r\nuser pass\r\n"
     fastFailover = Client.def { Client.optsFailRetryDelay = 10, Client.optsDeadRetryDelay = 60000 }
+    -- One attempt per operation, and a failed server is usable again at once.
+    singleAttempt = Client.def { Client.optsServerRetries = 0, Client.optsDeadRetryDelay = 0 }
+    -- Long enough to read a stats reply of hundreds of thousands of lines.
+    slowStats opts = opts { Client.optsServerTimeout = 5000 }
+    -- What @stats conns@ reports for one client connection.
+    connStats = "STAT 27:addr tcp:127.0.0.1:36954\r\nSTAT 27:listen_addr tcp:127.0.0.1:11211\r\n"
+      <> "STAT 27:state conn_parse_cmd\r\nSTAT 27:secs_since_last_cmd 0\r\n"
     fst3 (value, _, _) = value
     hour = 3600 * 1000000
     -- The endpoint check only looks for ".cfg" somewhere in the URI, so put it

@@ -361,13 +361,14 @@ flush c e = do
 -- | Return statistics on the stored key-value pairs at every available server
 -- in the cluster. The optional key can be used to select a different set of
 -- statistics from the server than the default. Most Memcached servers support
--- @"items"@, @"slabs"@ or @"settings"@.
+-- @"items"@, @"slabs"@ or @"settings"@. A reply of more than 262,144 entries,
+-- or 16 MiB of names and values, fails with 'BadLength'.
 stats :: Client -> Maybe Key -> IO [(Server, StatResults)]
 stats c key = validateStatsArgs key >> allOp' c (runStats key)
   where
     runStats statsArgs server = withSocket server $ \socket -> do
       sendRaw socket (statsRequest statsArgs)
-      collect socket []
+      collect socket 0 0 []
 
     -- Arguments may contain spaces (@stats cachedump 1 100@), but control
     -- bytes would let a caller inject a second command line.
@@ -379,14 +380,35 @@ stats c key = validateStatsArgs key >> allOp' c (runStats key)
           throwIO $ ClientError (KeyTooLong "invalid stats argument")
       | otherwise = return ()
 
-    collect socket values = do
+    collect socket count size values = do
+      when (count > maxStatsEntries || size > maxStatsBytes) $
+        throwIO $ ProtocolError BadLength { protocolError = "stats reply too long" }
       response <- recvResponse socket
       case (responseCode response, responseTokens response) of
         (code, _) | code `elem` ["ERROR", "CLIENT_ERROR", "SERVER_ERROR"] ->
           responseStatus response >> failResponse response "STATS"
         (code, _) | code `elem` ["END", "RESET", "OK"] -> return (reverse values)
-        ("STAT", field:value) -> collect socket ((field, C.unwords value) : values)
-        (code, tokens) -> collect socket ((code, C.unwords tokens) : values)
+        ("STAT", field:value) -> keep (field, C.unwords value)
+        (code, tokens) -> keep (code, C.unwords tokens)
+      where
+        keep entry@(field, value) = collect socket (count + 1)
+          (size + B.length field + B.length value) (entry : values)
+
+-- | Most entries 'stats' accepts in one server's reply. Memcached sends four
+-- lines for each open connection in @stats conns@, so this allows it on a
+-- server with 65,536 connections. Most other groups are far shorter:
+-- @stats items@ has about 30 lines for each slab class, and @stats sizes@ one
+-- for each 32-byte size bucket in use (at most 32,768 with the default 1 MiB
+-- item size limit).
+maxStatsEntries :: Int
+maxStatsEntries = 256 * 1024
+
+-- | Most bytes of names and values 'stats' accepts in one server's reply.
+-- Real replies are smaller: even with five-digit descriptors and the longest
+-- IPv6 addresses, 262,144 entries of @stats conns@ come to under 13 MiB, and
+-- memcached stops @stats cachedump@ at 2 MiB.
+maxStatsBytes :: Int
+maxStatsBytes = 16 * 1024 * 1024
 
 -- | Return the version string of the Memcached cluster. Only queries
 -- one server and assumes all servers in the cluster run the same version.
