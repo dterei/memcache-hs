@@ -1,5 +1,3 @@
-{-# LANGUAGE DeriveDataTypeable #-}
-
 {-|
 Module      : Database.Memcache.Errors
 Description : Errors Handling
@@ -30,11 +28,11 @@ import           UnliftIO.Exception
 data MemcacheError
     -- | Memcached operation error.
     = OpError Status
-    -- | Error occuring on client side.
+    -- | Error occurring on client side.
     | ClientError ClientError
     -- | Errors occurring communicating with Memcached server.
     | ProtocolError ProtocolError
-    deriving (Eq, Show, Typeable)
+    deriving (Eq, Show)
 
 instance Exception MemcacheError
 
@@ -44,9 +42,13 @@ data ClientError
     = NoServersReady
     -- | Timeout occurred sending request to server.
     | Timeout
+    -- | Credentials were rejected before being sent: they contain a
+    -- forbidden delimiter, or the server is not in auth-file mode.
     | InvalidAuthentication String
+    -- | A key or stats argument was rejected before being sent: it is empty,
+    -- too long, or contains forbidden bytes.
     | KeyTooLong String
-    deriving (Eq, Show, Typeable)
+    deriving (Eq, Show)
 
 -- | Errors related to Memcached protocol and bytes on the wire.
 data ProtocolError
@@ -66,7 +68,7 @@ data ProtocolError
     | BadCommand    { protocolError :: String }
     -- | Network socket closed without receiving enough bytes.
     | UnexpectedEOF { protocolError :: String }
-    deriving (Eq, Show, Typeable)
+    deriving (Eq, Show)
 
 -- | Convert a status to 'MemcacheError' exception.
 throwStatus :: Status -> IO a

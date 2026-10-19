@@ -1,4 +1,3 @@
-{-# LANGUAGE CPP #-}
 {-# LANGUAGE OverloadedStrings #-}
 
 {-|
@@ -115,9 +114,6 @@ import           Database.Memcache.Server
 import           Database.Memcache.Socket
 import           Database.Memcache.Types
 
-#if __GLASGOW_HASKELL__ < 710
-import           Control.Applicative
-#endif
 import           Control.Monad             (foldM, forM_, void, when)
 import           Data.ByteString           (ByteString)
 import qualified Data.ByteString           as B (any, empty, length, null)
@@ -149,14 +145,14 @@ quit c = void $ allOp' c $ \server -> handle ignore $ do
   where ignore :: SomeException -> IO ()
         ignore = const (pure ())
 
--- | Retrieve the value for the given key from Memcached.
--- | Also return its flags and CAS version; return 'Nothing' on a miss.
+-- | Retrieve the value for the given key from Memcached, along with its
+-- flags and CAS version. Returns 'Nothing' on a miss.
 get :: Cluster -> Key -> IO (Maybe (Value, Flags, Version))
 get c k = do
   response <- keyedOp c k getRequest
   status <- responseStatus response
   case (responseCode response, status) of
-    ("VA", NoError) -> return $ Just (responseValue response, responseFlags response, responseCas response)
+    ("VA", NoError) -> return $ Just (valueResult response)
     (_, ErrKeyNotFound) -> return Nothing
     _ -> failResponse response "GET"
 
@@ -170,7 +166,7 @@ getMany c keys = do
       status <- responseStatus response
       case (responseCode response, status) of
         ("VA", NoError) ->
-          return ((key, (responseValue response, responseFlags response, responseCas response)) : values)
+          return ((key, valueResult response) : values)
         (_, ErrKeyNotFound) -> return values
         _ -> failResponse response "GETMANY"
 
@@ -182,8 +178,7 @@ gat c k e = do
   response <- keyedOp c k (`gatRequest` e)
   status <- responseStatus response
   case (responseCode response, status) of
-    ("VA", NoError) ->
-      return $ Just (responseValue response, responseFlags response, responseCas response)
+    ("VA", NoError) -> return $ Just (valueResult response)
     (_, ErrKeyNotFound) -> return Nothing
     _ -> failResponse response "GAT"
 
@@ -199,7 +194,7 @@ touch c k e = do
     ErrKeyNotFound -> return Nothing
     _ -> failResponse response "TOUCH"
 
--- | Store a new (or overwrite exisiting) key-value pair, returning its @Version@
+-- | Store a new (or overwrite existing) key-value pair, returning its @Version@
 -- identifier. Use an expiration value of @0@ to store forever.
 set :: Cluster -> Key -> Value -> Flags -> Expiration -> IO Version
 set c k v f e = store c k v f e 0 Set "SET"
@@ -232,7 +227,7 @@ add c k v f e = do
     _ -> failResponse response "ADD"
 
 -- | Update the value of an existing key-value pair, returning its new @Version@
--- identifier. If the key doesn't already exist, the fail and return 'Nothing'.
+-- identifier. If the key doesn't already exist, then fail and return 'Nothing'.
 -- Use an expiration value of @0@ to store forever.
 replace :: Cluster -> Key -> Value -> Flags -> Expiration -> Version -> IO (Maybe Version)
 replace c k v f e ver = do
@@ -281,7 +276,8 @@ arithmetic c k i d e ver mode operation = do
 append :: Cluster -> Key -> Value -> Version -> IO (Maybe Version)
 append c k v ver = modify c k v ver Append "APPEND"
 
--- | Prepend to an existing value using CAS.
+-- | Prepend a value to an existing key-value pair, returning the new @Version@
+-- identifier of the key-value pair when successful.
 prepend :: Cluster -> Key -> Value -> Version -> IO (Maybe Version)
 prepend c k v ver = modify c k v ver Prepend "PREPEND"
 
@@ -355,6 +351,10 @@ version c = do
   if responseCode response == "VERSION" && status == NoError
     then return $ fromMaybe B.empty (safeHead (responseTokens response))
     else failResponse response "VERSION"
+
+-- | The value, flags and CAS version carried by a @VA@ response.
+valueResult :: Response -> (Value, Flags, Version)
+valueResult response = (responseValue response, responseFlags response, responseCas response)
 
 failResponse :: Response -> String -> IO a
 failResponse response operation = do
