@@ -189,8 +189,14 @@ recvRawUntil end s = go B.empty
 
 readChunk :: Int -> Connection -> IO ()
 readChunk n (Connection s ref) = do
-  chunk <- N.recv s (max 4096 n)
+  chunk <- N.recv s (max 4096 (min maxRecvSize n))
   if B.null chunk then throwIO eofError else modifyIORef' ref (<> chunk)
+
+-- | Largest single receive. 'N.recv' allocates a buffer of the full requested
+-- size on every call, so asking for the whole remainder of a large value
+-- turns reading it into quadratic allocation.
+maxRecvSize :: Int
+maxRecvSize = 64 * 1024
 
 readBuffer :: Connection -> IO ByteString
 readBuffer (Connection _ ref) = readIORef ref
