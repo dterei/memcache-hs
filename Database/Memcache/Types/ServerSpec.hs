@@ -18,13 +18,13 @@ module Database.Memcache.Types.ServerSpec
   )
 where
 
-import Control.Error.Util (note)
 import Control.Monad (guard)
 import Data.Default
 import Data.Maybe (fromMaybe)
 import qualified Data.Text as T
 import Data.Text.Encoding (encodeUtf8)
 import Database.Memcache.Types.Authentication (Authentication (..))
+import Database.Memcache.Util (note)
 import Network.Socket (HostName, ServiceName)
 import Network.URI (URI (..), URIAuth (..), parseAbsoluteURI)
 import Data.Bifunctor (second)
