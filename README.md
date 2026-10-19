@@ -3,7 +3,7 @@
 [![Hackage](https://img.shields.io/hackage/v/memcache.svg?style=flat)](https://hackage.haskell.org/package/memcache)
 [![Hackage Dependencies](https://img.shields.io/hackage-deps/v/memcache.svg?style=flat)](http://packdeps.haskellers.com/reverse/memcache)
 [![BSD3 License](http://img.shields.io/badge/license-BSD3-brightgreen.svg?style=flat)][tl;dr Legal: BSD3]
-[![Build](https://img.shields.io/travis/dterei/memcache-hs.svg?style=flat)](https://travis-ci.org/dterei/memcache-hs)
+[![CI](https://github.com/dterei/memcache-hs/actions/workflows/ci.yml/badge.svg)](https://github.com/dterei/memcache-hs/actions/workflows/ci.yml)
 [![Gitter](https://badges.gitter.im/dterei/memcache-hs.svg)](https://gitter.im/dterei/memcache-hs?utm_source=badge&utm_medium=badge&utm_campaign=pr-badge)
 
 [tl;dr Legal: BSD3]: https://tldrlegal.com/license/bsd-3-clause-license-(revised) "BSD3 License"
@@ -14,8 +14,8 @@ It supports the Meta Text memcached protocol and username/password
 authentication. Keys containing whitespace or control bytes are sent using its
 base64 binary-key mode. The encoded key must still fit within 250 bytes. It
 supports connecting to a single, or a cluster of memcached servers. When
-connecting to a cluster,
-consistent hashing is used for routing requests to the appropriate server.
+connecting to a cluster, consistent hashing is used for routing requests to
+the appropriate server.
 
 **This library requires memcached 1.6.0 or newer**, the first release with the
 meta commands. Against older servers every operation is rejected with `ERROR`.
@@ -84,4 +84,7 @@ Contributions have been made by the following great people:
 
 - Alfredo Di Napoli (<alfredo.dinapoli@gmail.com>)
 - Amit Levy
+- Chris Martin
+- drlkf
+- Joel McCracken
 - Steven Leiva
