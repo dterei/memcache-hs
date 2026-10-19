@@ -21,7 +21,7 @@ module Database.Memcache.Server (
         Server(sid, failed), newServerDefault, withSocket, close,
 
       -- * ServerOptions
-        ServerOptions(..)
+        ServerOptions(..), defaultServerOptions
     ) where
 
 import           Database.Memcache.Auth
@@ -88,12 +88,24 @@ data ServerOptions
 #endif
   }
 
-instance Default ServerOptions where
-  def = ServerOptions
+-- | The default server options:
+--
+-- * 'soNumResources': 1
+-- * 'soNumStripes': 1
+-- * 'soKeepAlive': 300 seconds
+--
+-- That is, at most one connection to each server, closed once it has been
+-- idle for 300 seconds.
+defaultServerOptions :: ServerOptions
+defaultServerOptions = ServerOptions
       { soNumResources = 1
       , soNumStripes = 1
       , soKeepAlive = 300
       }
+
+-- | 'def' is 'defaultServerOptions'.
+instance Default ServerOptions where
+  def = defaultServerOptions
 
 -- | Create a server using the default socket-pool implementation.
 newServerDefault :: ServerOptions -> ServerSpec -> IO Server

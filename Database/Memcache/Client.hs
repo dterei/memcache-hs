@@ -89,12 +89,16 @@ Usage is roughly as follows:
 -}
 module Database.Memcache.Client (
         -- * Client creation
-        newClient, Client, ServerSpec(..), parseServerSpec, Options(..),
-        Authentication(..), Username, Password, def,
+        newClient, Client, ServerSpec(..), defaultServerSpec, parseServerSpec,
+        Options(..), defaultOptions, Authentication(..), Username, Password,
+        -- | 'def' from "Data.Default" gives the same values as
+        -- 'defaultServerSpec', 'defaultOptions' and 'defaultServerOptions',
+        -- picked by the type it is used at.
+        def,
         quit,
 
         -- ** Configuration types
-        Retries, ServerOptions(..), Server,
+        Retries, ServerOptions(..), defaultServerOptions, Server,
 
         -- * Fields & Values
         Key, Value, Initial, Delta, Expiration, Flags, Version,
@@ -140,10 +144,10 @@ type Client = Cluster
 -- | Key/value pairs returned by 'stats'.
 type StatResults = [(ByteString, ByteString)]
 
--- | Create a client for the supplied servers. An empty list uses the default
--- local server specification.
+-- | Create a client for the supplied servers. An empty list uses
+-- 'defaultServerSpec'.
 newClient :: [ServerSpec] -> Options -> IO Client
-newClient scs = newCluster $ if null scs then [def] else scs
+newClient scs = newCluster $ if null scs then [defaultServerSpec] else scs
 
 -- | Close all client connections, ignoring individual shutdown failures.
 quit :: Client -> IO ()
