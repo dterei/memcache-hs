@@ -148,6 +148,7 @@ benchmark parser
       bench
   other-extensions:
       OverloadedStrings
+  ghc-options: -Wall -Wextra
   build-depends:
       base >=4.16 && <5
     , base64-bytestring >=1.2.1.0

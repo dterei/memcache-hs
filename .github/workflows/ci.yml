@@ -42,6 +42,8 @@ jobs:
         uses: freckle/stack-action@454226a86f7e22e21387ab950cdecaa865365425 # v5.7.31
         with:
           stack-yaml: ${{ matrix.stack-yaml }}
+          # Replaces the default "--fast --pedantic"; also build the benchmark.
+          stack-build-arguments: --fast --pedantic --bench --no-run-benchmarks
 
       - if: ${{ matrix.stack-yaml == 'stack.yaml' }}
         uses: freckle/weeder-action@fc4ae04b473960ab78b14fdb01d6e235a8b62767 # v3.0.14
