@@ -5,14 +5,20 @@ on:
   push:
     branches:
       - main
+  # No schedule: the stack builds use fixed snapshots and lock files, so a
+  # scheduled run would build the same dependencies each time. The cabal
+  # workflow runs weekly against the current Hackage index instead.
+  workflow_dispatch:
 
-# Nothing in this workflow writes to the repository.
+# Nothing in this workflow writes to the repository, so the token is read-only
+# and checkouts don't keep it.
 permissions:
   contents: read
 
-# If updates are pushed to a branch, cancel in-progress runs
+# If updates are pushed to a branch, cancel in-progress runs. Manual runs get
+# their own group, so they neither cancel nor are cancelled by a push.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -21,6 +27,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - id: generate
         uses: freckle/stack-action/generate-matrix@454226a86f7e22e21387ab950cdecaa865365425 # v5.7.31
     outputs:
@@ -37,6 +45,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - run: sudo apt-get update && sudo apt-get install -y memcached
       - id: stack
         uses: freckle/stack-action@454226a86f7e22e21387ab950cdecaa865365425 # v5.7.31
@@ -54,6 +64,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: haskell-actions/hlint-setup@fe9cd1cd1af94a23900c06738e73f6ddb092966a # v2.4.10
         with:
           version: "3.10"

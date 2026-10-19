@@ -12,12 +12,22 @@ on:
   push:
     branches:
       - main
+  # The dependencies have lower bounds only, so a new release on Hackage can
+  # break the build without any commit here. Re-solve against the current index
+  # every Monday, and allow runs on demand.
+  schedule:
+    - cron: "23 5 * * 1"
+  workflow_dispatch:
 
+# Nothing in this workflow writes to the repository, so the token is read-only
+# and checkouts don't keep it.
 permissions:
   contents: read
 
+# Scheduled and manual runs get their own group, so they neither cancel nor are
+# cancelled by a push to the same branch.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -28,9 +38,11 @@ jobs:
       fail-fast: false
       matrix:
         # Keep in step with tested-with in memcache.cabal.
-        ghc: ["9.2", "9.4", "9.6", "9.8", "9.10", "9.12"]
+        ghc: ["9.2", "9.4", "9.6", "9.8", "9.10", "9.12", "9.14"]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - id: setup
         uses: haskell-actions/setup@0f8e8c99d88aeb3fbfd523f1ef2c6f762d10d64d # v2.12.1
         with:
@@ -66,6 +78,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - id: setup
         uses: haskell-actions/setup@0f8e8c99d88aeb3fbfd523f1ef2c6f762d10d64d # v2.12.1
         with:
@@ -96,11 +110,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - id: setup
         uses: haskell-actions/setup@0f8e8c99d88aeb3fbfd523f1ef2c6f762d10d64d # v2.12.1
         with:
           # Keep in step with the newest GHC in the build matrix.
-          ghc-version: "9.12"
+          ghc-version: "9.14"
           cabal-version: latest
       - run: sudo apt-get update && sudo apt-get install -y memcached
       - run: cabal check
