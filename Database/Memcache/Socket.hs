@@ -27,9 +27,9 @@ module Database.Memcache.Socket (
 
         -- * Constructors
         encodeKey, getRequest, getManyRequest, gatRequest, touchRequest,
-        storeRequest, arithmeticRequest, deleteRequest, flushRequest,
-        versionRequest, modifyRequest, statsRequest, quitRequest, authRequest,
-        noOpRequest
+        storeRequest, setManyRequest, arithmeticRequest, deleteRequest,
+        deleteManyRequest, flushRequest, versionRequest, modifyRequest,
+        statsRequest, quitRequest, authRequest, noOpRequest
     ) where
 
 import           Database.Memcache.Errors
@@ -348,6 +348,16 @@ storeRequest mode key value flags expiry version = render (B.length (wireKey key
   <> bytes " M" <> bytes (storeMode mode) <> bytes (keyFlag key) <> bytes " c"
   <> bytes crlf <> byteStringCopy value <> bytes crlf
 
+-- | Encode a set request for a pipelined batch. It is 'storeRequest' in 'Set'
+-- mode without a CAS, plus the @k@ flag so the reply echoes the key it
+-- answers.
+setManyRequest :: WireKey -> Value -> Flags -> Expiration -> ByteString
+setManyRequest key value flags expiry = render (B.length (wireKey key) + B.length value) $
+  bytes cmdMetaSet <> bytes " " <> bytes (wireKey key) <> bytes " " <> intDec (B.length value)
+  <> bytes " F" <> word32Dec flags <> bytes " T" <> word32Dec expiry
+  <> bytes " M" <> bytes (storeMode Set) <> bytes (keyFlag key) <> bytes " c k"
+  <> bytes crlf <> byteStringCopy value <> bytes crlf
+
 -- | Encode an increment or decrement request. Unless the expiration is
 -- 'maxBound', the request asks the server to create a missing key with the
 -- initial value and that expiration.
@@ -372,6 +382,11 @@ deleteRequest :: WireKey -> Version -> ByteString
 deleteRequest key 0 = cmdMetaDelete <> " " <> keyArgs key <> crlf
 deleteRequest key version = render (B.length (wireKey key)) $
   bytes cmdMetaDelete <> bytes " " <> bytes (keyArgs key) <> cas version <> bytes crlf
+
+-- | Encode a delete request for a pipelined batch. It is 'deleteRequest'
+-- without a CAS, plus the @k@ flag so the reply echoes the key it answers.
+deleteManyRequest :: WireKey -> ByteString
+deleteManyRequest key = cmdMetaDelete <> " " <> keyArgs key <> " k" <> crlf
 
 -- | Encode a flush request, optionally delayed until the given expiration.
 flushRequest :: Maybe Expiration -> ByteString
