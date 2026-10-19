@@ -53,11 +53,15 @@ type Retries = Int
 
 -- | Options specifies how a Memcached cluster should be configured.
 data Options = Options {
-        -- | Number of times to retry an operation on failure. If consecutive
-        -- failures exceed this value for a server, we mark it as down and
-        -- failover to a different server for the next operation.
+        -- | Number of times to retry an operation against a server after it
+        -- fails, so each operation is tried at most @1 + optsServerRetries@
+        -- times. Zero or a negative value means it is tried once. If every
+        -- attempt fails, we mark the server as down and failover to a
+        -- different server for the next operation.
         --
-        -- Default is 2.
+        -- Default is 1, so an operation is tried at most twice. Before
+        -- version 0.5 this was the number of attempts, not retries, and
+        -- defaulted to 2, which also meant two attempts.
         optsServerRetries        :: Retries,
         -- | After an operation has failed, how long to wait before retrying it
         -- while still within the 'optsServerRetries' count?
@@ -89,7 +93,7 @@ data Options = Options {
 
 -- | The default cluster options:
 --
--- * 'optsServerRetries': 2
+-- * 'optsServerRetries': 1 (one retry, so an operation is tried at most twice)
 -- * 'optsFailRetryDelay': 200ms
 -- * 'optsDeadRetryDelay': 1500ms
 -- * 'optsServerTimeout': 750ms
@@ -103,7 +107,7 @@ data Options = Options {
 -- @defaultOptions { optsServerTimeout = 250 }@.
 defaultOptions :: Options
 defaultOptions = Options {
-            optsServerRetries  = 2,
+            optsServerRetries  = 1,
             optsFailRetryDelay = 200,
             optsDeadRetryDelay = 1500,
             optsServerTimeout  = 750,
@@ -304,15 +308,15 @@ forAliveServers c f = do
             res <- V.mapM f servers'
             return $ V.toList $ V.zip servers' res
 
--- | Run an IO operation multiple times if an exception is thrown, marking the
--- server as dead if it fails more than the allowed number of retries.
+-- | Run an IO operation, retrying it up to the allowed number of retries if an
+-- exception is thrown, and marking the server as dead if every attempt fails.
 retryOp :: forall a. Cluster -> Server -> IO a -> IO a
 {-# INLINE retryOp #-}
 retryOp Cluster{..} s op = go cRetries
   where
     go :: Int -> IO a
     {-# INLINE go #-}
-    go !n = handle (handleErrs $ n - 1) $ do
+    go !n = handle (handleErrs n) $ do
         mr <- timeout cTimeout op
         case mr of
             Just r  -> return r
@@ -325,7 +329,7 @@ retryOp Cluster{..} s op = go cRetries
         | n <= 0 = do
             writeIORef (failed s) =<< getPOSIXTime
             throwIO err
-        | otherwise = threadDelay cFailDelay >> go n
+        | otherwise = threadDelay cFailDelay >> go (n - 1)
 
 -- | A rejected command or a reported operation status is an answer, not a
 -- server failure: retrying it will fail identically and must not count towards
