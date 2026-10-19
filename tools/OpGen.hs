@@ -4,16 +4,12 @@ module Main where
 import           Control.Concurrent
 import           Control.Concurrent.Async
 import           Control.Monad
-import           Data.List
-import           Data.Maybe
+import qualified Data.List                  as L
 import           System.Console.GetOpt
 import           System.Environment
 import           System.Exit
 
-import           Data.ByteString.Char8      (unpack)
 import           Database.Memcache.Client   hiding (Options)
-import           Database.Memcache.Types
-import           Data.Default               (def)
 import           Network.Socket             (PortNumber)
 
 data Operation = GET | STAT | NOOP deriving (Show, Eq)
@@ -63,13 +59,12 @@ parseArguments :: IO Options
 parseArguments = do
     args <- getArgs
     case getOpt Permute options args of
-        (o, _, [])   -> return $ foldl' (flip ($)) defaultOptions o
-        (_, _, errs) -> do
-            unless (null errs) $ do
-                putStr $ "Error: " ++ head errs
-                forM_ (tail errs) $ \e ->
-                    putStr $ "       " ++ e
-                putStrLn ""
+        (o, _, [])         -> return $ L.foldl' (flip ($)) defaultOptions o
+        (_, _, err : errs) -> do
+            putStr $ "Error: " ++ err
+            forM_ errs $ \e ->
+                putStr $ "       " ++ e
+            putStrLn ""
 
             putStrLn $ usageInfo header options
             exitWith $ ExitFailure 1
@@ -98,14 +93,14 @@ main = do
     children <- forM [0..(events - 1)] $ \_ -> do
         -- create new connection each request
         a <- async $ do
-            mc <- if newConn opts
+            client <- if newConn opts
                     then newMemcacheClient (server opts) (toEnum $ port opts)
                     else return mc
             case op opts of
                 NOOP -> return ()
-                GET  -> void $ get mc "k"
-                STAT -> void $ stats mc Nothing
-            when (newConn opts) $ void $ quit mc
+                GET  -> void $ get client "k"
+                STAT -> void $ stats client Nothing
+            when (newConn opts) $ void $ quit client
         threadDelay step
         return a
 
