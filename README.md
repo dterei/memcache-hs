@@ -1,10 +1,8 @@
 # memcache: Haskell Memcached Client
 
 [![Hackage](https://img.shields.io/hackage/v/memcache.svg?style=flat)](https://hackage.haskell.org/package/memcache)
-[![Hackage Dependencies](https://img.shields.io/hackage-deps/v/memcache.svg?style=flat)](http://packdeps.haskellers.com/reverse/memcache)
 [![BSD3 License](http://img.shields.io/badge/license-BSD3-brightgreen.svg?style=flat)][tl;dr Legal: BSD3]
 [![CI](https://github.com/dterei/memcache-hs/actions/workflows/ci.yml/badge.svg)](https://github.com/dterei/memcache-hs/actions/workflows/ci.yml)
-[![Gitter](https://badges.gitter.im/dterei/memcache-hs.svg)](https://gitter.im/dterei/memcache-hs?utm_source=badge&utm_medium=badge&utm_campaign=pr-badge)
 
 [tl;dr Legal: BSD3]: https://tldrlegal.com/license/bsd-3-clause-license-(revised) "BSD3 License"
 
