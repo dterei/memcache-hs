@@ -38,7 +38,6 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - run: sudo apt-get update && sudo apt-get install -y memcached
-      - run: sudo systemctl stop memcached || true
       - id: stack
         uses: freckle/stack-action@454226a86f7e22e21387ab950cdecaa865365425 # v5.7.31
         with:
