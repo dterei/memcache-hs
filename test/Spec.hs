@@ -18,16 +18,17 @@ import           Test.QuickCheck
 import qualified Data.ByteString           as B
 import qualified Data.ByteString.Base64    as Base64
 import qualified Data.ByteString.Char8     as C
+import           Data.Char                 (isAscii, isPrint)
 import qualified Network.Socket            as N
 import qualified Network.Socket.ByteString as N
 import           Control.Concurrent        (forkIO, newEmptyMVar, putMVar, takeMVar,
                                             threadDelay)
-import           Control.Exception         (bracket)
+import           Control.Exception         (bracket, displayException)
 import           Control.Monad             ((>=>))
 import           Data.Either               (isLeft)
 import           Data.Foldable             (toList)
 import           Data.IORef                (readIORef, writeIORef)
-import           Data.List                 (find)
+import           Data.List                 (find, nub)
 import           GHC.Conc                  (ThreadStatus (..), threadStatus)
 import           System.Timeout            (timeout)
 import           UnliftIO.Async            (async, asyncThreadId, wait)
@@ -296,6 +297,65 @@ main = hspec $ do
 
     it "rejects an unterminated response line" $
       recvResponseFrom (C.replicate (16 * 1024) 'x') `shouldThrow` isBadLength
+
+  describe "error messages" $ do
+    let everyError detail =
+          map OpError
+            [ NoError, ErrKeyNotFound, ErrKeyExists, ErrValueTooLarge
+            , ErrItemNotStored, ErrValueNonNumeric, ErrOutOfMemory, TextAuthFail ] ++
+          map ClientError
+            [ NoServersReady, Timeout, InvalidAuthentication detail, KeyTooLong detail ] ++
+          map (ProtocolError . ($ detail))
+            [ UnknownPkt, UnknownOp, UnknownStatus, BadLength, UnexpectedResponse
+            , E.ServerError, E.BadCommand, UnexpectedEOF ]
+        -- Bytes as a server may send them, sometimes far more than are quoted.
+        detailGen = do
+          len <- frequency [(3, choose (0, 20)), (1, choose (190, 3000))]
+          vectorOf len (frequency [(4, choose (' ', '~')), (1, choose ('\0', '\255'))])
+        displays message err = displayException (err :: MemcacheError) == message
+
+    it "describes errors in plain words" $ do
+      displayException (OpError ErrKeyNotFound)
+        `shouldBe` "memcached operation failed: key not found"
+      displayException (ClientError NoServersReady)
+        `shouldBe` "memcache client error: no servers ready"
+      displayException (ClientError (KeyTooLong "empty key"))
+        `shouldBe` "memcache client error: invalid key or argument: empty key"
+      displayException (ProtocolError (UnknownStatus "XX"))
+        `shouldBe` "memcached protocol error: unknown response code: XX"
+
+    it "describes an empty response line" $
+      recvResponseFrom "\r\n" `shouldThrow` displays "memcached protocol error: empty response line"
+
+    it "escapes control characters the server sent" $
+      withClient [MR "CLIENT_ERROR \ESC]0;owned\a bad data chunk\r\n"] $ \client ->
+        Client.get client "key" `shouldThrow` displays
+          "memcached protocol error: command rejected by server: \\ESC]0;owned\\a bad data chunk"
+
+    it "escapes bytes outside ASCII" $
+      displayException (ProtocolError (E.ServerError "caf\233 \195\169"))
+        `shouldBe` "memcached protocol error: server error: caf\\233 \\195\\169"
+
+    it "quotes at most 200 characters of a detail" $
+      displayException (ProtocolError (E.ServerError (replicate 300 'x')))
+        `shouldBe` "memcached protocol error: server error: " <> replicate 200 'x' <> "..."
+
+    prop "puts every error on one short line of printable ASCII" $
+      forAll detailGen $ \detail -> conjoin
+        [ counterexample message $
+            -- The prefix, then at most 200 characters, each at most six once escaped.
+            not (null message) && all (\c -> isAscii c && isPrint c) message
+              && length message <= 1300
+        | message <- map displayException (everyError detail) ]
+
+    prop "gives each constructor its own message" $
+      forAll detailGen $ \detail ->
+        let messages = map displayException (everyError detail)
+        in length (nub messages) === length messages
+
+    it "keeps the derived show" $
+      show (ProtocolError (UnknownStatus "XX"))
+        `shouldBe` "ProtocolError (UnknownStatus {protocolError = \"XX\"})"
 
   describe "getMany" $ do
     it "matches echoed keys and skips misses" $
