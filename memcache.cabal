@@ -13,7 +13,7 @@ homepage:       https://github.com/dterei/memcache-hs#readme
 bug-reports:    https://github.com/dterei/memcache-hs/issues
 author:         David Terei <code@davidterei.com>
 maintainer:     David Terei <code@davidterei.com>
-copyright:      2016 David Terei.
+copyright:      2012-2026 David Terei.
 license:        BSD3
 license-file:   LICENSE
 build-type:     Simple
@@ -52,19 +52,19 @@ library
       ScopedTypeVariables
   ghc-options: -Wall -Wextra -fwarn-tabs
   build-depends:
-      base <5
-    , base64-bytestring
-    , bytestring
-    , data-default-class
-    , errors
-    , hashable
-    , network
-    , network-uri
-    , resource-pool
-    , text
-    , time
-    , unliftio
-    , vector
+      base >=4.16 && <5
+    , base64-bytestring >=1.2.1.0
+    , bytestring >=0.11.4.0
+    , data-default >=0.7.1.1
+    , errors >=2.3.0
+    , hashable >=1.4.2.0
+    , network >=3.1.4.0
+    , network-uri >=2.6.4.2
+    , resource-pool >=0.2.3.2
+    , text >=1.2.5.0
+    , time >=1.11.1.1
+    , unliftio >=0.2.25.0
+    , vector >=0.12.3.1
   default-language: Haskell2010
 
 test-suite integration
@@ -80,9 +80,9 @@ test-suite integration
       OverloadedStrings
   ghc-options: -Wall -Wextra -threaded -rtsopts "-with-rtsopts=-N"
   build-depends:
-      base <5
-    , base64-bytestring
-    , bytestring
+      base >=4.16 && <5
+    , base64-bytestring >=1.2.1.0
+    , bytestring >=0.11.4.0
     , directory
     , hspec
     , memcache
@@ -104,13 +104,13 @@ test-suite spec
       OverloadedStrings
   ghc-options: -Wall -Wextra -threaded -rtsopts "-with-rtsopts=-N"
   build-depends:
-      base <5
-    , base64-bytestring
-    , bytestring
+      base >=4.16 && <5
+    , base64-bytestring >=1.2.1.0
+    , bytestring >=0.11.4.0
     , hspec
     , memcache
     , network
-    , time
+    , time >=1.11.1.1
     , unliftio
   default-language: Haskell2010
 
@@ -126,11 +126,11 @@ benchmark parser
       CPP
       OverloadedStrings
   build-depends:
-      base <5
-    , base64-bytestring
-    , bytestring
+      base >=4.16 && <5
+    , base64-bytestring >=1.2.1.0
+    , bytestring >=0.11.4.0
     , criterion
     , memcache
-    , network
-    , time
+    , network >=3.1.4.0
+    , time >=1.11.1.1
   default-language: Haskell2010
