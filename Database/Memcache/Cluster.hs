@@ -1,7 +1,5 @@
-{-# LANGUAGE BangPatterns        #-}
-{-# LANGUAGE RecordWildCards     #-}
-{-# LANGUAGE ScopedTypeVariables #-}
-{-# LANGUAGE OverloadedStrings   #-}
+{-# LANGUAGE RecordWildCards   #-}
+{-# LANGUAGE OverloadedStrings #-}
 
 {-|
 Module      : Database.Memcache.Cluster
