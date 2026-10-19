@@ -125,6 +125,9 @@ benchmarks:
   parser:
     main: Parser.hs
     source-dirs: bench
+    ghc-options:
+      - -Wall
+      - -Wextra
     other-extensions:
       - OverloadedStrings
     dependencies:
