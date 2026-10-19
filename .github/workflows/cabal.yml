@@ -1,0 +1,133 @@
+name: Cabal
+
+# Hackage users build with cabal, not stack, so check the package the way they
+# will: against each supported GHC, against the oldest dependency versions the
+# bounds allow, and from the source distribution that gets uploaded.
+#
+# Each job restores and saves the cabal store in separate steps, saving right
+# after the dependencies are built, so they are kept even if a later step fails.
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: GHC ${{ matrix.ghc }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        ghc: ["9.2", "9.4", "9.6", "9.8", "9.10", "9.12"]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - id: setup
+        uses: haskell-actions/setup@0f8e8c99d88aeb3fbfd523f1ef2c6f762d10d64d # v2.12.1
+        with:
+          ghc-version: ${{ matrix.ghc }}
+          cabal-version: latest
+      - run: sudo apt-get update && sudo apt-get install -y memcached
+      - name: Plan
+        run: |
+          cabal configure --enable-tests --enable-benchmarks
+          cabal build all --dry-run
+      - id: cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ steps.setup.outputs.cabal-store }}
+          key: cabal-${{ runner.os }}-ghc-${{ steps.setup.outputs.ghc-version }}-${{ hashFiles('dist-newstyle/cache/plan.json') }}
+          restore-keys: cabal-${{ runner.os }}-ghc-${{ steps.setup.outputs.ghc-version }}-
+      - run: cabal build all --only-dependencies
+      - if: steps.cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ steps.setup.outputs.cabal-store }}
+          key: ${{ steps.cache.outputs.cache-primary-key }}
+      - run: cabal build all
+      # One suite at a time, so their output isn't interleaved.
+      - run: cabal test all -j1 --test-show-details=direct
+      - name: Build documentation
+        run: cabal haddock lib:memcache
+
+  # Build the library against the oldest versions its lower bounds allow, on the
+  # oldest supported GHC, so the bounds stay honest.
+  oldest:
+    name: Oldest dependencies
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - id: setup
+        uses: haskell-actions/setup@0f8e8c99d88aeb3fbfd523f1ef2c6f762d10d64d # v2.12.1
+        with:
+          ghc-version: "9.2"
+          cabal-version: latest
+      - name: Plan
+        run: |
+          cabal configure --prefer-oldest
+          cabal build lib:memcache --dry-run
+      - id: cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ steps.setup.outputs.cabal-store }}
+          key: cabal-oldest-${{ runner.os }}-ghc-${{ steps.setup.outputs.ghc-version }}-${{ hashFiles('dist-newstyle/cache/plan.json') }}
+          restore-keys: cabal-oldest-${{ runner.os }}-ghc-${{ steps.setup.outputs.ghc-version }}-
+      - run: cabal build lib:memcache --only-dependencies
+      - if: steps.cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ steps.setup.outputs.cabal-store }}
+          key: ${{ steps.cache.outputs.cache-primary-key }}
+      - run: cabal build lib:memcache
+
+  # Check the package metadata, then build and test the tarball that would be
+  # uploaded to Hackage rather than the git checkout.
+  sdist:
+    name: Source distribution
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - id: setup
+        uses: haskell-actions/setup@0f8e8c99d88aeb3fbfd523f1ef2c6f762d10d64d # v2.12.1
+        with:
+          # Keep in step with the newest GHC in the build matrix.
+          ghc-version: "9.12"
+          cabal-version: latest
+      - run: sudo apt-get update && sudo apt-get install -y memcached
+      - run: cabal check
+      - name: Unpack the source distribution
+        run: |
+          cabal sdist --output-directory sdist
+          mkdir unpacked
+          tar -xzf sdist/memcache-*.tar.gz -C unpacked --strip-components=1
+      - name: Plan
+        working-directory: unpacked
+        run: |
+          cabal configure --enable-tests --enable-benchmarks
+          cabal build all --dry-run
+      - id: cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ steps.setup.outputs.cabal-store }}
+          key: cabal-sdist-${{ runner.os }}-ghc-${{ steps.setup.outputs.ghc-version }}-${{ hashFiles('unpacked/dist-newstyle/cache/plan.json') }}
+          restore-keys: cabal-sdist-${{ runner.os }}-ghc-${{ steps.setup.outputs.ghc-version }}-
+      - working-directory: unpacked
+        run: cabal build all --only-dependencies
+      - if: steps.cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ steps.setup.outputs.cabal-store }}
+          key: ${{ steps.cache.outputs.cache-primary-key }}
+      - name: Build and test the unpacked tarball
+        working-directory: unpacked
+        run: |
+          cabal build all
+          cabal test all -j1 --test-show-details=direct
