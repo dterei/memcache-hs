@@ -1,4 +1,4 @@
-# 0.4.0.0
+# 0.4.0.0 - October 19th, 2026
 
 - Replace the deprecated binary protocol with buffered Meta Text requests.
 - Add base64 binary-key support, `getMany`, hspec tests, and `Auth`.
@@ -25,6 +25,21 @@
   cannot deadlock against the server's replies.
 - Response lines are capped at 8KiB, bounding memory use on a desynchronised
   connection.
+- Authentication first checks that the server is in auth-file mode and
+  refuses to send credentials otherwise, so they are never stored as a plain
+  `auth` item. Invalid credentials raise `ClientError InvalidAuthentication`
+  without being retried or marking the server dead.
+- Empty keys, and keys longer than 250 bytes, are rejected with
+  `ClientError KeyTooLong` before anything is sent.
+- `append` and `prepend` on a missing key return `Nothing` instead of throwing
+  `OpError ErrItemNotStored`.
+- `stats` accepts replies made of lines other than `STAT`, such as those from
+  `stats reset` and `stats cachedump`.
+- `Database.Memcache.Socket` sends and receives on a buffered `Connection`
+  with `sendRaw` and `recvResponse`, replacing `send` and `recv`.
+- ElastiCache auto discovery no longer holds the server list lock while
+  waiting for the next refresh.
+- Exception helpers now come from `unliftio`, which is a new dependency.
 
 # 0.3.0.2 - March 27th, 2024
 
