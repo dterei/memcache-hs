@@ -128,7 +128,8 @@ test-suite spec
       OverloadedStrings
   ghc-options: -Wall -Wextra -threaded -rtsopts "-with-rtsopts=-N"
   build-depends:
-      base >=4.16 && <5
+      QuickCheck
+    , base >=4.16 && <5
     , base64-bytestring >=1.2.1.0
     , bytestring >=0.11.4.0
     , hspec
