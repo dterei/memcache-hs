@@ -12,10 +12,10 @@ description:
   newer. Username/password authentication is supported through memcached's
   @-Y authfile@ mode; the binary protocol and SASL authentication are no longer
   supported. It supports connecting to a single, or a cluster of Memcached
-  servers. When connecting to a cluster, consistent hashing is used for routing
-  requests to the appropriate server. Timeouts, retrying failed operations, and
-  failover to a different server are all supported, as is Amazon ElastiCache
-  auto discovery.
+  servers. When connecting to a cluster, keys are routed by ketama consistent
+  hashing, compatible with libmemcached's weighted ketama distribution.
+  Timeouts, retrying failed operations, and failover to a different server are
+  all supported, as is Amazon ElastiCache auto discovery.
 
   Multi-get is supported through the pipelined @getMany@. Keys containing
   whitespace or control bytes are sent using the protocol's base64 binary-key
@@ -78,6 +78,7 @@ library
     Database.Memcache.Cluster
     Database.Memcache.ElastiCacheClient
     Database.Memcache.Errors
+    Database.Memcache.Ketama
     Database.Memcache.Server
     Database.Memcache.Socket
     Database.Memcache.Types
@@ -98,6 +99,7 @@ library
 
   build-depends:
     , base64-bytestring  >=1.2.1.0
+    , cryptohash-md5     >=0.11.101.0
     , data-default       >=0.7.1.1
     , hashable           >=1.4.2.0
     , network            >=3.1.4.0
@@ -113,7 +115,10 @@ test-suite spec
   type:             exitcode-stdio-1.0
   hs-source-dirs:   test
   main-is:          Spec.hs
-  other-modules:    MockServer
+  other-modules:
+    KetamaVectors
+    MockServer
+    RoutingSpec
   other-extensions: OverloadedStrings
   ghc-options:      -threaded -rtsopts "-with-rtsopts=-N"
   build-depends:
@@ -122,6 +127,7 @@ test-suite spec
     , memcache
     , network
     , QuickCheck
+    , time
     , unliftio
 
 -- Runs against a real memcached; reports a pending test if none is on PATH.
