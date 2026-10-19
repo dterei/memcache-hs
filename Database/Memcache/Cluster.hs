@@ -129,11 +129,17 @@ newCluster hosts Options{..} = do
         Cluster {
             cServers   = Right $ V.fromList $ sort s,
             cRetries   = optsServerRetries ,
-            cFailDelay = fromEnum optsFailRetryDelay,
+            cFailDelay = toMicroseconds optsFailRetryDelay,
             cDeadDelay = fromRational $ toRational optsDeadRetryDelay / 1000,
-            cTimeout   = fromEnum optsServerTimeout,
+            cTimeout   = toMicroseconds optsServerTimeout,
             cGetServerForKey = optsGetServerForKey
         }
+
+-- | Convert a duration in milliseconds to the microseconds that 'threadDelay'
+-- and 'timeout' take. 'Milli' has three decimal places, so the product is a
+-- whole number and 'truncate' loses nothing.
+toMicroseconds :: Milli -> Int
+toMicroseconds ms = truncate (toRational ms * 1000)
 
 -- | Check if server is alive.
 serverAlive :: NominalDiffTime -> Server -> IO Bool
@@ -248,9 +254,9 @@ anyOp :: Cluster -> ByteString -> IO Response
 {-# INLINE anyOp #-}
 anyOp c req = do
     servers' <- aliveServers c
-    if V.null servers'
-        then throwIO $ ClientError NoServersReady
-        else serverOp c (V.head servers') req
+    case V.uncons servers' of
+        Nothing     -> throwIO $ ClientError NoServersReady
+        Just (s, _) -> serverOp c s req
 
 -- | Run a Memcached operation against all servers in the cluster, handling any
 -- failures that occur, retrying the specified number of times.

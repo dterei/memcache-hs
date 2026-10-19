@@ -119,7 +119,7 @@ import           Data.ByteString           (ByteString)
 import qualified Data.ByteString           as B (any, empty, length, null)
 import qualified Data.ByteString.Char8     as C (unwords)
 import           Data.Default
-import           Data.Maybe                (fromMaybe)
+import           Data.Maybe                (fromMaybe, listToMaybe)
 import           Data.Word
 import           UnliftIO.Exception        (SomeException, handle, throwIO)
 
@@ -127,10 +127,6 @@ import           UnliftIO.Exception        (SomeException, handle, throwIO)
 type Client = Cluster
 -- | Key/value pairs returned by 'stats'.
 type StatResults = [(ByteString, ByteString)]
-
-safeHead :: [a] -> Maybe a
-safeHead [] = Nothing
-safeHead (x:_) = Just x
 
 -- | Create a client for the supplied servers. An empty list uses the default
 -- local server specification.
@@ -349,7 +345,7 @@ version c = do
   response <- anyOp c versionRequest
   status <- responseStatus response
   if responseCode response == "VERSION" && status == NoError
-    then return $ fromMaybe B.empty (safeHead (responseTokens response))
+    then return $ fromMaybe B.empty (listToMaybe (responseTokens response))
     else failResponse response "VERSION"
 
 -- | The value, flags and CAS version carried by a @VA@ response.
