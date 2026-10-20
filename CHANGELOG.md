@@ -1,28 +1,43 @@
+# 0.4.2.0 - October 20th, 2026
+
+No API changes from 0.4.0.0. This is the first Hackage release since 0.4.0.0,
+so it also includes the 0.4.1.0 changes below.
+
+- Fix `getMany` returning one key's value under another key's name when a
+  plain key equals the other's base64 form, such as `"IA=="` and `" "`.
+- Requests that carry a value or a number are now encoded into a single
+  buffer instead of a chain of appends that copied the value once per piece.
+  Encoding a 64KiB `set` takes about 4µs instead of about 57µs.
+- Document that a `Version` of `0` skips the CAS check, what `cas`, `replace`,
+  `append`, `prepend` and `delete` do for a missing key or a version mismatch,
+  and when `increment` and `decrement` create a missing key. Add the missing
+  `OverloadedStrings` to the usage examples in `Database.Memcache.Client` and
+  the package description, add usage and development instructions to the
+  README, and replace the template `SECURITY.md` with a full security policy.
+
 # 0.4.1.0 - October 19th, 2026
 
-No API or behaviour changes from 0.4.0.0.
+Not uploaded to Hackage; these changes first ship there in 0.4.2.0. No API or
+behaviour changes from 0.4.0.0.
 
 - Reading a large value no longer allocates memory quadratic in its size. Each
   receive is now capped at 64KiB, so fetching a 32MiB value allocates about
   67MB rather than about 1.7GB.
-- Requests that carry a value or a number are now encoded into a single
-  buffer instead of a chain of appends that copied the value once per piece.
-  Encoding a 64KiB `set` takes about 4µs instead of about 57µs, and a 1MiB
-  `set` about 75µs instead of 1.7ms.
-- Drop the dependency on `errors` (and, through it, `safe`, `exceptions` and
+- Drop the dependency on `errors` (and, through it, `safe` and
   `transformers-compat`), which was only used for a one-line helper.
 - Replace the hpack `package.yaml` with a hand-written `memcache.cabal`
   (`cabal-version: 3.0`) that lists the exposed modules explicitly and gives
   each component only the dependencies it uses. Remove `Setup.hs`, which only
-  did what `build-type: Simple` does anyway.
+  did what `build-type: Simple` does anyway. The license field is now the SPDX
+  identifier `BSD-3-Clause`; the license itself is unchanged.
 - Declare support for GHC 9.2 to 9.14 in `tested-with`.
 - Fix the `parser` benchmark, which no longer compiled, and extend it to cover
-  key and request encoding and response parsing.
-- Expand the package description.
-- Document that a `Version` of `0` skips the CAS check, and when `increment`
-  and `decrement` create a missing key. Fix the usage example in
-  `Database.Memcache.Client`, and add usage and development instructions to
-  the README and a security policy.
+  key encoding, more requests, and reading CAS, flags and numbers out of
+  responses.
+- Expand the package description. Hackage already shows it, as a revision of
+  0.4.0.0.
+- Document the `InvalidAuthentication` and `KeyTooLong` constructors of
+  `ClientError`, and fix typos in the Haddock documentation.
 - Greatly expand the test suite. Unit tests against mock servers now cover
   every request encoder and client operation, retries and failover,
   authentication, `parseServerSpec` and ElastiCache discovery, and the
@@ -62,8 +77,10 @@ No API or behaviour changes from 0.4.0.0.
   connection.
 - Authentication first checks that the server is in auth-file mode and
   refuses to send credentials otherwise, so they are never stored as a plain
-  `auth` item. Invalid credentials raise `ClientError InvalidAuthentication`
-  without being retried or marking the server dead.
+  `auth` item. Credentials with a forbidden delimiter, or a server that isn't
+  in auth-file mode, raise `ClientError InvalidAuthentication`, and
+  credentials the server rejects raise `OpError TextAuthFail`. Neither is
+  retried or marks the server dead.
 - Empty keys, and keys longer than 250 bytes, are rejected with
   `ClientError KeyTooLong` before anything is sent.
 - `append` and `prepend` on a missing key return `Nothing` instead of throwing

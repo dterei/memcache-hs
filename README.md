@@ -159,7 +159,8 @@ other improvements.
 
 Please report bugs via the
 [github issue tracker](https://github.com/dterei/memcache-hs/issues), and
-security issues as described in [SECURITY.md](SECURITY.md).
+security issues as described in the
+[security policy](https://github.com/dterei/memcache-hs/security/policy).
 
 Master [git repository](https://github.com/dterei/memcache-hs):
 
@@ -193,9 +194,9 @@ There are two test suites:
   ordinary user.
 
 CI lints with [HLint](https://github.com/ndmitchell/hlint) 3.10, so please
-check that `hlint .` prints `No hints` before opening a pull request. Add a
-line to the `Unreleased` section of [CHANGELOG.md](CHANGELOG.md) for any
-user-visible change.
+check that `hlint .` prints `No hints` before opening a pull request. For any
+user-visible change, add a line to [CHANGELOG.md](CHANGELOG.md) under an
+`Unreleased` heading at the top, adding the heading if it isn't there.
 
 CI runs both build tools on every pull request. The `CI` workflow builds and
 tests with Stack against each `stack*.yaml` snapshot, and runs HLint and

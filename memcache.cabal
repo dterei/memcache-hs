@@ -1,6 +1,6 @@
 cabal-version: 3.0
 name:          memcache
-version:       0.4.1.0
+version:       0.4.2.0
 synopsis:      A memcached client library.
 description:
   A client library for a Memcached cluster. Memcached is an in-memory key-value
@@ -23,11 +23,16 @@ description:
 
   Basic usage is:
 
+  > {-# LANGUAGE OverloadedStrings #-}
+  >
   > import qualified Database.Memcache.Client as M
   >
-  > mc <- M.newClient [M.ServerSpec "localhost" "11211" M.NoAuth] M.def
-  > M.set mc "key" "value" 0 0
-  > v <- M.get mc "key"
+  > main :: IO ()
+  > main = do
+  >     mc <- M.newClient [M.ServerSpec "localhost" "11211" M.NoAuth] M.def
+  >     _ <- M.set mc "key" "value" 0 0
+  >     v <- M.get mc "key"
+  >     print v
 
   You should only need to import 'Database.Memcache.Client', but other modules
   are exposed for lower-level use. Version 0.4 is a breaking change from 0.3;
