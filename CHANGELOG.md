@@ -1,6 +1,7 @@
 # 0.4.1.0 - October 19th, 2026
 
-No API or behaviour changes from 0.4.0.0.
+No API changes from 0.4.0.0. The only behaviour change is the `getMany` fix
+below.
 
 - Reading a large value no longer allocates memory quadratic in its size. Each
   receive is now capped at 64KiB, so fetching a 32MiB value allocates about
@@ -9,6 +10,8 @@ No API or behaviour changes from 0.4.0.0.
   buffer instead of a chain of appends that copied the value once per piece.
   Encoding a 64KiB `set` takes about 4µs instead of about 57µs, and a 1MiB
   `set` about 75µs instead of 1.7ms.
+- Fix `getMany` returning one key's value under another key's name when a
+  plain key equals the other's base64 form, such as `"IA=="` and `" "`.
 - Drop the dependency on `errors` (and, through it, `safe`, `exceptions` and
   `transformers-compat`), which was only used for a one-line helper.
 - Replace the hpack `package.yaml` with a hand-written `memcache.cabal`
