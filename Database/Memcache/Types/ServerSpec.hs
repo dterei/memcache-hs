@@ -31,6 +31,8 @@ import Network.URI (URI (..), URIAuth (..), parseAbsoluteURI)
 import Data.Bifunctor (second)
 
 -- | A Memcached server connection configuration.
+--
+-- 'show' hides the password; see 'Authentication'.
 data ServerSpec = ServerSpec
   { -- | Hostname of server to connect to.
     ssHost :: HostName,
@@ -42,9 +44,11 @@ data ServerSpec = ServerSpec
   deriving (Eq, Show)
 
 -- | Parse a @memcached://@ URI into a @ServerSpec@.
+--
+-- Error messages never quote the URI, as it may contain a password.
 parseServerSpec :: String -> Either String ServerSpec
 parseServerSpec s = do
-  uri <- note ("Not a valid URI: " <> s) $ parseAbsoluteURI s
+  uri <- note "Not a valid URI" $ parseAbsoluteURI s
   note "Must begin memcached://" $ guard $ uriScheme uri == "memcached:"
 
   let mAuth = uriAuthority uri
