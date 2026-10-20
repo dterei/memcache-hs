@@ -47,7 +47,13 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - run: sudo apt-get update && sudo apt-get install -y memcached
+      # The runner image also lists Microsoft's apt repository, which nothing
+      # here needs and which sometimes fails apt-get update on its own.
+      - name: Install memcached
+        run: |
+          sudo rm -f /etc/apt/sources.list.d/microsoft-prod.*
+          sudo apt-get update
+          sudo apt-get install -y memcached
       - id: stack
         uses: freckle/stack-action@454226a86f7e22e21387ab950cdecaa865365425 # v5.7.31
         with:
