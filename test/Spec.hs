@@ -524,6 +524,26 @@ main = hspec $ do
       parseServerSpec "http://cache.example" `shouldSatisfy` isLeft
       parseServerSpec "not a uri" `shouldSatisfy` isLeft
 
+  describe "Database.Memcache.Client alone" $
+    -- Every name is qualified by Client, so this stops compiling if the module
+    -- stops exporting a type its own signatures use.
+    it "names the types its signatures use" $
+      withMockServer [MR "HD c9\r\n", MR "VA 1 c10\r\n3\r\n", MR "STAT pid 1\r\nEND\r\n"] $ \server -> do
+        spec <- either fail return $
+          Client.parseServerSpec ("memcached://127.0.0.1:" <> show (mockPort server))
+        let serverOpts = Client.def { Client.soNumResources = 2 } :: Client.ServerOptions
+        client <- Client.newClient [spec] Client.def
+          { Client.optsServerRetries = 1 :: Client.Retries
+          , Client.optsServerOptions = serverOpts
+          }
+        cas <- Client.set client ("count" :: Client.Key) ("2" :: Client.Value)
+          (0 :: Client.Flags) (60 :: Client.Expiration)
+        cas `shouldBe` (9 :: Client.Version)
+        Client.increment client "count" (0 :: Client.Initial) (1 :: Client.Delta) 60 cas
+          `shouldReturn` Just (3, 10)
+        results <- Client.stats client Nothing
+        map snd (results :: [(Client.Server, Client.StatResults)]) `shouldBe` [[("pid", "1")]]
+
   describe "clusters" $ do
     it "fails over to another server once one is marked dead" $
       withMockServer [MR "VA 1 f0 c1\r\nA\r\n", CloseConnection, CloseConnection] $ \a ->

@@ -89,9 +89,15 @@ Usage is roughly as follows:
 -}
 module Database.Memcache.Client (
         -- * Client creation
-        newClient, Client, ServerSpec(..), Options(..),
+        newClient, Client, ServerSpec(..), parseServerSpec, Options(..),
         Authentication(..), Username, Password, def,
         quit,
+
+        -- ** Configuration types
+        Retries, ServerOptions(..), Server,
+
+        -- * Fields & Values
+        Key, Value, Initial, Delta, Expiration, Flags, Version,
 
         -- * Operations
 
@@ -140,7 +146,7 @@ newClient :: [ServerSpec] -> Options -> IO Client
 newClient scs = newCluster $ if null scs then [def] else scs
 
 -- | Close all client connections, ignoring individual shutdown failures.
-quit :: Cluster -> IO ()
+quit :: Client -> IO ()
 quit c = void $ allOp' c $ \server -> handle ignore $ do
   withSocket server $ \socket -> sendRaw socket quitRequest
   close server
@@ -149,7 +155,7 @@ quit c = void $ allOp' c $ \server -> handle ignore $ do
 
 -- | Retrieve the value for the given key from Memcached, along with its
 -- flags and CAS version. Returns 'Nothing' on a miss.
-get :: Cluster -> Key -> IO (Maybe (Value, Flags, Version))
+get :: Client -> Key -> IO (Maybe (Value, Flags, Version))
 get c k = do
   response <- keyedOp c k getRequest
   status <- responseStatus response
@@ -159,7 +165,7 @@ get c k = do
     _ -> failResponse response "GET"
 
 -- | Fetch many keys. Missing keys are omitted from the result.
-getMany :: Cluster -> [Key] -> IO [(Key, (Value, Flags, Version))]
+getMany :: Client -> [Key] -> IO [(Key, (Value, Flags, Version))]
 getMany c keys = do
   replies <- keyedBatchOp c [(key, getManyRequest) | key <- keys]
   reverse <$> foldM collect [] replies
@@ -175,7 +181,7 @@ getMany c keys = do
 -- | Get-and-touch: Retrieve the value for the given key from Memcached, and
 -- also update the stored key-value pairs expiration time at the server. Use an
 -- expiration value of @0@ to store forever.
-gat :: Cluster -> Key -> Expiration -> IO (Maybe (Value, Flags, Version))
+gat :: Client -> Key -> Expiration -> IO (Maybe (Value, Flags, Version))
 gat c k e = do
   response <- keyedOp c k (`gatRequest` e)
   status <- responseStatus response
@@ -187,7 +193,7 @@ gat c k e = do
 -- | Update the expiration time of a stored key-value pair, returning its
 -- new CAS version or 'Nothing'.
 -- Use an expiration value of @0@ to store forever.
-touch :: Cluster -> Key -> Expiration -> IO (Maybe Version)
+touch :: Client -> Key -> Expiration -> IO (Maybe Version)
 touch c k e = do
   response <- keyedOp c k (`touchRequest` e)
   status <- responseStatus response
@@ -198,7 +204,7 @@ touch c k e = do
 
 -- | Store a new (or overwrite existing) key-value pair, returning its @Version@
 -- identifier. Use an expiration value of @0@ to store forever.
-set :: Cluster -> Key -> Value -> Flags -> Expiration -> IO Version
+set :: Client -> Key -> Value -> Flags -> Expiration -> IO Version
 set c k v f e = store c k v f e 0 Set "SET"
 
 -- | Store a key-value pair, but only if the version specified by the client
@@ -209,7 +215,7 @@ set c k v f e = store c k v f e 0 Set "SET"
 --
 -- A version of @0@ skips the check, so the value is stored unconditionally, as
 -- with 'set'.
-cas :: Cluster -> Key -> Value -> Flags -> Expiration -> Version -> IO (Maybe Version)
+cas :: Client -> Key -> Value -> Flags -> Expiration -> Version -> IO (Maybe Version)
 cas c k v f e ver = do
   response <- keyedOp c k (\wire -> storeRequest Set wire v f e ver)
   status <- responseStatus response
@@ -222,7 +228,7 @@ cas c k v f e ver = do
 -- | Store a new key-value pair, returning its @Version@ identifier. If the
 -- key-value pair already exists, then fail (return 'Nothing'). Use an
 -- expiration value of @0@ to store forever.
-add :: Cluster -> Key -> Value -> Flags -> Expiration -> IO (Maybe Version)
+add :: Client -> Key -> Value -> Flags -> Expiration -> IO (Maybe Version)
 add c k v f e = do
   response <- keyedOp c k (\wire -> storeRequest Add wire v f e 0)
   status <- responseStatus response
@@ -237,7 +243,7 @@ add c k v f e = do
 --
 -- A non-zero version must match the @Version@ of the key-value pair at the
 -- server, otherwise 'Nothing' is returned. A version of @0@ skips the check.
-replace :: Cluster -> Key -> Value -> Flags -> Expiration -> Version -> IO (Maybe Version)
+replace :: Client -> Key -> Value -> Flags -> Expiration -> Version -> IO (Maybe Version)
 replace c k v f e ver = do
   response <- keyedOp c k (\wire -> storeRequest Replace wire v f e ver)
   status <- responseStatus response
@@ -269,7 +275,7 @@ store c k v f e ver mode operation = do
 --
 -- A non-zero version must match the @Version@ of an existing key-value pair,
 -- otherwise 'Nothing' is returned. A version of @0@ skips the check.
-increment :: Cluster -> Key -> Initial -> Delta -> Expiration -> Version -> IO (Maybe (Word64, Version))
+increment :: Client -> Key -> Initial -> Delta -> Expiration -> Version -> IO (Maybe (Word64, Version))
 increment c k i d e ver = arithmetic c k i d e ver Incr "INCREMENT"
 
 -- | Decrement a numeric value stored against a key, returning the decremented
@@ -279,7 +285,7 @@ increment c k i d e ver = arithmetic c k i d e ver Incr "INCREMENT"
 -- Otherwise this behaves like 'increment': a missing key is created with the
 -- 'Initial' value unless the expiration is 'maxBound', a version of @0@ skips
 -- the check, and a non-numeric value throws 'OpError' 'ErrValueNonNumeric'.
-decrement :: Cluster -> Key -> Initial -> Delta -> Expiration -> Version -> IO (Maybe (Word64, Version))
+decrement :: Client -> Key -> Initial -> Delta -> Expiration -> Version -> IO (Maybe (Word64, Version))
 decrement c k i d e ver = arithmetic c k i d e ver Decr "DECREMENT"
 
 arithmetic :: Cluster -> Key -> Initial -> Delta -> Expiration -> Version -> ArithMode -> String -> IO (Maybe (Word64, Version))
@@ -300,7 +306,7 @@ arithmetic c k i d e ver mode operation = do
 -- A non-zero version must match the @Version@ of the key-value pair at the
 -- server, otherwise 'OpError' 'ErrKeyExists' is thrown. A version of @0@ skips
 -- the check.
-append :: Cluster -> Key -> Value -> Version -> IO (Maybe Version)
+append :: Client -> Key -> Value -> Version -> IO (Maybe Version)
 append c k v ver = modify c k v ver Append "APPEND"
 
 -- | Prepend a value to an existing key-value pair, returning the new @Version@
@@ -310,7 +316,7 @@ append c k v ver = modify c k v ver Append "APPEND"
 -- A non-zero version must match the @Version@ of the key-value pair at the
 -- server, otherwise 'OpError' 'ErrKeyExists' is thrown. A version of @0@ skips
 -- the check.
-prepend :: Cluster -> Key -> Value -> Version -> IO (Maybe Version)
+prepend :: Client -> Key -> Value -> Version -> IO (Maybe Version)
 prepend c k v ver = modify c k v ver Prepend "PREPEND"
 
 modify :: Cluster -> Key -> Value -> Version -> StoreMode -> String -> IO (Maybe Version)
@@ -328,7 +334,7 @@ modify c k v ver mode operation = do
 -- A non-zero version must match the @Version@ of the key-value pair at the
 -- server, otherwise the key isn't deleted and 'False' is returned. A version
 -- of @0@ deletes the key unconditionally.
-delete :: Cluster -> Key -> Version -> IO Bool
+delete :: Client -> Key -> Version -> IO Bool
 delete c k ver = do
   response <- keyedOp c k (`deleteRequest` ver)
   status <- responseStatus response
@@ -341,7 +347,7 @@ delete c k ver = do
 -- | Remove (delete) all currently stored key-value pairs from the cluster. The
 -- expiration value can be used to cause this flush to occur in the future
 -- rather than immediately.
-flush :: Cluster -> Maybe Expiration -> IO ()
+flush :: Client -> Maybe Expiration -> IO ()
 flush c e = do
   results <- allOp c (flushRequest e)
   forM_ results $ \(_, response) -> do
@@ -352,7 +358,7 @@ flush c e = do
 -- in the cluster. The optional key can be used to select a different set of
 -- statistics from the server than the default. Most Memcached servers support
 -- @"items"@, @"slabs"@ or @"settings"@.
-stats :: Cluster -> Maybe Key -> IO [(Server, StatResults)]
+stats :: Client -> Maybe Key -> IO [(Server, StatResults)]
 stats c key = validateStatsArgs key >> allOp' c (runStats key)
   where
     runStats statsArgs server = withSocket server $ \socket -> do
@@ -380,7 +386,7 @@ stats c key = validateStatsArgs key >> allOp' c (runStats key)
 
 -- | Return the version string of the Memcached cluster. Only queries
 -- one server and assumes all servers in the cluster run the same version.
-version :: Cluster -> IO ByteString
+version :: Client -> IO ByteString
 version c = do
   response <- anyOp c versionRequest
   status <- responseStatus response
