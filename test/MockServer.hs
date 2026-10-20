@@ -18,7 +18,7 @@ import qualified Network.Socket            as N
 import qualified Network.Socket.ByteString as N
 import           Text.Read                  (readMaybe)
 import           UnliftIO.Exception         (SomeException, bracket, finally, handle,
-                                            throwIO)
+                                            onException, throwIO)
 
 -- | Actions the mock server can take to a request.
 data MockResponse
@@ -38,6 +38,9 @@ data MockServer = MockServer
       -- | Every request received so far, oldest first, including any data
       -- block that followed the command line.
     , mockRequests :: IO [B.ByteString]
+      -- | How many connections the client has closed while the mock was
+      -- waiting for its next request.
+    , mockClosed   :: IO Int
     }
 
 -- | A server specification for connecting to the mock without authentication.
@@ -52,17 +55,19 @@ withMockServer :: [MockResponse] -> (MockServer -> IO a) -> IO a
 withMockServer responses action = do
   ready <- newEmptyMVar
   received <- newIORef []
+  closed <- newIORef 0
   bracket
-    (forkIO (serve ready received))
+    (forkIO (serve ready received closed))
     killThread
     (const $ do
       port <- takeMVar ready
       action MockServer
         { mockPort = port
         , mockRequests = reverse <$> readIORef received
+        , mockClosed = readIORef closed
         })
   where
-    serve ready received = bracket
+    serve ready received closed = bracket
       (N.socket N.AF_INET N.Stream N.defaultProtocol)
       N.close
       $ \sock -> do
@@ -73,31 +78,31 @@ withMockServer responses action = do
         remaining <- newIORef responses
         -- Once the responses run out the listening socket closes, so later
         -- connection attempts are refused straight away.
-        acceptLoop sock remaining received
+        acceptLoop sock remaining received closed
 
-    acceptLoop sock remaining received = do
+    acceptLoop sock remaining received closed = do
       pending <- readIORef remaining
       unless (null pending) $ do
         (client, _) <- N.accept sock
-        handle ignore (clientHandler client remaining received)
+        handle ignore (clientHandler client remaining received closed)
           `finally` N.close client
-        acceptLoop sock remaining received
+        acceptLoop sock remaining received closed
 
     ignore :: SomeException -> IO ()
     ignore = const (return ())
 
     -- Answer requests on one connection until the responses run out or the
     -- script closes it.
-    clientHandler client remaining received = do
+    clientHandler client remaining received closed = do
       pending <- readIORef remaining
       case pending of
         [] -> return ()
         (r:rest) -> do
-          request <- recvReq client
+          request <- recvReq client `onException` modifyIORef' closed (+ 1)
           modifyIORef' received (request :)
           writeIORef remaining rest
           continue <- respond client r
-          when continue $ clientHandler client remaining received
+          when continue $ clientHandler client remaining received closed
 
     respond client r = case r of
       Noop          -> return True

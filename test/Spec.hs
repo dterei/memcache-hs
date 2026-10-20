@@ -5,6 +5,7 @@ module Main where
 import           MockServer
 import qualified Database.Memcache.Auth    as Auth
 import qualified Database.Memcache.Client  as Client
+import           Database.Memcache.Cluster (getServers)
 import qualified Database.Memcache.ElastiCacheClient as EC
 import           Database.Memcache.Errors
 import qualified Database.Memcache.Errors  as E
@@ -18,9 +19,12 @@ import qualified Data.ByteString.Base64    as Base64
 import qualified Data.ByteString.Char8     as C
 import qualified Network.Socket            as N
 import qualified Network.Socket.ByteString as N
-import           Control.Concurrent        (forkIO, threadDelay)
-import           Control.Exception         (bracket)
+import           Control.Concurrent        (forkIO, killThread, myThreadId, newEmptyMVar,
+                                            readMVar, threadDelay, tryPutMVar)
+import           Control.Exception         (bracket, finally)
+import           Control.Monad             (void, when)
 import           Data.Either               (isLeft)
+import           Data.IORef                (atomicModifyIORef', newIORef, readIORef)
 import           System.Timeout            (timeout)
 
 main :: IO ()
@@ -594,7 +598,7 @@ main = hspec $ do
 
     it "discovers nodes with the config command" $
       withMockServer [MR "VA 3 f0 c1\r\nfoo\r\n"] $ \node -> do
-        let config = "CONFIG cluster 0 " <> nodeList node <> "END\r\n"
+        let config = "CONFIG cluster 0 " <> nodeList [node] <> "END\r\n"
         withMockServer [MR "VERSION 1.6.12\r\n", MR config, Noop] $ \cfg -> do
           client <- EC.newClient Client.def hour (endpoint cfg)
           Client.get client "key" `shouldReturn` Just ("foo", 0, 1)
@@ -603,12 +607,89 @@ main = hspec $ do
 
     it "discovers nodes from the cluster key on engines before 1.4.14" $
       withMockServer [MR "VA 3 f0 c1\r\nfoo\r\n"] $ \node -> do
-        let value = "VALUE AmazonElastiCache:cluster 0 " <> nodeList node <> "END\r\n"
+        let value = "VALUE AmazonElastiCache:cluster 0 " <> nodeList [node] <> "END\r\n"
         withMockServer [MR "VERSION 1.4.5\r\n", MR value, Noop] $ \cfg -> do
           client <- EC.newClient Client.def hour (endpoint cfg)
           Client.get client "key" `shouldReturn` Just ("foo", 0, 1)
           waitForRequests cfg 3 `shouldReturn`
             ["version\r\n", "get AmazonElastiCache:cluster\r\n", "quit\r\n"]
+
+    it "keeps discovering after a refresh fails" $
+      withMockServer [MR "OK\r\n"] $ \a ->
+      withMockServer [MR "OK\r\n"] $ \b ->
+      withMockServer (discovered [a]
+          -- The endpoint drops the connection and replies with garbage
+          -- before a refresh succeeds. Then it lists no nodes, and after one
+          -- more reply it drops the connection and stops listening.
+          ++ [CloseConnection]
+          ++ [MR "VERSION 1.6.12\r\n", MR "garbage\r\nEND\r\n"]
+          ++ refreshTo [a, b]
+          ++ refreshTo []
+          ++ [MR "VERSION 1.6.12\r\n"]) $ \cfg ->
+      withDiscovery Client.def $ \opts start -> do
+        client <- EC.newClient opts tenMs (endpoint cfg)
+        start
+        waitFor 11 (length <$> mockRequests cfg) `shouldReturn` 11
+        mockRequests cfg `shouldReturn`
+          ["version\r\n", "config get cluster\r\n", "quit\r\n", "version\r\n"]
+          ++ concat (replicate 3 ["version\r\n", "config get cluster\r\n"])
+          ++ ["version\r\n"]
+        -- The refresh after the one listing no nodes has started, so that
+        -- one has been handled, and neither it nor the later failures may
+        -- drop the servers.
+        length <$> getServers client `shouldReturn` 2
+        Client.flush client Nothing
+        mockRequests a `shouldReturn` ["flush_all\r\n"]
+        mockRequests b `shouldReturn` ["flush_all\r\n"]
+
+    it "keeps discovering after a refresh gets no reply" $
+      withMockServer [MR "OK\r\n"] $ \a ->
+      withMockServer [MR "OK\r\n"] $ \b ->
+      withMockServer (discovered [a] ++ [Noop] ++ refreshTo [a, b]) $ \cfg ->
+      withDiscovery Client.def { Client.optsServerTimeout = 100 } $ \opts start -> do
+        client <- EC.newClient opts tenMs (endpoint cfg)
+        start
+        waitFor 2 (length <$> getServers client) `shouldReturn` 2
+        Client.flush client Nothing
+        mockRequests a `shouldReturn` ["flush_all\r\n"]
+        mockRequests b `shouldReturn` ["flush_all\r\n"]
+
+    it "keeps the connections of nodes still listed" $
+      withMockServer [MR "OK\r\n", MR "OK\r\n"] $ \a ->
+      withMockServer [MR "OK\r\n"] $ \b ->
+      -- Listing b first checks that servers are matched by host and port.
+      withMockServer (discovered [a] ++ refreshTo [b, a]) $ \cfg ->
+      withDiscovery Client.def $ \opts start -> do
+        client <- EC.newClient opts tenMs (endpoint cfg)
+        Client.flush client Nothing
+        start
+        waitFor 2 (length <$> getServers client) `shouldReturn` 2
+        Client.flush client Nothing
+        mockRequests a `shouldReturn` ["flush_all\r\n", "flush_all\r\n"]
+        mockRequests b `shouldReturn` ["flush_all\r\n"]
+        -- a's mock serves one connection at a time, so with the first still
+        -- open, both flushes went over it.
+        mockClosed a `shouldReturn` 0
+
+    it "closes the connections of nodes no longer listed" $
+      withMockServer [MR "OK\r\n", MR "OK\r\n"] $ \a ->
+      -- With a reply left, b's mock waits on its connection until it closes.
+      withMockServer [MR "OK\r\n", MR "OK\r\n"] $ \b ->
+      withMockServer (discovered [a, b] ++ refreshTo [a]) $ \cfg ->
+      withDiscovery Client.def $ \opts start -> do
+        client <- EC.newClient opts tenMs (endpoint cfg)
+        Client.flush client Nothing
+        initial <- getServers client
+        start
+        waitFor 1 (length <$> getServers client) `shouldReturn` 1
+        waitFor 1 (mockClosed b) `shouldReturn` 1
+        Client.flush client Nothing
+        mockRequests a `shouldReturn` ["flush_all\r\n", "flush_all\r\n"]
+        mockClosed a `shouldReturn` 0
+        -- Checked last so that b's old server stays reachable until now, and
+        -- the garbage collector cannot close its connection in place of the
+        -- client.
+        length initial `shouldBe` 2
 
   where
     recvResponseFrom bytes =
@@ -646,14 +727,23 @@ main = hspec $ do
     fastFailover = Client.def { Client.optsFailRetryDelay = 10, Client.optsDeadRetryDelay = 60000 }
     fst3 (value, _, _) = value
     hour = 3600 * 1000000
+    tenMs = 10 * 1000
     -- The endpoint check only looks for ".cfg" somewhere in the URI, so put it
     -- in the path and keep the host a plain loopback address.
     endpoint cfg = either error id $
       EC.parseConfigurationEndpoint ("memcached://127.0.0.1:" <> show (mockPort cfg) <> "/x.cfg")
-    -- A config reply body listing one node, from its length line onwards.
-    nodeList node =
-      let body = "1\n127.0.0.1|127.0.0.1|" <> C.pack (show (mockPort node)) <> "\n"
+    -- A config reply body listing the given nodes, from its length line
+    -- onwards.
+    nodeList nodes =
+      let node n = "127.0.0.1|127.0.0.1|" <> C.pack (show (mockPort n))
+          body = "1\n" <> C.unwords (map node nodes) <> "\n"
       in C.pack (show (B.length body)) <> "\r\n" <> body <> "\r\n"
+    -- The config endpoint's replies to one discovery of the given nodes.
+    refreshTo nodes =
+      [MR "VERSION 1.6.12\r\n", MR ("CONFIG cluster 0 " <> nodeList nodes <> "END\r\n")]
+    -- Its replies to the discovery that creates a client: as for a refresh,
+    -- then closing the connection on quit, as memcached does.
+    discovered nodes = refreshTo nodes ++ [CloseConnection]
 
 -- | Run an action with a client connected to a fresh mock server.
 withClient :: [MockResponse] -> (Client.Client -> IO a) -> IO a
@@ -677,6 +767,35 @@ waitForRequests server n = do
     go = do
       requests <- mockRequests server
       if length requests >= n then return requests else threadDelay 1000 >> go
+
+-- | Poll an action until it returns the expected value, for up to five
+-- seconds, returning its last result.
+waitFor :: Eq a => a -> IO a -> IO a
+waitFor expected action = do
+  result <- timeout 5000000 go
+  maybe action return result
+  where
+    go = do
+      value <- action
+      if value == expected then return value else threadDelay 1000 >> go
+
+-- | Run an ElastiCache test with options whose server constructor holds the
+-- discovery thread back, when that thread starts and whenever it adds a node,
+-- until the test runs the action it is passed. The thread is killed when the
+-- test ends, as nothing else stops it.
+withDiscovery :: Client.Options -> (Client.Options -> IO () -> IO a) -> IO a
+withDiscovery opts test = do
+  me <- myThreadId
+  started <- newEmptyMVar
+  threads <- newIORef []
+  let makeServers serverOptions specs = do
+        thread <- myThreadId
+        when (thread /= me) $ do
+          atomicModifyIORef' threads (\ts -> (thread : ts, ()))
+          readMVar started
+        Client.optsServerSpecsToServers opts serverOptions specs
+  test opts { Client.optsServerSpecsToServers = makeServers } (void (tryPutMVar started ()))
+    `finally` (readIORef threads >>= mapM_ killThread)
 
 -- | Receive exactly @n@ bytes from a socket.
 recvExactly :: N.Socket -> Int -> IO B.ByteString
