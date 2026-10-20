@@ -5,9 +5,11 @@ module Main where
 import           MockServer
 import qualified Database.Memcache.Auth    as Auth
 import qualified Database.Memcache.Client  as Client
+import qualified Database.Memcache.Cluster as Cluster
 import qualified Database.Memcache.ElastiCacheClient as EC
 import           Database.Memcache.Errors
 import qualified Database.Memcache.Errors  as E
+import qualified Database.Memcache.Server  as Server
 import           Database.Memcache.Socket
 import           Database.Memcache.Types   (ServerSpec (..), parseServerSpec)
 import           Test.Hspec
@@ -18,10 +20,15 @@ import qualified Data.ByteString.Base64    as Base64
 import qualified Data.ByteString.Char8     as C
 import qualified Network.Socket            as N
 import qualified Network.Socket.ByteString as N
-import           Control.Concurrent        (forkIO, threadDelay)
+import           Control.Concurrent        (forkIO, newEmptyMVar, putMVar, takeMVar,
+                                            threadDelay)
 import           Control.Exception         (bracket)
+import           Control.Monad             ((>=>))
 import           Data.Either               (isLeft)
+import           Data.IORef                (readIORef, writeIORef)
+import           GHC.Conc                  (ThreadStatus (..), threadStatus)
 import           System.Timeout            (timeout)
+import           UnliftIO.Async            (async, asyncThreadId, wait)
 
 main :: IO ()
 main = hspec $ do
@@ -421,12 +428,6 @@ main = hspec $ do
         result <- Client.stats client Nothing
         map snd result `shouldBe` [[]]
 
-    it "sends quit" $
-      withServerAndClient [Noop] $ \server client -> do
-        Client.quit client
-        requests <- waitForRequests server 1
-        requests `shouldBe` ["quit\r\n"]
-
   describe "retries and failover" $ do
     let fast = Client.def
           { Client.optsServerTimeout = 300
@@ -451,6 +452,66 @@ main = hspec $ do
         Client.get client "key" `shouldThrow` (== ClientError NoServersReady)
         threadDelay 400000
         Client.get client "key" `shouldReturn` Just ("foo", 2, 7)
+
+  -- The mock serves one connection at a time, so it only answers a second
+  -- client once the first client's connection has closed.
+  describe "closing connections" $ do
+    it "quit closes the client's connections without sending anything" $
+      withServerAndClient [MR "VA 3 f2 c7\r\nfoo\r\n", MR "VA 3 f2 c7\r\nbar\r\n"] $ \server client -> do
+        Client.get client "key" `shouldReturn` Just ("foo", 2, 7)
+        Client.quit client
+        getFromNewClient server `shouldReturn` Just ("bar", 2, 7)
+        mockRequests server `shouldReturn` ["mg key v f c\r\n", "mg key v f c\r\n"]
+
+    it "quit closes connections to a server marked dead" $
+      withServerAndClient [MR "VA 3 f2 c7\r\nfoo\r\n", MR "VA 3 f2 c7\r\nbar\r\n"] $ \server client -> do
+        Client.get client "key" `shouldReturn` Just ("foo", 2, 7)
+        -- A failure time in the future keeps the server marked dead.
+        Cluster.getServers client >>= mapM_ (\s -> writeIORef (Server.failed s) 1e10)
+        Client.get client "key" `shouldThrow` (== ClientError NoServersReady)
+        Client.quit client
+        getFromNewClient server `shouldReturn` Just ("bar", 2, 7)
+
+    it "quit sends nothing to a server it has no connection to" $
+      withServerAndClient [MR "VA 3 f2 c7\r\nfoo\r\n"] $ \server client -> do
+        Client.quit client
+        getFromNewClient server `shouldReturn` Just ("foo", 2, 7)
+        mockRequests server `shouldReturn` ["mg key v f c\r\n"]
+
+    it "quit closes a connection in use once its request finishes" $
+      withServerAndClient [DelayMS 300 (MR "VA 3 f2 c7\r\nfoo\r\n"), MR "VA 3 f2 c7\r\nbar\r\n"] $ \server client -> do
+        inFlight <- async $ Client.get client "key"
+        waitForRequests server 1 `shouldReturn` ["mg key v f c\r\n"]
+        Client.quit client
+        -- The operation isn't interrupted: it gets its reply.
+        wait inFlight `shouldReturn` Just ("foo", 2, 7)
+        -- The connection was closed rather than returned to the pool, so the
+        -- mock, which serves one connection at a time, can answer a new client.
+        getFromNewClient server `shouldReturn` Just ("bar", 2, 7)
+
+    it "closeAll closes a connection in use instead of handing it to a waiting thread" $
+      withMockServer [Noop, Noop] $ \server -> do
+        s <- Server.newServerDefault Server.defaultServerOptions (mockServerSpec server)
+        held <- newEmptyMVar
+        release <- newEmptyMVar
+        first <- async $ Server.withSocket s $ \c -> putMVar held c >> takeMVar release
+        c1 <- takeMVar held
+        Server.closeAll s
+        -- The pool holds one connection, so this waits for the first one.
+        second <- async $ Server.withSocket s return
+        let waitBlocked = do
+              status <- threadStatus (asyncThreadId second)
+              case status of
+                ThreadBlocked _ -> return ()
+                _ -> threadDelay 1000 >> waitBlocked
+        waitBlocked
+        putMVar release ()
+        wait first
+        c2 <- wait second
+        -- The connection in use was closed, not handed to the waiting thread.
+        sendRaw c1 "x\r\n" `shouldThrow` anyException
+        sendRaw c2 "x\r\n" `shouldReturn` ()
+
 
   describe "authenticate" $ do
     it "accepts credentials once the server confirms auth-file mode" $
@@ -614,20 +675,20 @@ main = hspec $ do
     it "discovers nodes with the config command" $
       withMockServer [MR "VA 3 f0 c1\r\nfoo\r\n"] $ \node -> do
         let config = "CONFIG cluster 0 " <> nodeList node <> "END\r\n"
-        withMockServer [MR "VERSION 1.6.12\r\n", MR config, Noop] $ \cfg -> do
+        withMockServer [MR "VERSION 1.6.12\r\n", MR config] $ \cfg -> do
           client <- EC.newClient Client.def hour (endpoint cfg)
           Client.get client "key" `shouldReturn` Just ("foo", 0, 1)
-          waitForRequests cfg 3 `shouldReturn`
-            ["version\r\n", "config get cluster\r\n", "quit\r\n"]
+          waitForRequests cfg 2 `shouldReturn`
+            ["version\r\n", "config get cluster\r\n"]
 
     it "discovers nodes from the cluster key on engines before 1.4.14" $
       withMockServer [MR "VA 3 f0 c1\r\nfoo\r\n"] $ \node -> do
         let value = "VALUE AmazonElastiCache:cluster 0 " <> nodeList node <> "END\r\n"
-        withMockServer [MR "VERSION 1.4.5\r\n", MR value, Noop] $ \cfg -> do
+        withMockServer [MR "VERSION 1.4.5\r\n", MR value] $ \cfg -> do
           client <- EC.newClient Client.def hour (endpoint cfg)
           Client.get client "key" `shouldReturn` Just ("foo", 0, 1)
-          waitForRequests cfg 3 `shouldReturn`
-            ["version\r\n", "get AmazonElastiCache:cluster\r\n", "quit\r\n"]
+          waitForRequests cfg 2 `shouldReturn`
+            ["version\r\n", "get AmazonElastiCache:cluster\r\n"]
 
   where
     recvResponseFrom bytes =
@@ -683,9 +744,19 @@ withServerAndClient = withServerAndClientOpts Client.def
 
 withServerAndClientOpts
   :: Client.Options -> [MockResponse] -> (MockServer -> Client.Client -> IO a) -> IO a
-withServerAndClientOpts opts responses action = withMockServer responses $ \server -> do
-  client <- Client.newClient [mockServerSpec server] opts
-  action server client
+withServerAndClientOpts opts responses action = withMockServer responses $ \server ->
+  -- Read the client once the action ends, so it stays reachable until then:
+  -- otherwise the pool's finalizers could close its connections while a test
+  -- is checking that quit closed them.
+  bracket (Client.newClient [mockServerSpec server] opts)
+    (Cluster.getServers >=> mapM_ (readIORef . Server.failed))
+    (action server)
+
+-- | Get @"key"@ from the mock with a new client.
+getFromNewClient :: MockServer -> IO (Maybe (Client.Value, Client.Flags, Client.Version))
+getFromNewClient server = do
+  client <- Client.newClient [mockServerSpec server] Client.def
+  Client.get client "key"
 
 -- | Wait (up to a second) for the mock to have received at least @n@ requests.
 waitForRequests :: MockServer -> Int -> IO [B.ByteString]

@@ -18,7 +18,7 @@ server's 'failed' timestamp is used by cluster retry handling.
 -}
 module Database.Memcache.Server (
       -- * Server
-        Server(sid, failed), newServerDefault, withSocket, close,
+        Server(sid, failed), newServerDefault, withSocket, close, closeAll,
 
       -- * ServerOptions
         ServerOptions(..), defaultServerOptions
@@ -27,6 +27,7 @@ module Database.Memcache.Server (
 import           Database.Memcache.Auth
 import           Database.Memcache.Socket
 
+import           Control.Monad            (when)
 import           Data.Default
 import           Data.Hashable
 import           Data.IORef
@@ -47,8 +48,9 @@ import           Data.Time.Clock          (NominalDiffTime)
 data Server = Server {
         -- | ID of server for consistent hashing.
         sid    :: {-# UNPACK #-} !Int,
-        -- | Connection pool to server.
-        pool   :: Pool Connection,
+        -- | Connection pool to server. Each connection is paired with the
+        -- 'generation' it was opened in.
+        pool   :: Pool (Int, Connection),
         -- | Hostname of server.
         addr   :: !HostName,
         -- | Port number of server.
@@ -56,7 +58,10 @@ data Server = Server {
         -- | Credentials for server.
         auth   :: !Authentication,
         -- | When did the server fail? 0 if it is alive.
-        failed :: IORef POSIXTime
+        failed :: IORef POSIXTime,
+        -- | Bumped by 'closeAll'. A connection opened in an earlier generation
+        -- is closed instead of being used again or returned to the pool.
+        generation :: IORef Int
     }
 
 instance Show Server where
@@ -111,7 +116,8 @@ instance Default ServerOptions where
 newServerDefault :: ServerOptions -> ServerSpec -> IO Server
 newServerDefault serverOptions ss@ServerSpec{..} = do
     fat <- newIORef 0
-    pSock <- getNewPool serverOptions ss
+    gen <- newIORef 0
+    pSock <- getNewPool serverOptions ss gen
     return Server
         { sid      = serverHash
         , pool     = pSock
@@ -119,32 +125,82 @@ newServerDefault serverOptions ss@ServerSpec{..} = do
         , port     = ssPort
         , auth     = ssAuth
         , failed   = fat
+        , generation = gen
         }
   where
     serverHash = hash (ssHost, ssPort)
 
 
--- | Run a function with access to a pooled server connection.
+-- | Run a function with access to a pooled server connection. Afterwards the
+-- connection goes back to the pool, unless the function threw or 'closeAll'
+-- has run since the connection was opened, in which case it is closed. The
+-- function is never given a connection opened before the latest 'closeAll'.
 withSocket :: Server -> (Connection -> IO a) -> IO a
 {-# INLINE withSocket #-}
-withSocket svr = P.withResource $ pool svr
+withSocket svr act = mask $ \restore -> do
+    (res@(born, conn), local) <- takeCurrent
+    r <- restore (act conn) `onException` P.destroyResource (pool svr) local res
+    stale <- (/= born) <$> currentGeneration svr
+    if stale
+      then P.destroyResource (pool svr) local res
+      else do
+        P.putResource local res
+        -- 'closeAll' may have run between the check and the put, and closed
+        -- the idle connections before this one was back. If so, close them
+        -- again, without letting an exception cut that short.
+        raced <- (/= born) <$> currentGeneration svr
+        when raced $ uninterruptibleMask_ $ P.destroyAllResources (pool svr)
+    return r
+  where
+    -- Take a connection, closing any opened before the latest 'closeAll'.
+    takeCurrent = do
+      (res@(born, _), local) <- P.takeResource (pool svr)
+      current <- currentGeneration svr
+      if born == current
+        then return (res, local)
+        else P.destroyResource (pool svr) local res >> takeCurrent
 
--- | Close all pooled connections. A later operation re-establishes them.
+-- | Close the connections that are idle in the pool. Connections in use stay
+-- open and go back to the pool when their request finishes; 'closeAll' closes
+-- those too. A later request re-establishes connections as needed.
 close :: Server -> IO ()
 {-# INLINE close #-}
 close srv = P.destroyAllResources $ pool srv
 
+-- | Close every connection to the server: idle connections now, and each
+-- connection in use as soon as the request using it finishes, instead of
+-- returning it to the pool. It doesn't wait for those requests or interrupt
+-- them, and it never connects or throws. Requests that start later never use
+-- a connection opened before 'closeAll'; they open new ones.
+closeAll :: Server -> IO ()
+closeAll srv = do
+    atomicModifyIORef' (generation srv) (\g -> (g + 1, ()))
+    P.destroyAllResources (pool srv)
+
+-- | Read the generation. The read is atomic for simplicity; what makes the
+-- checks in 'withSocket' sound is that it and 'closeAll' both go through the
+-- pool's per-stripe lock, which orders the bump against a returned connection.
+currentGeneration :: Server -> IO Int
+currentGeneration svr = atomicModifyIORef' (generation svr) (\g -> (g, g))
+
 #if MIN_VERSION_resource_pool(0,4,0)
-getNewPool :: ServerOptions -> ServerSpec -> IO (Pool Connection)
-getNewPool serverOptions ss =
+getNewPool :: ServerOptions -> ServerSpec -> IORef Int -> IO (Pool (Int, Connection))
+getNewPool serverOptions ss gen =
   P.newPool
     $ P.setNumStripes (Just $ soNumStripes serverOptions)
-    $ P.defaultPoolConfig (connectSocket ss) releaseSocket (soKeepAlive serverOptions) (soNumResources serverOptions)
+    $ P.defaultPoolConfig (connectTagged gen ss) (releaseSocket . snd) (soKeepAlive serverOptions) (soNumResources serverOptions)
 #else
-getNewPool :: ServerOptions -> ServerSpec -> IO (Pool Connection)
-getNewPool serverOptions ss =
-  P.createPool (connectSocket ss) releaseSocket (soNumStripes serverOptions) (soKeepAlive serverOptions) (soNumResources serverOptions)
+getNewPool :: ServerOptions -> ServerSpec -> IORef Int -> IO (Pool (Int, Connection))
+getNewPool serverOptions ss gen =
+  P.createPool (connectTagged gen ss) (releaseSocket . snd) (soNumStripes serverOptions) (soKeepAlive serverOptions) (soNumResources serverOptions)
 #endif
+
+-- | Open a connection, paired with the generation current when it was opened.
+connectTagged :: IORef Int -> ServerSpec -> IO (Int, Connection)
+connectTagged gen ss = do
+    born <- atomicModifyIORef' gen (\g -> (g, g))
+    conn <- connectSocket ss
+    return (born, conn)
 
 connectSocket :: ServerSpec -> IO Connection
 connectSocket ServerSpec{..} = do

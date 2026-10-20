@@ -130,14 +130,14 @@ import           Database.Memcache.Server
 import           Database.Memcache.Socket
 import           Database.Memcache.Types
 
-import           Control.Monad             (foldM, forM_, void, when)
+import           Control.Monad             (foldM, forM_, when)
 import           Data.ByteString           (ByteString)
 import qualified Data.ByteString           as B (any, empty, length, null)
 import qualified Data.ByteString.Char8     as C (unwords)
 import           Data.Default
 import           Data.Maybe                (fromMaybe, listToMaybe)
 import           Data.Word
-import           UnliftIO.Exception        (SomeException, handle, throwIO)
+import           UnliftIO.Exception        (throwIO)
 
 -- | A Memcached cluster client.
 type Client = Cluster
@@ -149,13 +149,20 @@ type StatResults = [(ByteString, ByteString)]
 newClient :: [ServerSpec] -> Options -> IO Client
 newClient scs = newCluster $ if null scs then [defaultServerSpec] else scs
 
--- | Close all client connections, ignoring individual shutdown failures.
+-- | Close the client's connections to every server, including servers marked
+-- dead. Idle connections are closed straight away. A connection that another
+-- thread is using at the time is closed as soon as the request using it
+-- finishes, instead of going back to the pool; 'quit' doesn't wait for those
+-- requests or interrupt them. Requests that start after 'quit', including
+-- later requests of an operation that was already running, never use those
+-- connections: they open new ones, which stay open as usual.
+--
+-- This doesn't send Memcached's @quit@ command: closing the connection has the
+-- same effect, while sending the command would mean first connecting to any
+-- server the client has no connection to. So 'quit' never connects to a
+-- server, returns promptly and doesn't throw, even when a server is down.
 quit :: Client -> IO ()
-quit c = void $ allOp' c $ \server -> handle ignore $ do
-  withSocket server $ \socket -> sendRaw socket quitRequest
-  close server
-  where ignore :: SomeException -> IO ()
-        ignore = const (pure ())
+quit c = getServers c >>= mapM_ closeAll
 
 -- | Retrieve the value for the given key from Memcached, along with its
 -- flags and CAS version. Returns 'Nothing' on a miss.
