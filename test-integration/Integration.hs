@@ -119,6 +119,12 @@ integrationSpecs port = beforeAll (newClient port) $ do
     decremented <- M.decrement client "integration-counter" 0 3 0 0
     decremented `shouldSatisfy` isJust
 
+  it "reads the largest counter and flags values" $ \client -> do
+    _ <- M.set client "integration-max" "18446744073709551614" maxBound 0
+    fmap fst <$> M.increment client "integration-max" 0 1 0 0 `shouldReturn` Just maxBound
+    result <- M.get client "integration-max"
+    fmap (\(_, flags, _) -> flags) result `shouldBe` Just maxBound
+
   it "appends and prepends" $ \client -> do
     cas <- M.set client "integration-modify" "middle" 0 0
     appended <- M.append client "integration-modify" "-end" cas
