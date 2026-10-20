@@ -132,6 +132,55 @@ main = hspec $ do
     it "omits zero CAS values" $
       storeRequest Set (wire "key") "v" 0 0 0 `shouldBe` "ms key 1 F0 T0 MS c\r\nv\r\n"
 
+    -- Most encoders write into a single buffer for speed; check them all
+    -- against the plainest possible spelling of each request.
+    prop "encodes every request as the concatenation of its pieces" $
+      forAll wireKeyGen $ \key ->
+      forAll requestValueGen $ \value ->
+      forAll ((,,) <$> numberGen <*> numberGen <*> numberGen) $ \(flags, expiry, version) ->
+      forAll ((,) <$> numberGen <*> numberGen) $ \(initial, delta) ->
+      forAll ((,) <$> elements [Set, Add, Replace, Append, Prepend] <*> elements [Incr, Decr]) $ \(mode, arith) ->
+        let keyArgs = wireKey key <> binaryFlag key
+            binaryFlag k = if wireB64 k then " b" else ""
+            casArg n = if n == 0 then "" else " C" <> decimal n
+            decimal :: Show a => a -> B.ByteString
+            decimal = C.pack . show
+            modeLetter m = case m of
+              Set -> "S"
+              Add -> "E"
+              Replace -> "R"
+              Append -> "A"
+              Prepend -> "P"
+            arithLetter m = case m of
+              Incr -> "I"
+              Decr -> "D"
+        in conjoin
+          [ getRequest key === B.concat ["mg ", keyArgs, " v f c\r\n"]
+          , getManyRequest key === B.concat ["mg ", keyArgs, " v f c k q\r\n"]
+          , gatRequest key expiry === B.concat ["mg ", keyArgs, " v f c T", decimal expiry, "\r\n"]
+          , touchRequest key expiry === B.concat ["mg ", keyArgs, " T", decimal expiry, " c\r\n"]
+          , storeRequest mode key value flags expiry version === B.concat
+              [ "ms ", wireKey key, " ", decimal (B.length value), " F", decimal flags
+              , " T", decimal expiry, casArg version, " M", modeLetter mode, binaryFlag key
+              , " c\r\n", value, "\r\n" ]
+          , modifyRequest mode key value version === B.concat
+              [ "ms ", wireKey key, " ", decimal (B.length value), " M", modeLetter mode
+              , binaryFlag key, casArg version, " c\r\n", value, "\r\n" ]
+          , arithmeticRequest arith key initial delta expiry version === B.concat
+              [ "ma ", keyArgs, " D", decimal delta, casArg version, " M", arithLetter arith, " v c"
+              , if expiry == maxBound then "" else " N" <> decimal expiry <> " J" <> decimal initial
+              , "\r\n" ]
+          , deleteRequest key version === B.concat ["md ", keyArgs, casArg version, "\r\n"]
+          , flushRequest (Just expiry) === B.concat ["flush_all ", decimal expiry, "\r\n"]
+          , flushRequest Nothing === "flush_all\r\n"
+          , statsRequest Nothing === "stats\r\n"
+          , statsRequest (Just (wireKey key)) === B.concat ["stats ", wireKey key, "\r\n"]
+          , versionRequest === "version\r\n"
+          , quitRequest === "quit\r\n"
+          , noOpRequest === "mn\r\n"
+          , authRequest value === B.concat ["set auth 0 0 ", decimal (B.length value), "\r\n", value, "\r\n"]
+          ]
+
   describe "response parsing" $ do
     it "parses values and protocol errors" $ do
       recvResponseFrom "VA 3 f7 c9 O2\r\nabc\r\n" `shouldReturn` Response "VA" ["3", "f7", "c9", "O2"] "abc"
@@ -623,6 +672,22 @@ valueGen :: Gen B.ByteString
 valueGen = B.pack <$> do
   len <- choose (0, 3000)
   vectorOf len arbitrary
+
+-- | Keys the encoder accepts, plain and base64.
+wireKeyGen :: Gen WireKey
+wireKeyGen = keyGen `suchThatMap` (either (const Nothing) Just . encodeKey)
+
+-- | Request values, sometimes over the size above which
+-- 'Data.ByteString.Builder.byteString' stops copying.
+requestValueGen :: Gen B.ByteString
+requestValueGen = frequency
+  [ (4, valueGen)
+  , (1, B.replicate <$> choose (8 * 1024, 20 * 1024) <*> arbitrary)
+  ]
+
+-- | Numbers of any size, with the edges of their range picked often.
+numberGen :: (Arbitrary a, Bounded a, Num a) => Gen a
+numberGen = frequency [(1, elements [0, 1, maxBound]), (4, arbitrary)]
 
 unsafeByte :: (Ord a, Num a) => a -> Bool
 unsafeByte c = c <= 0x20 || c == 0x7f
