@@ -146,6 +146,14 @@ type StatResults = [(ByteString, ByteString)]
 
 -- | Create a client for the supplied servers. An empty list uses
 -- 'defaultServerSpec'.
+--
+-- Create one client and share it for the life of your program. It is safe to
+-- use from many threads, and it keeps a pool of connections to each server,
+-- opened on first use and reused across requests. A client created for each
+-- request instead opens (and, with credentials, authenticates) a new
+-- connection to every server it uses, every time. Each pool holds up to
+-- 'soNumResources' connections, one by default, so concurrent requests to a
+-- server beyond that wait for a free connection.
 newClient :: [ServerSpec] -> Options -> IO Client
 newClient scs = newCluster $ if null scs then [defaultServerSpec] else scs
 
@@ -166,6 +174,12 @@ quit c = getServers c >>= mapM_ closeAll
 
 -- | Create a client with 'newClient', run an action with it, and close the
 -- client's connections with 'quit' when the action returns or throws.
+--
+-- Use it to scope one long-lived client to your program, a worker or a test,
+-- and share that client between threads. Don't wrap individual requests in
+-- it: every new client opens (and, with credentials, authenticates) its own
+-- connection to each server it uses, so a client per request pays that cost
+-- on every request.
 --
 -- 'newClient' doesn't connect to any server (connections are opened on first
 -- use), so if it throws there is nothing to close. 'quit' doesn't throw, so
