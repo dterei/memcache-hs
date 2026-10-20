@@ -216,7 +216,9 @@ keyedOp c k makeReq = do
         Just s  -> serverOp c s (makeReq wire)
         Nothing -> throwIO $ ClientError NoServersReady
 
--- | Run keyed requests grouped by their selected server.
+-- | Run keyed requests grouped by their selected server. Each request must
+-- get at most one reply before the @MN@ that answers the batch's trailing
+-- @mn@; a server that sends more fails with 'UnexpectedResponse'.
 keyedBatchOp :: Cluster -> [(Key, WireKey -> ByteString)] -> IO [(Key, Response)]
 keyedBatchOp c requests = do
     groups <- foldM add [] requests
@@ -241,15 +243,21 @@ keyedBatchOp c requests = do
     -- still writing, which would deadlock both ends until the op times out.
     runBatch server items = retryOp c server $ withSocket server $ \connection -> do
       sendRaw connection (B.concat (map request items) <> noOpRequest)
-      replies <- recvUntilMN connection []
+      replies <- recvUntilMN connection (length items) []
       return [(key, response) | response <- replies, Just key <- [responseKey response items]]
 
-    recvUntilMN connection acc = do
+    -- Each request gets at most one reply before the MN that answers the
+    -- trailing no-op, so any more means the server is not answering these
+    -- requests; stop rather than keep reading.
+    recvUntilMN connection remaining acc = do
       response <- recvResponse connection
       rejectProtocolError response
       if responseCode response == "MN"
         then return (reverse acc)
-        else recvUntilMN connection (response : acc)
+        else if remaining <= 0
+          then throwIO $ ProtocolError UnexpectedResponse
+            { protocolError = "more replies than requests" }
+          else recvUntilMN connection (remaining - 1) (response : acc)
 
     -- Match the echoed key together with its base64 flag: a plain key can
     -- have the same bytes as another key's base64 form.

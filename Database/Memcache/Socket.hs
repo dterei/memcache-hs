@@ -178,7 +178,8 @@ recvExact s n
         then writeBuffer s (B.drop takeN buffer) >> go (wanted - takeN) (B.take takeN buffer : acc)
         else readChunk wanted s >> go wanted acc
 
--- | Receive through the first occurrence of a delimiter, including it.
+-- | Receive through the first occurrence of a delimiter, including it. Throws
+-- 'BadLength' if the delimiter has not arrived within the first 1 MiB.
 recvRawUntil :: ByteString -> Connection -> IO ByteString
 recvRawUntil end s = go B.empty
   where
@@ -189,7 +190,17 @@ recvRawUntil end s = go B.empty
         (before, rest) | not (B.null rest) -> do
           writeBuffer s (B.drop (B.length end) rest)
           return (before <> end)
-        _ -> writeBuffer s B.empty >> readChunk 0 s >> go combined
+        _ | B.length combined > maxRawLength ->
+            throwIO $ ProtocolError BadLength { protocolError = "response too long" }
+          | otherwise -> writeBuffer s B.empty >> readChunk 0 s >> go combined
+
+-- | Longest response 'recvRawUntil' reads while waiting for its delimiter.
+-- ElastiCache discovery reads its cluster configuration with it, which lists
+-- each node as a host name (at most 253 bytes), an IP address and a port: at
+-- most about 300 bytes a node, so this holds over 3,000 nodes. ElastiCache
+-- allows 60 nodes in a Memcached cluster unless that quota is raised.
+maxRawLength :: Int
+maxRawLength = 1024 * 1024
 
 readChunk :: Int -> Connection -> IO ()
 readChunk n (Connection s ref) = do

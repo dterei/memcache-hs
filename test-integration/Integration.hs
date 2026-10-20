@@ -141,6 +141,17 @@ integrationSpecs port = beforeAll (newClient port) $ do
     M.flush client Nothing
     M.get client "integration-flush" `shouldReturn` Nothing
 
+  it "reads each stats group with every slab class in use" $ \client -> do
+    -- Sizes 25% apart, like the default slab classes, so every class gets a
+    -- value: about 1,100 lines of stats items from memcached 1.6.
+    forM_ (takeWhile (< 512 * 1024) (iterate (\n -> n * 5 `div` 4 + 1) 1)) $ \n ->
+      M.set client (B.pack ("integration-slab-" <> show n)) (B.replicate n 'x') 0 0
+    forM_ ["items", "slabs", "sizes", "settings", "conns"] $ \group -> do
+      stats <- M.stats client (Just group)
+      stats `shouldSatisfy` not . all (null . snd)
+    [(_, items)] <- M.stats client (Just "items")
+    length [field | (field, _) <- items, ":number" `B.isSuffixOf` field] `shouldSatisfy` (>= 30)
+
   it "reads stats" $ \client -> do
     stats <- M.stats client Nothing
     stats `shouldSatisfy` not . all (null . snd)
