@@ -311,7 +311,9 @@ storeRequest mode key value flags expiry version =
   cmdMetaSet <> " " <> wireKey key <> " " <> dec (B.length value) <> " F" <> dec flags <> " T" <> dec expiry
   <> cas version <> " M" <> storeMode mode <> keyFlag key <> " c" <> crlf <> value <> crlf
 
--- | Encode an increment or decrement request.
+-- | Encode an increment or decrement request. Unless the expiration is
+-- 'maxBound', the request asks the server to create a missing key with the
+-- initial value and that expiration.
 arithmeticRequest :: ArithMode -> WireKey -> Initial -> Delta -> Expiration -> Version -> ByteString
 arithmeticRequest mode key initial delta expiry version =
   cmdMetaArith <> " " <> keyArgs key <> " D" <> dec delta <> cas version <> " M" <> arithMode mode <> " v c"

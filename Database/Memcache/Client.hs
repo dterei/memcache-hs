@@ -48,6 +48,9 @@ also have the following concepts exposed by Memcached:
   [@version@] Each value has a 'Version' associated with it. This is simply a
               numeric, monotonically increasing value. The version field
               allows for a primitive version of 'cas' to be implemented.
+              Operations that take a 'Version' only change a value whose
+              version matches it, except that a 'Version' of @0@ skips the
+              check.
 
   [@expiration@] Each value pair has an 'Expiration' associated with it. Once a
                  a value expires, it will no longer be returned from the cache
@@ -66,16 +69,19 @@ also have the following concepts exposed by Memcached:
 
 Usage is roughly as follows:
 
-> module Main where
+> {-# LANGUAGE OverloadedStrings #-}
+>
+> module Main (main) where
 >
 > import qualified Database.Memcache.Client as M
 >
+> main :: IO ()
 > main = do
->     -- use default values: connects to localhost:11211
+>     -- use default values: connects to 127.0.0.1:11211
 >     mc <- M.newClient [M.def] M.def
 >
 >     -- store and then retrieve a key-value pair
->     M.set mc "key" "value" 0 0
+>     _ <- M.set mc "key" "value" 0 0
 >     v' <- M.get mc "key"
 >     case v' of
 >         Nothing        -> putStrLn "Miss!"
@@ -201,9 +207,12 @@ set c k v f e = store c k v f e 0 Set "SET"
 
 -- | Store a key-value pair, but only if the version specified by the client
 -- matches the @Version@ of the key-value pair at the server. The version
--- identifier of the stored key-value pair is returned, or if the version match
--- fails, @Nothing@ is returned. Use an expiration value of @0@ to store
--- forever.
+-- identifier of the stored key-value pair is returned, or if the key doesn't
+-- exist or the version match fails, @Nothing@ is returned. Use an expiration
+-- value of @0@ to store forever.
+--
+-- A version of @0@ skips the check, so the value is stored unconditionally, as
+-- with 'set'.
 cas :: Cluster -> Key -> Value -> Flags -> Expiration -> Version -> IO (Maybe Version)
 cas c k v f e ver = do
   response <- keyedOp c k (\wire -> storeRequest Set wire v f e ver)
@@ -229,6 +238,9 @@ add c k v f e = do
 -- | Update the value of an existing key-value pair, returning its new @Version@
 -- identifier. If the key doesn't already exist, then fail and return 'Nothing'.
 -- Use an expiration value of @0@ to store forever.
+--
+-- A non-zero version must match the @Version@ of the key-value pair at the
+-- server, otherwise 'Nothing' is returned. A version of @0@ skips the check.
 replace :: Cluster -> Key -> Value -> Flags -> Expiration -> Version -> IO (Maybe Version)
 replace c k v f e ver = do
   response <- keyedOp c k (\wire -> storeRequest Replace wire v f e ver)
@@ -249,14 +261,28 @@ store c k v f e ver mode operation = do
     _ -> failResponse response operation
 
 -- | Increment a numeric value stored against a key, returning the incremented
--- value and the @Version@ identifier of the key-value pair. Use an expiration
--- value of @0@ to store forever.
+-- value and the @Version@ identifier of the key-value pair. Throws
+-- 'OpError' 'ErrValueNonNumeric' if the stored value isn't a number.
+--
+-- If the key doesn't exist, it is created with the 'Initial' value, which is
+-- returned without the delta applied. The expiration is only used for a key
+-- created this way, and doesn't change the expiration of an existing key; use
+-- @0@ for a created key that never expires. To leave a missing key missing
+-- instead, pass an expiration of 'maxBound': nothing is created and 'Nothing'
+-- is returned.
+--
+-- A non-zero version must match the @Version@ of an existing key-value pair,
+-- otherwise 'Nothing' is returned. A version of @0@ skips the check.
 increment :: Cluster -> Key -> Initial -> Delta -> Expiration -> Version -> IO (Maybe (Word64, Version))
 increment c k i d e ver = arithmetic c k i d e ver Incr "INCREMENT"
 
 -- | Decrement a numeric value stored against a key, returning the decremented
--- value and the @Version@ identifier of the key-value pair. Use an expiration
--- value of @0@ to store forever.
+-- value and the @Version@ identifier of the key-value pair. Memcached doesn't
+-- decrement below @0@.
+--
+-- Otherwise this behaves like 'increment': a missing key is created with the
+-- 'Initial' value unless the expiration is 'maxBound', a version of @0@ skips
+-- the check, and a non-numeric value throws 'OpError' 'ErrValueNonNumeric'.
 decrement :: Cluster -> Key -> Initial -> Delta -> Expiration -> Version -> IO (Maybe (Word64, Version))
 decrement c k i d e ver = arithmetic c k i d e ver Decr "DECREMENT"
 
@@ -272,12 +298,22 @@ arithmetic c k i d e ver mode operation = do
     _ -> failResponse response operation
 
 -- | Append a value to an existing key-value pair, returning the new @Version@
--- identifier of the key-value pair when successful.
+-- identifier of the key-value pair when successful, or 'Nothing' if the key
+-- doesn't exist.
+--
+-- A non-zero version must match the @Version@ of the key-value pair at the
+-- server, otherwise 'OpError' 'ErrKeyExists' is thrown. A version of @0@ skips
+-- the check.
 append :: Cluster -> Key -> Value -> Version -> IO (Maybe Version)
 append c k v ver = modify c k v ver Append "APPEND"
 
 -- | Prepend a value to an existing key-value pair, returning the new @Version@
--- identifier of the key-value pair when successful.
+-- identifier of the key-value pair when successful, or 'Nothing' if the key
+-- doesn't exist.
+--
+-- A non-zero version must match the @Version@ of the key-value pair at the
+-- server, otherwise 'OpError' 'ErrKeyExists' is thrown. A version of @0@ skips
+-- the check.
 prepend :: Cluster -> Key -> Value -> Version -> IO (Maybe Version)
 prepend c k v ver = modify c k v ver Prepend "PREPEND"
 
@@ -292,6 +328,10 @@ modify c k v ver mode operation = do
     _ -> failResponse response operation
 
 -- | Delete a key, returning whether it was deleted.
+--
+-- A non-zero version must match the @Version@ of the key-value pair at the
+-- server, otherwise the key isn't deleted and 'False' is returned. A version
+-- of @0@ deletes the key unconditionally.
 delete :: Cluster -> Key -> Version -> IO Bool
 delete c k ver = do
   response <- keyedOp c k (`deleteRequest` ver)

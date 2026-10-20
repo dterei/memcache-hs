@@ -37,7 +37,8 @@ type Delta      = Word64
 type Expiration = Word32
 -- | Application-defined value flags.
 type Flags      = Word32
--- | CAS version associated with a value.
+-- | CAS version associated with a value. Operations that take a version skip
+-- the CAS check when it is @0@.
 type Version    = Word64
 
 -- | Status reported by a Memcached operation.
