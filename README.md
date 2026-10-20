@@ -73,6 +73,16 @@ value, unless the expiration is `maxBound`. The
 documentation covers every operation, along with the timeouts, retries and
 failover configured through `Options`.
 
+Create one client when your program starts and share it: it is safe to use
+from many threads, and it keeps its connections to each server open between
+requests. A client created for each request opens a new connection to every
+server it uses (and authenticates, if credentials are set) every time.
+`M.withClient` closes a client's connections when an action ends, so use it
+around your whole program, a worker or a test, not around single requests.
+Each server's pool holds one connection by default, so concurrent requests to
+the same server wait for each other; see
+[Architecture Notes](#architecture-notes) to allow more.
+
 ### Servers and authentication
 
 `newClient` takes one `ServerSpec` per server, and routes each key to one of

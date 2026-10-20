@@ -512,6 +512,30 @@ main = hspec $ do
         sendRaw c1 "x\r\n" `shouldThrow` anyException
         sendRaw c2 "x\r\n" `shouldReturn` ()
 
+    it "withClient returns the action's result and closes the connection" $
+      withMockServer [MR "VA 3 f2 c7\r\nfoo\r\n", MR "VA 3 f2 c7\r\nbar\r\n"] $ \server -> do
+        (client, result) <- Client.withClient [mockServerSpec server] Client.def $ \client ->
+          (,) client <$> Client.get client "key"
+        result `shouldBe` Just ("foo", 2, 7)
+        getFromNewClient server `shouldReturn` Just ("bar", 2, 7)
+        keepReachable client
+
+    it "withClient rethrows the action's exception and closes the connection" $
+      withMockServer [MR "VA 3 f2 c7\r\nfoo\r\n", MR "VA 3 f2 c7\r\nbar\r\n"] $ \server -> do
+        saved <- newEmptyMVar
+        Client.withClient [mockServerSpec server] Client.def (\client -> do
+          putMVar saved client
+          Client.get client "key" `shouldReturn` Just ("foo", 2, 7)
+          ioError (userError "boom"))
+          `shouldThrow` (== userError "boom")
+        getFromNewClient server `shouldReturn` Just ("bar", 2, 7)
+        takeMVar saved >>= keepReachable
+
+    it "withClient returns normally when every server has been marked dead" $
+      withMockServer [CloseConnection, CloseConnection] $ \server ->
+        Client.withClient [mockServerSpec server] fastFailover (\client ->
+          Client.get client "key" `shouldThrow` isUnexpectedEOF)
+          `shouldReturn` ()
 
   describe "authenticate" $ do
     it "accepts credentials once the server confirms auth-file mode" $
@@ -745,12 +769,13 @@ withServerAndClient = withServerAndClientOpts Client.def
 withServerAndClientOpts
   :: Client.Options -> [MockResponse] -> (MockServer -> Client.Client -> IO a) -> IO a
 withServerAndClientOpts opts responses action = withMockServer responses $ \server ->
-  -- Read the client once the action ends, so it stays reachable until then:
-  -- otherwise the pool's finalizers could close its connections while a test
-  -- is checking that quit closed them.
-  bracket (Client.newClient [mockServerSpec server] opts)
-    (Cluster.getServers >=> mapM_ (readIORef . Server.failed))
-    (action server)
+  bracket (Client.newClient [mockServerSpec server] opts) keepReachable (action server)
+
+-- | Use the client, so it stays reachable until this point: otherwise the
+-- pool's finalizers could close its connections while a test is checking that
+-- 'Client.quit' closed them.
+keepReachable :: Client.Client -> IO ()
+keepReachable = Cluster.getServers >=> mapM_ (readIORef . Server.failed)
 
 -- | Get @"key"@ from the mock with a new client.
 getFromNewClient :: MockServer -> IO (Maybe (Client.Value, Client.Flags, Client.Version))

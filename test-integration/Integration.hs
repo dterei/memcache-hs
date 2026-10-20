@@ -145,6 +145,26 @@ integrationSpecs port = beforeAll (newClient port) $ do
     stats <- M.stats client Nothing
     stats `shouldSatisfy` not . all (null . snd)
 
+  it "closes the connection withClient opened" $ \client -> do
+    let connections = do
+          stats <- M.stats client Nothing
+          return [maybe 0 (read @Int . B.unpack) (lookup "curr_connections" s) | (_, s) <- stats]
+        -- memcached notices a closed connection asynchronously.
+        waitFor expected attempts = do
+          current <- connections
+          if current == expected || attempts <= (0 :: Int)
+            then current `shouldBe` expected
+            else threadDelay 10000 >> waitFor expected (attempts - 1)
+    initial <- connections
+    other <- M.withClient [ServerSpec "127.0.0.1" (show port) M.NoAuth] M.def $ \c -> do
+      _ <- M.version c
+      waitFor (map (+ 1) initial) 100
+      return c
+    waitFor initial 100
+    -- Using the client afterwards keeps it reachable, so the garbage collector
+    -- can't be what closed its connection.
+    M.quit other
+
   it "roundtrips a large value" $ \client -> do
     let value = B.replicate 100000 'x'
     _ <- M.set client "integration-large" value 0 0
