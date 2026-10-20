@@ -1,10 +1,3 @@
-# Unreleased
-
-- Document that a `Version` of `0` skips the CAS check, and when `increment`
-  and `decrement` create a missing key. Fix the usage example in
-  `Database.Memcache.Client`, and add usage and development instructions to
-  the README.
-
 # 0.4.1.0 - October 19th, 2026
 
 No API or behaviour changes from 0.4.0.0.
@@ -12,6 +5,10 @@ No API or behaviour changes from 0.4.0.0.
 - Reading a large value no longer allocates memory quadratic in its size. Each
   receive is now capped at 64KiB, so fetching a 32MiB value allocates about
   67MB rather than about 1.7GB.
+- Requests that carry a value or a number are now encoded into a single
+  buffer instead of a chain of appends that copied the value once per piece.
+  Encoding a 64KiB `set` takes about 4µs instead of about 57µs, and a 1MiB
+  `set` about 75µs instead of 1.7ms.
 - Drop the dependency on `errors` (and, through it, `safe`, `exceptions` and
   `transformers-compat`), which was only used for a one-line helper.
 - Replace the hpack `package.yaml` with a hand-written `memcache.cabal`
@@ -22,6 +19,10 @@ No API or behaviour changes from 0.4.0.0.
 - Fix the `parser` benchmark, which no longer compiled, and extend it to cover
   key and request encoding and response parsing.
 - Expand the package description.
+- Document that a `Version` of `0` skips the CAS check, and when `increment`
+  and `decrement` create a missing key. Fix the usage example in
+  `Database.Memcache.Client`, and add usage and development instructions to
+  the README and a security policy.
 - Greatly expand the test suite. Unit tests against mock servers now cover
   every request encoder and client operation, retries and failover,
   authentication, `parseServerSpec` and ElastiCache discovery, and the
