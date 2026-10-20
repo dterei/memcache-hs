@@ -130,6 +130,19 @@ integrationSpecs port = beforeAll (newClient port) $ do
     result <- M.get client "integration-modify"
     fmap first result `shouldBe` Just "start-middle-end"
 
+  it "appends and prepends only when the key exists and the CAS matches" $ \client -> do
+    old <- M.set client "integration-modify-cas" "middle" 0 0
+    Just appended <- M.append client "integration-modify-cas" "-end" old
+    M.append client "integration-modify-cas" "-stale" old `shouldReturn` Nothing
+
+    Just prepended <- M.prepend client "integration-modify-cas" "start-" appended
+    M.prepend client "integration-modify-cas" "stale-" old `shouldReturn` Nothing
+
+    M.get client "integration-modify-cas" `shouldReturn` Just ("start-middle-end", 0, prepended)
+
+    M.append client "integration-no-modify" "-end" old `shouldReturn` Nothing
+    M.prepend client "integration-no-modify" "start-" old `shouldReturn` Nothing
+
   it "modifies encoded keys" $ \client -> do
     _ <- M.set client "integration modify key" "middle" 0 0
     _ <- M.append client "integration modify key" "-end" 0
