@@ -111,6 +111,37 @@ integrationSpecs port = beforeAll (newClient port) $ do
     lookup "integration-many" values `shouldSatisfy` isJust
     lookup "integration key" values `shouldSatisfy` isJust
 
+  it "sets many keys, including encoded keys, and gets them back" $ \client -> do
+    let items = [("integration-set-many", "one", 1, 0), ("integration set many", "two", 2, 0)]
+        keys = [key | (key, _, _, _) <- items]
+    versions <- M.setMany client items
+    -- One server, so the results are in the order given.
+    map fst versions `shouldBe` keys
+    values <- M.getMany client keys
+    values `shouldMatchList`
+      [(key, (value, flags, version)) | ((key, value, flags, _), (_, version)) <- zip items versions]
+
+  it "sets a plain key and another key's base64 form separately" $ \client -> do
+    -- " " is sent, and echoed, as IA== with the b flag.
+    versions <- M.setMany client [("IA==", "plain", 0, 0), (" ", "space", 0, 0)]
+    map fst versions `shouldBe` ["IA==", " "]
+    M.getMany client ["IA==", " "] `shouldReturn`
+      [(key, (value, 0, version)) | ((key, version), value) <- zip versions ["plain", "space"]]
+
+  it "sets a key repeated in a batch to its last value" $ \client -> do
+    let key = "integration-set-many-twice"
+    [(_, old), (_, new)] <- M.setMany client [(key, "old", 0, 0), (key, "new", 0, 0)]
+    new `shouldSatisfy` (/= old)
+    M.get client key `shouldReturn` Just ("new", 0, new)
+
+  it "deletes many keys, present and missing" $ \client -> do
+    let keys = ["integration-delete-many", "integration delete many", "integration-delete-many-missing"]
+    _ <- M.setMany client [(key, "value", 0, 0) | key <- take 2 keys]
+    M.deleteMany client keys
+    M.getMany client keys `shouldReturn` []
+    -- Every key is missing now, which is not an error.
+    M.deleteMany client keys
+
   it "increments and decrements counters" $ \client -> do
     _ <- M.delete client "integration-counter" 0
     incremented <- M.increment client "integration-counter" 10 2 0 0
@@ -211,6 +242,14 @@ clusterSpecs ports = beforeAll newClusterClient $ do
     storeKeys client
     values <- M.getMany client keys
     map fst values `shouldMatchList` keys
+
+  it "sets and deletes many keys" $ \client -> do
+    versions <- M.setMany client [(key, key, 0, 0) | key <- keys]
+    map fst versions `shouldMatchList` keys
+    values <- M.getMany client keys
+    values `shouldMatchList` [(key, (key, 0, version)) | (key, version) <- versions]
+    M.deleteMany client keys
+    M.getMany client keys `shouldReturn` []
 
   it "reads stats from every server" $ \client -> do
     stats <- M.stats client Nothing

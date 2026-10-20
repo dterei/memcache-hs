@@ -109,13 +109,13 @@ module Database.Memcache.Client (
         get, getMany, gat, touch,
 
         -- ** Set operations
-        set, cas, add, replace,
+        set, setMany, cas, add, replace,
 
         -- ** Modify operations
         increment, decrement, append, prepend,
 
         -- ** Delete operations
-        delete, flush,
+        delete, deleteMany, flush,
 
         -- ** Information operations
         StatResults, stats, version,
@@ -247,6 +247,31 @@ touch c k e = do
 -- identifier. Use an expiration value of @0@ to store forever.
 set :: Client -> Key -> Value -> Flags -> Expiration -> IO Version
 set c k v f e = store c k v f e 0 Set "SET"
+
+-- | Store many key-value pairs, as 'set' does, returning the new @Version@ of
+-- each. Like 'getMany', the requests to each server are pipelined, and the
+-- results are grouped by server rather than in the order given; within a
+-- server they keep the input order. A key given more than once is stored
+-- once per occurrence, in order, so its last entry in the result is the
+-- version now stored. Use an expiration value of @0@ to store forever.
+--
+-- Every key is checked before anything is sent, so an invalid key stores
+-- nothing. Each server's pairs are sent in batches of up to 256 that close
+-- early once their requests reach 1 MiB (a larger request goes alone), and
+-- each batch, like a 'set', must finish within 'optsServerTimeout'. When a
+-- server fails part-way through, the requests it was handling are sent again,
+-- storing the same values; the versions returned are from the retry. If this
+-- throws, some of the pairs may have been stored.
+setMany :: Client -> [(Key, Value, Flags, Expiration)] -> IO [(Key, Version)]
+setMany c items = do
+  replies <- keyedBatchOp c [(k, \wire -> setManyRequest wire v f e) | (k, v, f, e) <- items]
+  mapM stored replies
+  where
+    stored (key, response) = do
+      status <- responseStatus response
+      case status of
+        NoError -> return (key, responseCas response)
+        _ -> failResponse response "SETMANY"
 
 -- | Store a key-value pair, but only if the version specified by the client
 -- matches the @Version@ of the key-value pair at the server. The version
@@ -384,6 +409,27 @@ delete c k ver = do
     ErrKeyNotFound -> return False
     ErrKeyExists -> return False
     _ -> failResponse response "DELETE"
+
+-- | Delete many keys, pipelining the requests to each server as 'getMany'
+-- does. The deletes are unconditional, like 'delete' with a version of @0@.
+--
+-- This returns once each key has been deleted or found missing, without
+-- saying which: when a server fails part-way through, the requests it was
+-- handling are sent again, and the retry finds the keys the first attempt
+-- deleted missing, so a per-key answer would be wrong for them. Use 'delete'
+-- to learn whether a key was present.
+--
+-- Every key is checked before anything is sent, so an invalid key deletes
+-- nothing. If this throws, some of the keys may have been deleted.
+deleteMany :: Client -> [Key] -> IO ()
+deleteMany c keys = do
+  replies <- keyedBatchOp c [(key, deleteManyRequest) | key <- keys]
+  forM_ replies $ \(_, response) -> do
+    status <- responseStatus response
+    case status of
+      NoError -> return ()
+      ErrKeyNotFound -> return ()
+      _ -> failResponse response "DELETEMANY"
 
 -- | Remove (delete) all currently stored key-value pairs from the cluster. The
 -- expiration value can be used to cause this flush to occur in the future

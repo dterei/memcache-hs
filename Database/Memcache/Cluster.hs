@@ -227,20 +227,20 @@ keyedBatchOp c requests = do
       server <- cGetServerForKey c c key
       case server of
         Nothing -> throwIO $ ClientError NoServersReady
-        Just s -> return (insertGroup s (key, wire, makeRequest) groups)
+        Just s -> return (insertGroup s (key, wire, makeRequest wire) groups)
 
     insertGroup s item [] = [(s, [item])]
     insertGroup s item ((s', items):rest)
       | s == s' = (s', item:items) : rest
       | otherwise = (s', items) : insertGroup s item rest
 
-    run (server, items) = concat <$> mapM (runBatch server) (chunksOf batchSize (reverse items))
+    run (server, items) = concat <$> mapM (runBatch server) (batches (reverse items))
 
     -- Write the whole batch in one go, then read it back. Batches are bounded
     -- so the server's replies cannot fill the socket buffers while we are
     -- still writing, which would deadlock both ends until the op times out.
     runBatch server items = retryOp c server $ withSocket server $ \connection -> do
-      sendRaw connection (B.concat (map request items) <> noOpRequest)
+      sendRaw connection (B.concat (map request items ++ [noOpRequest]))
       replies <- recvUntilMN connection []
       return [(key, response) | response <- replies, Just key <- [responseKey response items]]
 
@@ -256,17 +256,28 @@ keyedBatchOp c requests = do
     responseKey response items = do
       echoed <- find (B.isPrefixOf "k") (responseTokens response)
       let wire = WireKey (B.drop 1 echoed) ("b" `elem` responseTokens response)
-      (key, _, _) <- find ((== wire) . snd3) items
+      (key, _, _) <- find (\(_, wire', _) -> wire' == wire) items
       return key
 
-    request (_, wire, makeRequest) = makeRequest wire
-    snd3 (_, wire, _) = wire
+    request (_, _, req) = req
 
     batchSize = 256 :: Int
 
-    chunksOf n xs = case splitAt n xs of
-      (chunk, []) -> [chunk]
-      (chunk, rest) -> chunk : chunksOf n rest
+    -- Each batch must be sent and answered within the server timeout, so a
+    -- batch also closes once its requests reach 1 MiB, memcached's default
+    -- item size limit. A batch is then no larger than a single large store;
+    -- a request over the limit goes in a batch of its own.
+    batchBytes = 1048576 :: Int
+
+    batches [] = []
+    batches xs = batch : batches rest
+      where (batch, rest) = splitBatch 0 0 xs
+
+    splitBatch n bytes (x:xs)
+      | n == 0 || (n < batchSize && bytes' <= batchBytes) =
+          let (batch, rest) = splitBatch (n + 1) bytes' xs in (x : batch, rest)
+      where bytes' = bytes + B.length (request x)
+    splitBatch _ _ xs = ([], xs)
 
 -- | Run a Memcached operation against any single server in the cluster,
 -- handling any failures that occur, retrying the specified number of times.
