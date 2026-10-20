@@ -22,6 +22,7 @@ module Database.Memcache.Auth
 import Database.Memcache.Errors
 import Database.Memcache.Socket
 import Database.Memcache.Types
+import Database.Memcache.Types.Authentication (validateCredentials)
 
 import Control.Monad (unless)
 import qualified Data.ByteString.Char8 as B8
@@ -51,12 +52,3 @@ authenticate socket (Auth user pass) = do
   where
     handleAuthFailure (ProtocolError BadCommand{}) = throwIO $ OpError TextAuthFail
     handleAuthFailure err = throwIO (err :: MemcacheError)
-
--- | Validate that credentials contain no delimiters used by the auth command.
-validateCredentials :: Username -> Password -> Either String ()
-validateCredentials user pass
-  | B8.any forbidden user = Left "username contains a forbidden delimiter"
-  | B8.any forbidden pass = Left "password contains a forbidden delimiter"
-  | otherwise = Right ()
-  where
-    forbidden c = c == ' ' || c == '\t' || c == '\r' || c == '\n' || c == ':'
