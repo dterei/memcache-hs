@@ -14,6 +14,7 @@ credentials.
 -}
 module Database.Memcache.Types.ServerSpec
   ( ServerSpec (..),
+    defaultServerSpec,
     parseServerSpec,
   )
 where
@@ -52,7 +53,7 @@ parseServerSpec s = do
     . maybe id setHost mAuth
     . maybe id setPort mAuth
     . maybe id setAuth (readAuthentication . uriUserInfo =<< mAuth)
-    $ def
+    $ defaultServerSpec
 
 readAuthentication :: String -> Maybe Authentication
 readAuthentication = go . T.pack
@@ -85,5 +86,11 @@ setPort auth ss = fromMaybe ss $ do
 setAuth :: Authentication -> ServerSpec -> ServerSpec
 setAuth auth ss = ss {ssAuth = auth}
 
+-- | The default server: @127.0.0.1@ on memcached's default port, @11211@,
+-- without authentication ('NoAuth').
+defaultServerSpec :: ServerSpec
+defaultServerSpec = ServerSpec "127.0.0.1" "11211" NoAuth
+
+-- | 'def' is 'defaultServerSpec'.
 instance Default ServerSpec where
-  def = ServerSpec "127.0.0.1" "11211" NoAuth
+  def = defaultServerSpec

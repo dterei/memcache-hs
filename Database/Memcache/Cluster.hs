@@ -19,7 +19,8 @@ servers available.
 module Database.Memcache.Cluster (
         -- * Cluster
         -- | A collection of Memcached servers with retry and routing state.
-        Cluster, ServerSpec(..), Options(..), newCluster, getServers, setServers,
+        Cluster, ServerSpec(..), Options(..), defaultOptions, newCluster,
+        getServers, setServers,
 
         -- * Operations
         Retries, keyedOp, keyedBatchOp, anyOp, allOp, allOp'
@@ -86,16 +87,34 @@ data Options = Options {
         optsServerOptions :: ServerOptions
     }
 
-instance Default Options where
-  def = Options {
+-- | The default cluster options:
+--
+-- * 'optsServerRetries': 2
+-- * 'optsFailRetryDelay': 200ms
+-- * 'optsDeadRetryDelay': 1500ms
+-- * 'optsServerTimeout': 750ms
+-- * 'optsGetServerForKey': the built-in consistent-hashing router
+--   (@getServerForKeyDefault@, not exported; reuse it as
+--   @optsGetServerForKey defaultOptions@)
+-- * 'optsServerSpecsToServers': 'newServerDefault' for each server
+-- * 'optsServerOptions': 'defaultServerOptions'
+--
+-- Change individual fields with a record update, for example
+-- @defaultOptions { optsServerTimeout = 250 }@.
+defaultOptions :: Options
+defaultOptions = Options {
             optsServerRetries  = 2,
             optsFailRetryDelay = 200,
             optsDeadRetryDelay = 1500,
             optsServerTimeout  = 750,
             optsGetServerForKey = getServerForKeyDefault,
             optsServerSpecsToServers = mapM . newServerDefault,
-            optsServerOptions = def
+            optsServerOptions = defaultServerOptions
         }
+
+-- | 'def' is 'defaultOptions'.
+instance Default Options where
+  def = defaultOptions
 
 -- | Memcached cluster.
 data Cluster = Cluster {

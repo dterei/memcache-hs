@@ -544,6 +544,25 @@ main = hspec $ do
         results <- Client.stats client Nothing
         map snd (results :: [(Client.Server, Client.StatResults)]) `shouldBe` [[("pid", "1")]]
 
+  describe "named defaults" $ do
+    -- Options and ServerOptions have no Eq instance (Options holds functions),
+    -- so these compare the fields that can be compared.
+    let serverFields so = (Client.soNumResources so, Client.soNumStripes so, Client.soKeepAlive so)
+        optionFields o =
+          ( Client.optsServerRetries o, Client.optsFailRetryDelay o
+          , Client.optsDeadRetryDelay o, Client.optsServerTimeout o
+          , serverFields (Client.optsServerOptions o) )
+
+    it "have the documented values" $ do
+      Client.defaultServerSpec `shouldBe` Client.ServerSpec "127.0.0.1" "11211" Client.NoAuth
+      serverFields Client.defaultServerOptions `shouldBe` (1, 1, 300)
+      optionFields Client.defaultOptions `shouldBe` (2, 200, 1500, 750, (1, 1, 300))
+
+    it "are the values def gives" $ do
+      Client.defaultServerSpec `shouldBe` Client.def
+      serverFields Client.defaultServerOptions `shouldBe` serverFields Client.def
+      optionFields Client.defaultOptions `shouldBe` optionFields Client.def
+
   describe "clusters" $ do
     it "fails over to another server once one is marked dead" $
       withMockServer [MR "VA 1 f0 c1\r\nA\r\n", CloseConnection, CloseConnection] $ \a ->
