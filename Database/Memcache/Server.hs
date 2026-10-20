@@ -18,7 +18,8 @@ server's 'failed' timestamp is used by cluster retry handling.
 -}
 module Database.Memcache.Server (
       -- * Server
-        Server(sid, failed), newServerDefault, withSocket, close,
+        Server(sid, failed), serverHost, serverPort, newServerDefault,
+        withSocket, close,
 
       -- * ServerOptions
         ServerOptions(..)
@@ -45,7 +46,9 @@ import           Data.Time.Clock          (NominalDiffTime)
 
 -- | Memcached server connection.
 data Server = Server {
-        -- | ID of server for consistent hashing.
+        -- | Hash of the server's host and port, which the 'Eq' and 'Ord'
+        -- instances compare. Keys are not routed by this value; see
+        -- "Database.Memcache.Cluster".
         sid    :: {-# UNPACK #-} !Int,
         -- | Connection pool to server.
         pool   :: Pool Connection,
@@ -58,6 +61,15 @@ data Server = Server {
         -- | When did the server fail? 0 if it is alive.
         failed :: IORef POSIXTime
     }
+
+-- | The host the server was configured with, as given in its 'ServerSpec'.
+serverHost :: Server -> HostName
+serverHost = addr
+
+-- | The port or service name the server was configured with, as given in its
+-- 'ServerSpec'.
+serverPort :: Server -> ServiceName
+serverPort = port
 
 instance Show Server where
   show Server{..} =

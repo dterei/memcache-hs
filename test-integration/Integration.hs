@@ -4,12 +4,13 @@ module Main where
 
 import           Control.Concurrent       (threadDelay)
 import           Control.Exception        (SomeException, bracket, try)
-import           Control.Monad            (forM_, void)
+import           Control.Monad            (filterM, forM, forM_, void)
 import qualified Data.ByteString.Char8    as B
 import           Data.Either              (isRight)
 import           Data.Maybe               (isJust)
 import           Data.Time.Clock.POSIX    (getPOSIXTime)
 import qualified Database.Memcache.Client as M
+import qualified Database.Memcache.Ketama as K
 import           Database.Memcache.Types  (ServerSpec (..))
 import           Network.Socket           (Family (AF_INET), SocketOption (ReuseAddr),
                                            SocketType (Stream), addrAddress, addrFamily,
@@ -179,13 +180,28 @@ authSpecs port = do
   isBadCommand (M.ProtocolError (M.BadCommand _)) = True
   isBadCommand _ = False
 
--- | Tests against several servers. Key routing currently leaves at least one
--- server without keys (#46), so these don't assume keys reach every server.
+-- | Tests against several servers.
 clusterSpecs :: [Int] -> Spec
 clusterSpecs ports = beforeAll newClusterClient $ do
   it "stores and reads back keys" $ \client -> do
     storeKeys client
     forM_ keys $ \key -> fmap first <$> M.get client key `shouldReturn` Just key
+
+  it "stores each key on the server the ketama ring assigns it" $ \client -> do
+    storeKeys client
+    -- Ask each server on its own which keys it holds.
+    held <- forM ports $ \port -> do
+      single <- M.newClient [ServerSpec "127.0.0.1" (show port) M.NoAuth] M.def
+      found <- filterM (fmap isJust . M.get single) keys
+      M.quit single
+      return found
+    -- Keys are hashed as given, not in the base64 form that keys with spaces
+    -- are sent in.
+    let ring = K.ring [(K.serverName "127.0.0.1" (B.pack (show port)), 1) | port <- ports]
+        owner key = (ports !!) <$> K.owner ring (K.keyHash key)
+    -- Before 0.5 most keys went to one server and some servers got none (#46).
+    held `shouldSatisfy` (not . any null)
+    held `shouldBe` [filter ((== Just port) . owner) keys | port <- ports]
 
   it "gets many keys" $ \client -> do
     storeKeys client
@@ -203,7 +219,10 @@ clusterSpecs ports = beforeAll newClusterClient $ do
     flushCounts client `shouldReturn` map (+ 1) counts
     M.getMany client keys `shouldReturn` []
  where
-  keys = [B.pack ("integration-cluster-" <> show n) | n <- [1 .. 300 :: Int]]
+  -- Keys with spaces are sent in base64.
+  keys =
+    [B.pack ("integration-cluster-" <> show n) | n <- [1 .. 300 :: Int]]
+      <> [B.pack ("integration cluster " <> show n) | n <- [1 .. 60 :: Int]]
   storeKeys client = forM_ keys $ \key -> M.set client key key 0 0
   -- How many times each server has run flush_all, in server order.
   flushCounts client = do

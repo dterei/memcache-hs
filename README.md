@@ -12,8 +12,11 @@ It supports the Meta Text memcached protocol and username/password
 authentication. Keys containing whitespace or control bytes are sent using its
 base64 binary-key mode. The encoded key must still fit within 250 bytes. It
 supports connecting to a single, or a cluster of memcached servers. When
-connecting to a cluster, consistent hashing is used for routing requests to
-the appropriate server.
+connecting to a cluster, keys are routed by ketama consistent hashing,
+compatible with libmemcached's weighted ketama distribution, so a key goes to
+the same server as from libmemcached-based clients given the same server list.
+Version 0.5 changed the routing, so upgrading moves most keys to a different
+server once.
 
 **This library requires memcached 1.6.0 or newer**, the first release with the
 meta commands. Against older servers every operation is rejected with `ERROR`.

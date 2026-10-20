@@ -12,9 +12,51 @@ Portability : GHC
 
 Handles a group of connections to different Memcached servers.
 
-We use consistent hashing to choose which server to route a request to. On an
-error, we mark the server as failed and remove it temporarily from the set of
-servers available.
+= Routing
+
+Keys are spread over the servers by ketama consistent hashing, computed
+exactly as libmemcached does for @MEMCACHED_BEHAVIOR_KETAMA_WEIGHTED@ (see
+"Database.Memcache.Ketama"). Each server gets 160 points on a 32-bit ring
+(156 for some numbers of servers), taken from MD5 digests of its name, and a
+key goes to the server owning the first point at or after the MD5 hash of the
+key. Adding or removing a server only moves the keys on that server's points,
+unless it changes the number of points each server gets (from 24 servers to
+25, say), which moves a few percent of the other keys too.
+
+Every server has weight 1, and is named from the host and port strings of its
+'ServerSpec' exactly as written: the host alone for port @\"11211\"@,
+otherwise @host:port@. Hosts are not resolved, so @localhost@ and @127.0.0.1@
+are different names. The key is hashed as given, not in its base64 form on
+the wire. Other clients using libmemcached's weighted ketama distribution
+therefore choose the same server for every key, as long as they are given the
+same host strings and ports in the same order and equal weights: libmemcached
+with @MEMCACHED_BEHAVIOR_KETAMA_WEIGHTED@, php-memcached with
+@OPT_LIBKETAMA_COMPATIBLE@, pylibmc with the @ketama_weighted@ behavior, and
+twemproxy with @hash: md5@ and @distribution: ketama@ and its servers listed
+without node names.
+
+The order of the servers only matters in the rare case that two of them have
+a point with the same value. The server listed first then owns the point, as
+in libmemcached 1.1 and later. Earlier versions of libmemcached, and
+twemproxy, leave such a tie to their C library's sort, so they may choose
+differently for the keys just below that point.
+
+This scheme is new in version 0.5. Earlier versions compared a @hashable@
+hash of the key with hashes of the servers, which sent nearly every key to one
+server and could differ between builds. Upgrading a cluster of /n/ servers
+therefore moves all but about one in /n/ keys to a different server, once,
+which shows up as a burst of cache misses. A single server is unaffected.
+
+= Failures
+
+On an error, we mark the server as failed and remove it temporarily from the
+set of servers available. A key whose server is marked failed goes to the next
+live server found walking forward round the ring, so keys on live servers stay
+where they are, and 'NoServersReady' is thrown only when every server is
+marked failed. This is where libmemcached's auto-eject sends the key too,
+except when the number of live servers changes how many points each server
+gets (from 26 servers to 25, say): libmemcached rebuilds the ring from the
+live servers, while we keep every server's points.
 -}
 module Database.Memcache.Cluster (
         -- * Cluster
@@ -26,20 +68,21 @@ module Database.Memcache.Cluster (
     ) where
 
 import           Database.Memcache.Errors
+import qualified Database.Memcache.Ketama as Ketama
 import           Database.Memcache.Server
 import           Database.Memcache.Types
 
 import           Control.Concurrent       (threadDelay)
 import           Control.Concurrent.MVar  (MVar, readMVar)
-import           Control.Monad            (foldM, void)
+import           Control.Monad            (foldM, void, (<=<))
 import           Data.ByteString          (ByteString)
 import qualified Data.ByteString          as B
 import           Data.Default
 import           Data.Fixed               (Milli)
-import           Data.Hashable            (hash)
 import           Data.IORef
-import           Data.List                (find, sort)
-import           Data.Maybe               (fromMaybe)
+import           Data.List                (find)
+import qualified Data.Text                as T
+import qualified Data.Text.Encoding       as T
 import           Data.Time.Clock          (NominalDiffTime)
 import           Data.Time.Clock.POSIX    (getPOSIXTime)
 import qualified Data.Vector              as V
@@ -75,7 +118,9 @@ data Options = Options {
         optsServerTimeout        :: Milli,
         -- | Figure out which server to talk to for a given key.
         --
-        -- Default is @getServerForKeyDefault@.
+        -- The default routes keys by libmemcached-compatible ketama
+        -- consistent hashing, skipping servers marked failed; see
+        -- "Database.Memcache.Cluster".
         optsGetServerForKey      :: Cluster -> Key -> IO (Maybe Server),
         -- | Convert server specifications into servers.
         --
@@ -99,7 +144,12 @@ instance Default Options where
 
 -- | Memcached cluster.
 data Cluster = Cluster {
-        cServers         :: Either (MVar (V.Vector Server)) (V.Vector Server),
+        -- | Either servers that discovery replaces, or a fixed set of servers
+        -- and their ketama ring, built on first use.
+        cServers         :: Either (MVar (V.Vector Server)) (V.Vector Server, Ketama.Ring),
+        -- | For servers in an 'MVar': the ketama ring last built and the
+        -- servers it was built for.
+        cRingCache       :: IORef (V.Vector Server, Ketama.Ring),
 
         -- See @Options@ for description of these values.
 
@@ -112,20 +162,30 @@ data Cluster = Cluster {
 
 -- | Get the currently configured servers.
 getServers :: Cluster -> IO (V.Vector Server)
-getServers = either readMVar pure . cServers
+getServers = either readMVar (pure . fst) . cServers
 
 -- | Replace the cluster's server set, preserving its routing and retry options.
+--
+-- Servers are kept in the order given, which breaks ties on the ketama ring
+-- (see "Database.Memcache.Cluster"). A cluster given an 'MVar' caches the ring
+-- for the servers in it, rebuilding it only when their hosts or ports change.
+-- Every cluster made by 'setServers' shares that cache with the one it was
+-- made from, so alternating between two clusters with different hosts in
+-- their 'MVar's rebuilds the ring on each switch.
 setServers :: Cluster -> Either (MVar (V.Vector Server)) (V.Vector Server) -> Cluster
-setServers c servers = c { cServers = servers }
+setServers c servers = c { cServers = fmap withRing servers }
 
 -- | Establish a new connection to a group of Memcached servers.
 newCluster :: [ServerSpec] -> Options -> IO Cluster
 newCluster []    _ = throwIO $ ClientError NoServersReady
 newCluster hosts Options{..} = do
     s <- optsServerSpecsToServers optsServerOptions hosts
+    let fixed = withRing (V.fromList s)
+    cache <- newIORef fixed
     return $
         Cluster {
-            cServers   = Right $ V.fromList $ sort s,
+            cServers   = Right fixed,
+            cRingCache = cache,
             cRetries   = optsServerRetries ,
             cFailDelay = toMicroseconds optsFailRetryDelay,
             cDeadDelay = fromRational $ toRational optsDeadRetryDelay / 1000,
@@ -159,17 +219,63 @@ aliveServers :: Cluster -> IO (V.Vector Server)
 {-# INLINE aliveServers #-}
 aliveServers c = getServers c >>= V.filterM (serverAlive $ cDeadDelay c)
 
--- | Figure out which server to talk to for this key. I.e., the distribution
--- method. We use consistent hashing based on the CHORD approach.
+-- | Figure out which server to talk to for this key: its owner on the ketama
+-- ring, or if that server is marked failed, the next live server walking
+-- forward round the ring. 'Nothing' if every server is marked failed.
 getServerForKeyDefault :: Cluster -> Key -> IO (Maybe Server)
 {-# INLINE getServerForKeyDefault #-}
-getServerForKeyDefault  c k = do
-    let hashedKey = hash k
-        searchF s = sid s < hashedKey
-    servers' <- aliveServers c
-    return $ if V.null servers'
-        then Nothing
-        else Just $ fromMaybe (V.last servers') (V.find searchF servers')
+getServerForKeyDefault c k = do
+    (servers, ring) <- either (cachedRing c <=< readMVar) pure (cServers c)
+    let firstAlive [] = return Nothing
+        firstAlive (i:is) = do
+            let s = servers V.! i
+            alive <- serverAlive (cDeadDelay c) s
+            if alive then return (Just s) else firstAlive is
+    firstAlive $ Ketama.owners ring $ Ketama.keyHash k
+
+-- | Servers read from the cluster's 'MVar', with their ketama ring. ElastiCache
+-- discovery puts new 'Server' values in the 'MVar' on every refresh, so the
+-- ring last built is cached with the servers it was built for. When those are
+-- not the same 'Server' values, the ring is reused if the hosts and ports are
+-- the same, and rebuilt only if they differ.
+cachedRing :: Cluster -> V.Vector Server -> IO (V.Vector Server, Ketama.Ring)
+cachedRing c servers = do
+    cached@(builtFor, _) <- readIORef (cRingCache c)
+    if sameServers builtFor servers
+        then return cached
+        -- Install the new ring before building it, so concurrent requests
+        -- share one build.
+        else atomicModifyIORef' (cRingCache c) $ \(builtFor', ring) ->
+            let new | sameNames builtFor' servers = (servers, ring)
+                    | otherwise = withRing servers
+            in (new, new)
+
+-- | Whether two vectors hold the same 'Server' values in the same order. Each
+-- 'Server' has its own 'failed' 'IORef', so this compares a pointer per server,
+-- and allocates nothing.
+sameServers :: V.Vector Server -> V.Vector Server -> Bool
+sameServers = pairwise (\x y -> failed x == failed y)
+
+-- | Whether two vectors hold servers with the same hosts and ports in the same
+-- order, and so the same ketama ring.
+sameNames :: V.Vector Server -> V.Vector Server -> Bool
+sameNames = pairwise (\x y -> serverHost x == serverHost y && serverPort x == serverPort y)
+
+-- | Whether two vectors are the same length and every pair of servers at the
+-- same position passes the test, checked with a loop so nothing is allocated.
+pairwise :: (Server -> Server -> Bool) -> V.Vector Server -> V.Vector Server -> Bool
+{-# INLINE pairwise #-}
+pairwise same xs ys = V.length xs == V.length ys && go 0
+  where
+    go i = i == V.length xs || (same (V.unsafeIndex xs i) (V.unsafeIndex ys i) && go (i + 1))
+
+-- | Servers with their ketama ring, all with weight 1, named from the host and
+-- port they were configured with. The ring is built when it is first used.
+withRing :: V.Vector Server -> (V.Vector Server, Ketama.Ring)
+withRing servers = (servers, Ketama.ring (map named (V.toList servers)))
+  where
+    named s = (Ketama.serverName (utf8 (serverHost s)) (utf8 (serverPort s)), 1)
+    utf8 = T.encodeUtf8 . T.pack
 
 -- | Run a Memcached operation against a particular server, handling any
 -- failures that occur, retrying the specified number of times.

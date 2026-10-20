@@ -24,7 +24,6 @@ import Control.Monad (forever, guard, (<=<))
 import Data.Bifunctor (first)
 import Data.ByteString (ByteString)
 import qualified Data.ByteString.Char8 as C
-import Data.List (sort)
 import qualified Data.List.NonEmpty as NE
 import Data.Text (Text)
 import qualified Data.Text as T
@@ -105,7 +104,7 @@ repeatAutoDiscover opts interval cfgEndpoint mVar = do
     threadDelay interval
     serverSpecs <- resolveCluster cfgClient
     servers <- optsServerSpecsToServers opts (optsServerOptions opts) serverSpecs
-    modifyMVar_ mVar $ \_curServers -> pure $ V.fromList $ sort servers
+    modifyMVar_ mVar $ \_curServers -> pure $ V.fromList servers
 
 resolveCluster :: Client -> IO [ServerSpec]
 resolveCluster cfgClient = do

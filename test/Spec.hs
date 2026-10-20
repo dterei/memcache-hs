@@ -3,6 +3,7 @@
 module Main where
 
 import           MockServer
+import           RoutingSpec
 import qualified Database.Memcache.Auth    as Auth
 import qualified Database.Memcache.Client  as Client
 import qualified Database.Memcache.ElastiCacheClient as EC
@@ -609,6 +610,8 @@ main = hspec $ do
           Client.get client "key" `shouldReturn` Just ("foo", 0, 1)
           waitForRequests cfg 3 `shouldReturn`
             ["version\r\n", "get AmazonElastiCache:cluster\r\n", "quit\r\n"]
+
+  routingSpec
 
   where
     recvResponseFrom bytes =
