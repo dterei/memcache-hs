@@ -443,9 +443,24 @@ main = hspec $ do
       withServerAndClientOpts fast [DelayMS 350 Noop, MR "VA 3 f2 c7\r\nfoo\r\n"] $ \_ client ->
         Client.get client "key" `shouldReturn` Just ("foo", 2, 7)
 
+    it "tries an operation once when retries are zero" $
+      attempts fast { Client.optsServerRetries = 0 } `shouldReturn` 1
+
+    it "treats negative retries as zero" $
+      attempts fast { Client.optsServerRetries = -1 } `shouldReturn` 1
+
+    it "tries an operation twice with one retry" $
+      attempts fast { Client.optsServerRetries = 1 } `shouldReturn` 2
+
+    it "tries an operation three times with two retries" $
+      attempts fast { Client.optsServerRetries = 2 } `shouldReturn` 3
+
+    it "tries an operation twice by default" $
+      attempts fast `shouldReturn` 2
+
     it "marks a server dead once its retries run out, then revives it" $
       withServerAndClientOpts fast [CloseConnection, CloseConnection, MR "VA 3 f2 c7\r\nfoo\r\n"] $ \server client -> do
-        -- The default of two retries means two attempts in total.
+        -- The default of one retry means two attempts in total.
         Client.get client "key" `shouldThrow` isUnexpectedEOF
         length <$> mockRequests server `shouldReturn` 2
         Client.get client "key" `shouldThrow` (== ClientError NoServersReady)
@@ -556,7 +571,7 @@ main = hspec $ do
     it "have the documented values" $ do
       Client.defaultServerSpec `shouldBe` Client.ServerSpec "127.0.0.1" "11211" Client.NoAuth
       serverFields Client.defaultServerOptions `shouldBe` (1, 1, 300)
-      optionFields Client.defaultOptions `shouldBe` (2, 200, 1500, 750, (1, 1, 300))
+      optionFields Client.defaultOptions `shouldBe` (1, 200, 1500, 750, (1, 1, 300))
 
     it "are the values def gives" $ do
       Client.defaultServerSpec `shouldBe` Client.def
@@ -659,6 +674,12 @@ main = hspec $ do
     isUnexpectedResponse (ProtocolError (UnexpectedResponse _)) = True
     isUnexpectedResponse _ = False
     closePair (left, right) = N.close left >> N.close right
+    -- How many times a get is tried against a server that drops every
+    -- connection. The server must then be marked dead.
+    attempts opts = withServerAndClientOpts opts (replicate 5 CloseConnection) $ \server client -> do
+      Client.get client "key" `shouldThrow` isUnexpectedEOF
+      Client.get client "key" `shouldThrow` (== ClientError NoServersReady)
+      length <$> mockRequests server
     allStats [(_, [ ("curr_items", "2"), ("rusage_user", "0.1 0.2") ])] = True
     allStats _ = False
     expectedAuthRequests = "version\r\nset auth 0 0 9\r\nuser pass\r\n"
