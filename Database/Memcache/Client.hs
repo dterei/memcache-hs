@@ -150,16 +150,19 @@ newClient :: [ServerSpec] -> Options -> IO Client
 newClient scs = newCluster $ if null scs then [defaultServerSpec] else scs
 
 -- | Close the client's connections to every server, including servers marked
--- dead. Connections that another thread is using at the time are left open
--- and go back to the pool when that thread finishes; later operations on the
--- client reuse them or open new ones.
+-- dead. Idle connections are closed straight away. A connection that another
+-- thread is using at the time is closed as soon as the request using it
+-- finishes, instead of going back to the pool; 'quit' doesn't wait for those
+-- requests or interrupt them. Requests that start after 'quit', including
+-- later requests of an operation that was already running, never use those
+-- connections: they open new ones, which stay open as usual.
 --
 -- This doesn't send Memcached's @quit@ command: closing the connection has the
 -- same effect, while sending the command would mean first connecting to any
 -- server the client has no connection to. So 'quit' never connects to a
 -- server, returns promptly and doesn't throw, even when a server is down.
 quit :: Client -> IO ()
-quit c = getServers c >>= mapM_ close
+quit c = getServers c >>= mapM_ closeAll
 
 -- | Retrieve the value for the given key from Memcached, along with its
 -- flags and CAS version. Returns 'Nothing' on a miss.

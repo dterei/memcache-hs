@@ -135,9 +135,10 @@ memcached servers.
 ## Architecture Notes
 
 We're relying on `Data.Pool` for thread safety right now. Each server has its
-own pool, and grabbing a connection from it (`withResource`) blocks other
-requests using that connection until the operation completes. `getMany` is the
-exception: it pipelines quiet Meta Text requests over one pooled connection.
+own pool, and grabbing a connection from it (`Server.withSocket`) blocks other
+requests using that connection until the operation completes. `getMany` is
+the exception: it pipelines quiet Meta Text requests over one pooled
+connection.
 
 By default each server's pool holds a single connection (`soNumResources = 1`),
 so concurrent operations against the same server wait for each other. Raising

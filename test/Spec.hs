@@ -20,11 +20,15 @@ import qualified Data.ByteString.Base64    as Base64
 import qualified Data.ByteString.Char8     as C
 import qualified Network.Socket            as N
 import qualified Network.Socket.ByteString as N
-import           Control.Concurrent        (forkIO, threadDelay)
+import           Control.Concurrent        (forkIO, newEmptyMVar, putMVar, takeMVar,
+                                            threadDelay)
 import           Control.Exception         (bracket)
+import           Control.Monad             ((>=>))
 import           Data.Either               (isLeft)
-import           Data.IORef                (writeIORef)
+import           Data.IORef                (readIORef, writeIORef)
+import           GHC.Conc                  (ThreadStatus (..), threadStatus)
 import           System.Timeout            (timeout)
+import           UnliftIO.Async            (async, asyncThreadId, wait)
 
 main :: IO ()
 main = hspec $ do
@@ -474,6 +478,40 @@ main = hspec $ do
         getFromNewClient server `shouldReturn` Just ("foo", 2, 7)
         mockRequests server `shouldReturn` ["mg key v f c\r\n"]
 
+    it "quit closes a connection in use once its request finishes" $
+      withServerAndClient [DelayMS 300 (MR "VA 3 f2 c7\r\nfoo\r\n"), MR "VA 3 f2 c7\r\nbar\r\n"] $ \server client -> do
+        inFlight <- async $ Client.get client "key"
+        waitForRequests server 1 `shouldReturn` ["mg key v f c\r\n"]
+        Client.quit client
+        -- The operation isn't interrupted: it gets its reply.
+        wait inFlight `shouldReturn` Just ("foo", 2, 7)
+        -- The connection was closed rather than returned to the pool, so the
+        -- mock, which serves one connection at a time, can answer a new client.
+        getFromNewClient server `shouldReturn` Just ("bar", 2, 7)
+
+    it "closeAll closes a connection in use instead of handing it to a waiting thread" $
+      withMockServer [Noop, Noop] $ \server -> do
+        s <- Server.newServerDefault Server.defaultServerOptions (mockServerSpec server)
+        held <- newEmptyMVar
+        release <- newEmptyMVar
+        first <- async $ Server.withSocket s $ \c -> putMVar held c >> takeMVar release
+        c1 <- takeMVar held
+        Server.closeAll s
+        -- The pool holds one connection, so this waits for the first one.
+        second <- async $ Server.withSocket s return
+        let waitBlocked = do
+              status <- threadStatus (asyncThreadId second)
+              case status of
+                ThreadBlocked _ -> return ()
+                _ -> threadDelay 1000 >> waitBlocked
+        waitBlocked
+        putMVar release ()
+        wait first
+        c2 <- wait second
+        -- The connection in use was closed, not handed to the waiting thread.
+        sendRaw c1 "x\r\n" `shouldThrow` anyException
+        sendRaw c2 "x\r\n" `shouldReturn` ()
+
 
   describe "authenticate" $ do
     it "accepts credentials once the server confirms auth-file mode" $
@@ -706,9 +744,13 @@ withServerAndClient = withServerAndClientOpts Client.def
 
 withServerAndClientOpts
   :: Client.Options -> [MockResponse] -> (MockServer -> Client.Client -> IO a) -> IO a
-withServerAndClientOpts opts responses action = withMockServer responses $ \server -> do
-  client <- Client.newClient [mockServerSpec server] opts
-  action server client
+withServerAndClientOpts opts responses action = withMockServer responses $ \server ->
+  -- Read the client once the action ends, so it stays reachable until then:
+  -- otherwise the pool's finalizers could close its connections while a test
+  -- is checking that quit closed them.
+  bracket (Client.newClient [mockServerSpec server] opts)
+    (Cluster.getServers >=> mapM_ (readIORef . Server.failed))
+    (action server)
 
 -- | Get @"key"@ from the mock with a new client.
 getFromNewClient :: MockServer -> IO (Maybe (Client.Value, Client.Flags, Client.Version))
