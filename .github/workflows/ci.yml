@@ -30,7 +30,7 @@ jobs:
         with:
           persist-credentials: false
       - id: generate
-        uses: freckle/stack-action/generate-matrix@454226a86f7e22e21387ab950cdecaa865365425 # v5.7.31
+        uses: freckle/stack-action/generate-matrix@2ca244dc7a7a078954198c858e6090ae0f0f8abe # v5.7.33
     outputs:
       stack-yamls: ${{ steps.generate.outputs.stack-yamls }}
 
@@ -55,7 +55,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y memcached
       - id: stack
-        uses: freckle/stack-action@454226a86f7e22e21387ab950cdecaa865365425 # v5.7.31
+        uses: freckle/stack-action@2ca244dc7a7a078954198c858e6090ae0f0f8abe # v5.7.33
         with:
           stack-yaml: ${{ matrix.stack-yaml }}
           # Replaces the default "--fast --pedantic"; also build the benchmark.
