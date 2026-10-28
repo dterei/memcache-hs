@@ -248,6 +248,30 @@ main = hspec $ do
       responseNumber (Response "VA" ["2"] "42") `shouldBe` 42
       responseNumber (Response "VA" ["3"] "abc") `shouldBe` 0
 
+    prop "reads every CAS, flags and counter value written in decimal" $
+      forAll ((,) <$> wordGen <*> wordGen) $ \(cas, flags) ->
+        let response = Response "VA" ["1", "f" <> asDecimal flags, "c" <> asDecimal cas] (asDecimal cas)
+        in (responseCas response, responseFlags response, responseNumber response)
+             === (cas, flags, cas)
+
+    it "reads numbers a stock memcached never sends as invalid" $ do
+      -- Most of these would read as a non-zero number if accepted.
+      let malformed = ["-1", "+5", "(5)", "0x10", "1e3", "5x", "", "18446744073709551616"]
+      mapM_ (\n -> responseCas (Response "HD" ["c" <> n] "") `shouldBe` 0) malformed
+      mapM_ (\n -> responseNumber (Response "VA" ["1"] n) `shouldBe` 0) (malformed ++ [" 5", "5 ", "5\r\n"])
+      mapM_ (\n -> responseFlags (Response "HD" ["f" <> n] "") `shouldBe` 0) ["-1", "(5)", "4294967296"]
+
+    prop "reads numbers too large for their type as invalid rather than wrapping them" $
+      forAll (choose (0, 2 ^ (40 :: Int))) $ \excess ->
+        let tooBig bits = asDecimal (2 ^ (bits :: Int) + excess :: Integer)
+        in responseCas (Response "HD" ["c" <> tooBig 64] "") === 0
+           .&&. responseFlags (Response "HD" ["f" <> tooBig 32] "") === 0
+           .&&. responseNumber (Response "VA" ["1"] (tooBig 64)) === 0
+
+    it "rejects a value length memcached never sends" $
+      mapM_ (\n -> recvResponseFrom ("VA " <> n <> "\r\nabc\r\n") `shouldThrow` isBadLength)
+        ["(3)", "+3", "-3", "0x3", "3x", "18446744073709551619"]
+
   describe "connection buffering" $ do
     it "keeps bytes after a parsed response" $
       bracket
@@ -505,6 +529,16 @@ main = hspec $ do
       withClient [MR "XX\r\n"] $ \client ->
         Client.get client "key" `shouldThrow` isUnknownStatus
 
+    it "reads a malformed CAS or flags as zero rather than wrapping them" $
+      withClient [MR "VA 3 f2 c-1\r\nfoo\r\n", MR "VA 3 f4294967298 c7\r\nfoo\r\n"] $ \client -> do
+        Client.get client "key" `shouldReturn` Just ("foo", 2, 0)
+        Client.get client "key" `shouldReturn` Just ("foo", 0, 7)
+
+    it "rejects a reply with a malformed value length" $
+      -- Sent twice, as a protocol error is retried once on a new connection.
+      withClient [MR "VA (3) f2 c7\r\nfoo\r\n", MR "VA (3) f2 c7\r\nfoo\r\n"] $ \client ->
+        Client.get client "key" `shouldThrow` isBadLength
+
     it "gets and touches a value" $
       withServerAndClient [MR "VA 3 f2 c7\r\nfoo\r\n", MR "EN\r\n"] $ \server client -> do
         Client.gat client "key" 60 `shouldReturn` Just ("foo", 2, 7)
@@ -586,6 +620,10 @@ main = hspec $ do
       withServerAndClient [MR "VA 1 c2\r\n0\r\n"] $ \server client -> do
         Client.decrement client "counter" 10 1 60 0 `shouldReturn` Just (0, 2)
         mockRequests server `shouldReturn` ["ma counter D1 MD v c N60 J10\r\n"]
+
+    it "reads a malformed counter value as zero" $
+      withClient [MR "VA 4 c3\r\n(42)\r\n"] $ \client ->
+        Client.increment client "counter" 0 1 0 0 `shouldReturn` Just (0, 3)
 
     it "reports arithmetic on a non-numeric value" $
       withClient [MR "CLIENT_ERROR cannot increment or decrement non-numeric value\r\n"] $ \client ->
@@ -1114,3 +1152,12 @@ splitAtFractions cuts bytes = go 0 (map toIndex cuts) bytes
       | otherwise =
           let (now, later) = B.splitAt (i - offset) rest
           in now : go i is later
+
+-- | Numbers from across a type's whole range, including both ends, rather than
+-- only the small ones 'arbitrary' mostly gives.
+wordGen :: (Arbitrary a, Bounded a, Integral a) => Gen a
+wordGen = oneof [arbitrary, arbitraryBoundedIntegral, elements [minBound, maxBound]]
+
+-- | A number as memcached writes it.
+asDecimal :: Show a => a -> B.ByteString
+asDecimal = C.pack . show

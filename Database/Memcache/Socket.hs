@@ -50,7 +50,6 @@ import           Data.Maybe                (fromMaybe)
 import           Data.Word                 (Word64)
 import qualified Network.Socket            as N
 import qualified Network.Socket.ByteString as N
-import           Text.Read                 (readMaybe)
 import           UnliftIO.Exception        (throwIO)
 
 -- | A connected Memcached socket and its receive buffer.
@@ -93,8 +92,8 @@ recvResponse s = do
         return $ Response code tokens value
       _ -> return $ Response code tokens B.empty
   where
-    parseLength x = case readMaybe (C.unpack x) of
-      Just n | n >= 0 && n <= 128 * 1024 * 1024 -> return n
+    parseLength x = case readDecimal x of
+      Just n | n <= 128 * 1024 * 1024 -> return n
       _ -> throwIO $ ProtocolError BadLength { protocolError = "invalid value length" }
 
 -- | Convert a response code and tokens to the corresponding status.
@@ -134,20 +133,38 @@ responseStatus (Response code tokens _) = case code of
 
 -- | Extract the CAS version from a response, or zero when absent or invalid.
 responseCas :: Response -> Version
-responseCas = token64 "c" . responseTokens
+responseCas = tokenNumber "c" . responseTokens
 
 -- | Extract the flags from a response, or zero when absent or invalid.
 responseFlags :: Response -> Flags
-responseFlags = fromIntegral . token64 "f" . responseTokens
+responseFlags = tokenNumber "f" . responseTokens
 
 -- | Parse the numeric value in a response, or zero when it is absent or invalid.
 responseNumber :: Response -> Word64
-responseNumber = fromMaybe 0 . readMaybe . C.unpack . responseValue
+responseNumber = fromMaybe 0 . readDecimal . responseValue
 
-token64 :: ByteString -> [ByteString] -> Word64
-token64 prefix xs = fromMaybe 0 $ do
+tokenNumber :: (Integral a, Bounded a) => ByteString -> [ByteString] -> a
+tokenNumber prefix xs = fromMaybe 0 $ do
   token <- find (B.isPrefixOf prefix) xs
-  readMaybe (C.unpack (B.drop (B.length prefix) token))
+  readDecimal (B.drop (B.length prefix) token)
+
+-- | Read a number from a reply. Memcached writes value lengths, CAS values,
+-- flags and counter values as plain decimal digits, so accept exactly that: at
+-- least one digit and nothing else, not even a sign or a space. A number too
+-- large for the type is rejected rather than wrapped around.
+readDecimal :: (Integral a, Bounded a) => ByteString -> Maybe a
+readDecimal input
+  | B.null input = Nothing
+  | otherwise = go 0 input
+  where
+    go !n rest = case B.uncons rest of
+      Nothing -> Just n
+      Just (byte, rest')
+        | byte < 0x30 || byte > 0x39 -> Nothing
+        | n > limit || (n == limit && digit > lastDigit) -> Nothing
+        | otherwise -> go (n * 10 + digit) rest'
+        where digit = fromIntegral (byte - 0x30)
+    (limit, lastDigit) = maxBound `quotRem` 10
 
 -- | Longest response line accepted before assuming the stream is desynchronised.
 maxLineLength :: Int
