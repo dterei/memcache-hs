@@ -55,6 +55,8 @@ jobs:
       # Older GHCs pass -fuse-ld=gold to gcc: the hsc2hs wrapper in binary
       # distributions before 9.6.5 does, and so does any GHC that was set up on
       # an image with gold. Ubuntu 26.04's binutils no longer includes gold.
+      # With gold installed, the GHCs stack installs (and caches) are set up to
+      # use it too, so if this stops installing gold, change cache-prefix below.
       - name: Install memcached and the gold linker
         run: |
           sudo rm -f /etc/apt/sources.list.d/microsoft-prod.*
