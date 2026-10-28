@@ -600,6 +600,22 @@ main = hspec $ do
         Client.prepend client "key" "pre" 0 `shouldReturn` Just 4
         mockRequests server `shouldReturn` ["ms key 3 MP c\r\npre\r\n"]
 
+    it "appends only when the key exists and the CAS matches" $
+      withServerAndClient [MR "HD c6\r\n", MR "EX c0\r\n", MR "NS c0\r\n"] $ \server client -> do
+        Client.append client "key" "more" 5 `shouldReturn` Just 6
+        Client.append client "key" "more" 5 `shouldReturn` Nothing
+        Client.append client "key" "more" 5 `shouldReturn` Nothing
+        requests <- mockRequests server
+        requests `shouldSatisfy` all (== "ms key 4 MA C5 c\r\nmore\r\n")
+
+    it "prepends only when the key exists and the CAS matches" $
+      withServerAndClient [MR "HD c6\r\n", MR "EX c0\r\n", MR "NS c0\r\n"] $ \server client -> do
+        Client.prepend client "key" "pre" 5 `shouldReturn` Just 6
+        Client.prepend client "key" "pre" 5 `shouldReturn` Nothing
+        Client.prepend client "key" "pre" 5 `shouldReturn` Nothing
+        requests <- mockRequests server
+        requests `shouldSatisfy` all (== "ms key 3 MP C5 c\r\npre\r\n")
+
     it "flushes" $
       withServerAndClient [MR "OK\r\n"] $ \server client -> do
         Client.flush client (Just 10) `shouldReturn` ()
