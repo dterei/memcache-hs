@@ -21,10 +21,12 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: true
 
+# The jobs name a fixed runner image rather than ubuntu-latest, so that a new
+# image, which can change the C toolchain under GHC, arrives in a commit.
 jobs:
   # Check for stack YAML files
   generate:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -36,7 +38,7 @@ jobs:
 
   test:
     needs: generate
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
 
     strategy:
       matrix:
@@ -49,15 +51,24 @@ jobs:
           persist-credentials: false
       # The runner image also lists Microsoft's apt repository, which nothing
       # here needs and which sometimes fails apt-get update on its own.
-      - name: Install memcached
+      #
+      # Older GHCs pass -fuse-ld=gold to gcc: the hsc2hs wrapper in binary
+      # distributions before 9.6.5 does, and so does any GHC that was set up on
+      # an image with gold. Ubuntu 26.04's binutils no longer includes gold.
+      - name: Install memcached and the gold linker
         run: |
           sudo rm -f /etc/apt/sources.list.d/microsoft-prod.*
           sudo apt-get update
-          sudo apt-get install -y memcached
+          sudo apt-get install -y memcached binutils-gold
+      # The dependency cache holds the GHC that stack installed, which records
+      # the linker it found at install time, so keep caches per OS release.
+      - id: os
+        run: . /etc/os-release && echo "release=$ID-$VERSION_ID" >> "$GITHUB_OUTPUT"
       - id: stack
         uses: freckle/stack-action@2ca244dc7a7a078954198c858e6090ae0f0f8abe # v5.7.33
         with:
           stack-yaml: ${{ matrix.stack-yaml }}
+          cache-prefix: ${{ steps.os.outputs.release }}/
           # Replaces the default "--fast --pedantic"; also build the benchmark.
           stack-build-arguments: --fast --pedantic --bench --no-run-benchmarks
 
@@ -67,7 +78,7 @@ jobs:
           ghc-version: ${{ steps.stack.outputs.compiler-version }}
 
   lint:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
