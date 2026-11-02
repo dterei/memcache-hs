@@ -236,6 +236,26 @@ main = hspec $ do
       (recvResponseFrom "XX\r\n" >>= responseStatus) `shouldThrow` isUnknownStatus
       recvResponseFrom "\r\n" `shouldThrow` isUnknownPkt
 
+    -- Byte 0xa0 is part of many UTF-8 characters, such as the Cyrillic Er
+    -- (D0 A0) here.
+    it "splits response lines on spaces only" $ do
+      recvResponseFrom "VA 1 f0 c23 k\xd0\xa0\xd0\xbe\r\nr\r\n"
+        `shouldReturn` Response "VA" ["1", "f0", "c23", "k\xd0\xa0\xd0\xbe"] "r"
+      recvResponseFrom "HD c1 kx\t\v\f\r\xa0y\r\n" `shouldReturn` Response "HD" ["c1", "kx\t\v\f\r\xa0y"] ""
+      recvResponseFrom "HD  c1 \r\n" `shouldReturn` Response "HD" ["c1"] ""
+      recvResponseFrom "HD c1\n" `shouldReturn` Response "HD" ["c1"] ""
+
+    -- memcached echoes a key after a space, raw or as base64 and a b flag.
+    prop "keeps intact the key echo of every key encodeKey accepts" $
+      forAll separatorKeyGen $ \key -> case encodeKey key of
+        Left _ -> property True
+        Right w -> ioProperty $ do
+          let echo = ("k" <> wireKey w) : ["b" | wireB64 w]
+          value <- recvResponseFrom (C.unwords ("VA 1 f0 c1" : echo) <> "\r\nv\r\n")
+          stored <- recvResponseFrom (C.unwords ("HD c2" : echo) <> "\r\n")
+          return $ responseTokens value === ["1", "f0", "c1"] ++ echo
+            .&&. responseTokens stored === "c2" : echo
+
     it "rejects a value without its trailing line break" $
       recvResponseFrom "VA 3\r\nabcX\r\n" `shouldThrow` isBadLength
 
@@ -374,6 +394,14 @@ main = hspec $ do
       withClient [MR "VA 1 f0 c1 kIA==\r\na\r\n", MR "VA 1 f0 c2 kIA== b\r\nb\r\n", MR "MN\r\n"] $ \client ->
         Client.getMany client ["IA==", " "] `shouldReturn` [("IA==", ("a", 0, 1)), (" ", ("b", 0, 2))]
 
+    it "keeps a key containing byte 0xa0 whole" $
+      -- Cut off at 0xa0, the echo of "x\xa0" would be taken for "x"'s.
+      withClient
+        [ MR "VA 2 f0 c1 kcity:\xd0\xa0\xd0\xbe\xd0\xbc\r\nhi\r\n", MR "VA 3 f0 c2 kx\xa0\r\nnbs\r\n"
+        , Noop, MR "MN\r\n" ] $ \client ->
+        Client.getMany client ["city:\xd0\xa0\xd0\xbe\xd0\xbc", "x\xa0", "x"]
+          `shouldReturn` [("city:\xd0\xa0\xd0\xbe\xd0\xbc", ("hi", 0, 1)), ("x\xa0", ("nbs", 0, 2))]
+
   describe "setMany" $ do
     it "stores each pair and returns its version" $
       withServerAndClient [MR "HD c1 kone\r\n", MR "HD c2 ktwo\r\n", MR "MN\r\n"] $ \server client -> do
@@ -393,6 +421,17 @@ main = hspec $ do
     it "tells a plain key from another key's base64 form" $
       withClient [MR "HD c1 kIA==\r\n", MR "HD c2 kIA== b\r\n", MR "MN\r\n"] $ \client ->
         Client.setMany client [("IA==", "a", 0, 0), (" ", "b", 0, 0)] `shouldReturn` [("IA==", 1), (" ", 2)]
+
+    it "keeps a key containing byte 0xa0 whole" $
+      -- Cut off at 0xa0, the echo of "x\xa0" would be taken for "x"'s, and
+      -- that of "IA==\xa0\&b" for that of " ", which is IA== with the b flag.
+      withClient
+        [ MR "HD c1 kvoil\xc3\xa0\r\n", MR "HD c2 kx\xa0\r\n", MR "HD c3 kx\r\n"
+        , MR "HD c4 kIA==\xa0\&b\r\n", MR "HD c5 kIA== b\r\n", MR "MN\r\n" ] $ \client ->
+        Client.setMany client
+          [ ("voil\xc3\xa0", "a", 0, 0), ("x\xa0", "b", 0, 0), ("x", "c", 0, 0)
+          , ("IA==\xa0\&b", "d", 0, 0), (" ", "e", 0, 0) ]
+          `shouldReturn` [("voil\xc3\xa0", 1), ("x\xa0", 2), ("x", 3), ("IA==\xa0\&b", 4), (" ", 5)]
 
     it "stores a repeated key once per occurrence, in order" $
       withServerAndClient [MR "HD c1 kkey\r\n", MR "HD c2 kkey\r\n", MR "MN\r\n"] $ \server client -> do
@@ -572,6 +611,11 @@ main = hspec $ do
         result <- Client.stats client (Just "cachedump 1 100")
         map snd result `shouldBe` [[]]
         mockRequests server `shouldReturn` ["stats cachedump 1 100\r\n"]
+
+    it "keeps byte 0xa0 in stats lines" $
+      withClient [MR "ITEM voil\xc3\xa0 [2 b; 0 s]\r\nEND\r\n"] $ \client -> do
+        result <- Client.stats client (Just "cachedump 1 1")
+        map snd result `shouldBe` [[("ITEM", "voil\xc3\xa0 [2 b; 0 s]")]]
 
     it "keeps non-STAT stats lines" $
       withClient [MR "ITEM key [3 b; 0 s]\r\nEND\r\n"] $ \client -> do
@@ -1072,6 +1116,15 @@ valueGen = B.pack <$> do
 -- | Keys the encoder accepts, plain and base64.
 wireKeyGen :: Gen WireKey
 wireKeyGen = keyGen `suchThatMap` (either (const Nothing) Just . encodeKey)
+
+-- | Keys of up to 260 arbitrary bytes, often including the bytes 'C.words'
+-- splits on: space, tab to CR, and 0xa0, which memcached keeps in a key.
+separatorKeyGen :: Gen B.ByteString
+separatorKeyGen = B.pack <$> do
+  len <- frequency [(4, choose (1, 16)), (1, choose (17, 260))]
+  vectorOf len (frequency
+    [ (8, choose (0x21, 0x7e)), (2, return 0xa0)
+    , (1, elements [0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x20]), (1, arbitrary) ])
 
 -- | Request values, sometimes over the size above which
 -- 'Data.ByteString.Builder.byteString' stops copying.

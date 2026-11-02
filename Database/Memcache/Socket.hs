@@ -60,7 +60,9 @@ data Connection = Connection N.Socket (IORef ByteString)
 data Response = Response
   -- | The response code, such as @VA@ or @HD@.
   { responseCode :: ByteString
-  -- | Tokens following the response code.
+  -- | Tokens following the response code. As in memcached, only spaces
+  -- separate tokens, so a token can contain other whitespace bytes, such as
+  -- a tab or 0xa0.
   , responseTokens :: [ByteString]
   -- | The response value, when the response contains one.
   , responseValue :: ByteString
@@ -82,7 +84,7 @@ sendRaw (Connection s _) = N.sendAll s
 recvResponse :: Connection -> IO Response
 recvResponse s = do
   line <- recvLine s
-  case C.words line of
+  case splitTokens line of
     [] -> throwIO $ ProtocolError UnknownPkt { protocolError = "" }
     code:tokens -> case tokens of
       n:_ | code == "VA" -> do
@@ -96,6 +98,13 @@ recvResponse s = do
     parseLength x = case readMaybe (C.unpack x) of
       Just n | n >= 0 && n <= 128 * 1024 * 1024 -> return n
       _ -> throwIO $ ProtocolError BadLength { protocolError = "invalid value length" }
+
+    -- Split the line as memcached does: on spaces alone, after removing the
+    -- CR that 'recvLine' leaves on it. 'C.words' would also split on tabs
+    -- and on byte 0xa0, which a key the server echoes can contain: it is
+    -- part of many UTF-8 characters, such as U+00E0 (C3 A0).
+    splitTokens line =
+      filter (not . B.null) (C.split ' ' (fromMaybe line (B.stripSuffix "\r" line)))
 
 -- | Convert a response code and tokens to the corresponding status.
 responseStatus :: Response -> IO Status
