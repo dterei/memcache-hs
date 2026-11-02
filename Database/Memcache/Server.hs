@@ -207,18 +207,41 @@ connectSocket ServerSpec{..} = do
     let hints = S.defaultHints {
       S.addrSocketType = S.Stream
     }
-    addr:_ <- getAddrInfo (Just hints) (Just ssHost) (Just ssPort)
+    addr:addrs <- getAddrInfo (Just hints) (Just ssHost) (Just ssPort)
     bracketOnError
-        (S.socket (S.addrFamily addr) (S.addrSocketType addr) (S.addrProtocol addr))
+        (connectFirst addr addrs)
         S.close
         (\s -> do
-            S.connect s $ S.addrAddress addr
             S.setSocketOption s S.KeepAlive 1
             S.setSocketOption s S.NoDelay 1
             buffered <- newConnection s
             authenticate buffered ssAuth
             return buffered
         )
+
+-- | Connect a socket to the first of the resolved addresses that accepts,
+-- trying them in order, so a host whose first address refuses the connection
+-- (such as ::1 when the server listens on 127.0.0.1 only) can still be reached
+-- through the others. If none accepts, rethrows the error from the first
+-- attempt: the resolver sorts addresses this host cannot use, such as IPv6
+-- where it is disabled, last, so the later errors are often just about those.
+--
+-- Only failing to create or connect a socket moves on to the next address.
+-- Errors once connected, such as rejected credentials, are raised after this
+-- returns: they come from the server, and trying another address would hide
+-- them.
+connectFirst :: S.AddrInfo -> [S.AddrInfo] -> IO S.Socket
+connectFirst addr addrs = do
+    result <- tryIO $ connectTo addr
+    case result of
+        Right s  -> return s
+        Left err -> foldr orElse (throwIO err) addrs
+  where
+    orElse next rest = tryIO (connectTo next) >>= either (const rest) return
+    connectTo a = bracketOnError
+        (S.socket (S.addrFamily a) (S.addrSocketType a) (S.addrProtocol a))
+        S.close
+        (\s -> S.connect s (S.addrAddress a) >> return s)
 
 releaseSocket :: Connection -> IO ()
 releaseSocket = closeConnection

@@ -34,7 +34,8 @@ import Data.Bifunctor (second)
 --
 -- 'show' hides the password; see 'Authentication'.
 data ServerSpec = ServerSpec
-  { -- | Hostname of server to connect to.
+  { -- | Hostname of server to connect to. If it resolves to several
+    -- addresses, each is tried in turn until one accepts the connection.
     ssHost :: HostName,
     -- | Port number server is running on.
     ssPort :: ServiceName,

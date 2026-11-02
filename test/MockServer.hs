@@ -2,10 +2,12 @@
 
 -- | Mock Memcached server - just enough for testing client.
 --
--- Each mock listens on its own ephemeral port on 127.0.0.1, so tests can run
--- several at once and never clash with a real memcached on the default port.
+-- Each mock listens on its own ephemeral port, on 127.0.0.1 unless given
+-- another address, so tests can run several at once and never clash with a
+-- real memcached on the default port.
 module MockServer (
-        MockResponse(..), MockServer(..), withMockServer, mockServerSpec
+        MockResponse(..), MockServer(..), withMockServer, withMockServerAt,
+        canListenAt, mockServerSpec
     ) where
 
 import           Control.Concurrent
@@ -17,8 +19,8 @@ import           Database.Memcache.Types   (Authentication (NoAuth), ServerSpec 
 import qualified Network.Socket            as N
 import qualified Network.Socket.ByteString as N
 import           Text.Read                  (readMaybe)
-import           UnliftIO.Exception         (SomeException, bracket, finally, handle,
-                                            throwIO)
+import           UnliftIO.Exception         (IOException, SomeException, bracket,
+                                            finally, handle, throwIO)
 
 -- | Actions the mock server can take to a request.
 data MockResponse
@@ -49,7 +51,13 @@ mockServerSpec server = ServerSpec "127.0.0.1" (show (mockPort server)) NoAuth
 -- in order, one per request, across however many connections the client
 -- makes; once they run out it closes the connection and stops listening.
 withMockServer :: [MockResponse] -> (MockServer -> IO a) -> IO a
-withMockServer responses action = do
+withMockServer =
+  withMockServerAt (N.SockAddrInet 0 (N.tupleToHostAddress (127, 0, 0, 1)))
+
+-- | Like 'withMockServer', but listening on the given address instead of
+-- 127.0.0.1. A port of 0 picks a free one.
+withMockServerAt :: N.SockAddr -> [MockResponse] -> (MockServer -> IO a) -> IO a
+withMockServerAt address responses action = do
   ready <- newEmptyMVar
   received <- newIORef []
   bracket
@@ -63,11 +71,11 @@ withMockServer responses action = do
         })
   where
     serve ready received = bracket
-      (N.socket N.AF_INET N.Stream N.defaultProtocol)
+      (N.socket (addressFamily address) N.Stream N.defaultProtocol)
       N.close
       $ \sock -> do
         N.setSocketOption sock N.ReuseAddr 1
-        N.bind sock (N.SockAddrInet 0 (N.tupleToHostAddress (127, 0, 0, 1)))
+        N.bind sock address
         N.listen sock 10
         N.socketPort sock >>= putMVar ready
         remaining <- newIORef responses
@@ -104,6 +112,21 @@ withMockServer responses action = do
       MR bytes      -> N.sendAll client bytes >> return True
       DelayMS ms r' -> threadDelay (ms * 1000) >> respond client r'
       CloseConnection -> return False
+
+-- | Whether 'withMockServerAt' can listen on the given address. It cannot on
+-- an IPv6 address where IPv6 is disabled, for example.
+canListenAt :: N.SockAddr -> IO Bool
+canListenAt address = handle unavailable $ bracket
+  (N.socket (addressFamily address) N.Stream N.defaultProtocol)
+  N.close
+  (\sock -> N.bind sock address >> return True)
+  where
+    unavailable :: IOException -> IO Bool
+    unavailable = const (return False)
+
+addressFamily :: N.SockAddr -> N.Family
+addressFamily N.SockAddrInet6{} = N.AF_INET6
+addressFamily _                 = N.AF_INET
 
 -- | Read one request: its command line and, for storage commands, the data
 -- block that follows it.
