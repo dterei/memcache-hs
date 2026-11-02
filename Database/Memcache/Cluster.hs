@@ -35,6 +35,7 @@ import           Control.Concurrent.MVar  (MVar, readMVar)
 import           Control.Monad            (foldM, void)
 import           Data.ByteString          (ByteString)
 import qualified Data.ByteString          as B
+import qualified Data.ByteString.Char8    as C
 import           Data.Default
 import           Data.Fixed               (Milli)
 import           Data.Hashable            (hash)
@@ -46,7 +47,7 @@ import           Data.Time.Clock.POSIX    (getPOSIXTime)
 import qualified Data.Vector              as V
 import           System.Timeout
 import           UnliftIO.Exception       (SomeException, fromException, handle, throwIO)
-import           Database.Memcache.Socket (Response(..), WireKey(..), encodeKey, noOpRequest, recvResponse, responseStatus, sendRaw)
+import           Database.Memcache.Socket (Response(..), WireKey, encodeKey, noOpRequest, recvResponse, responseStatus, sendRaw)
 
 -- | Number of times to retry an operation before considering it failed.
 type Retries = Int
@@ -216,18 +217,36 @@ keyedOp c k makeReq = do
         Just s  -> serverOp c s (makeReq wire)
         Nothing -> throwIO $ ClientError NoServersReady
 
--- | Run keyed requests grouped by their selected server.
-keyedBatchOp :: Cluster -> [(Key, WireKey -> ByteString)] -> IO [(Key, Response)]
+-- | Run keyed requests grouped by their selected server, pipelining each
+-- server's requests in batches. Each request is built from its key's wire
+-- form and an opaque. The request must send the opaque unchanged as its @O@
+-- flag, in decimal, as the batch encoders in "Database.Memcache.Socket" do.
+-- memcached copies it into the reply, and that matches the reply to its
+-- request. A request may get no reply, as a quiet miss does. The results are
+-- grouped by server, and keep the order given within a server.
+--
+-- A miss reply (@EN@) with no opaque is skipped, as there is nothing to
+-- return for it. memcached sends one when a read from extstore misses (for
+-- quiet gets too, from 1.6.40) and, before 1.6.18, for any get miss that is
+-- not quiet. Error replies (@ERROR@, @CLIENT_ERROR@ and @SERVER_ERROR@) throw
+-- as they do for a single request. Any other reply with no opaque, with the
+-- opaque of no request in its batch, or out of order throws
+-- 'UnexpectedResponse', and the connection is closed rather than reused. Like
+-- any server failure, the batch is then sent again on a new connection, and
+-- the failure counts towards marking the server dead.
+keyedBatchOp :: Cluster -> [(Key, WireKey -> Int -> ByteString)] -> IO [(Key, Response)]
 keyedBatchOp c requests = do
-    groups <- foldM add [] requests
+    groups <- foldM add [] (zip [0..] requests)
     concat <$> mapM run groups
   where
-    add groups (key, makeRequest) = do
+    add groups (opaque, (key, makeRequest)) = do
       wire <- either (throwIO . ClientError) return (encodeKey key)
       server <- cGetServerForKey c c key
       case server of
         Nothing -> throwIO $ ClientError NoServersReady
-        Just s -> return (insertGroup s (key, wire, makeRequest wire) groups)
+        Just s -> return (insertGroup s (key, opaqueFlag opaque, makeRequest wire opaque) groups)
+
+    opaqueFlag opaque = C.pack ('O' : show opaque)
 
     insertGroup s item [] = [(s, [item])]
     insertGroup s item ((s', items):rest)
@@ -241,23 +260,29 @@ keyedBatchOp c requests = do
     -- still writing, which would deadlock both ends until the op times out.
     runBatch server items = retryOp c server $ withSocket server $ \connection -> do
       sendRaw connection (B.concat (map request items ++ [noOpRequest]))
-      replies <- recvUntilMN connection []
-      return [(key, response) | response <- replies, Just key <- [responseKey response items]]
+      recvUntilMN connection items []
 
-    recvUntilMN connection acc = do
+    -- memcached answers in order, so each reply must carry the opaque of a
+    -- request after the one the previous reply answered; the requests in
+    -- between got no reply. A bare EN is a miss whose opaque memcached
+    -- dropped: we can't tell which request it answers, but it is one line
+    -- with nothing to return, so skip it. Anything else means the replies
+    -- are out of step with the requests, so throw while the connection is
+    -- held, and it is closed rather than returned to the pool. Echoed keys
+    -- can't be matched instead: memcached echoes a key raw or as base64
+    -- according to how its item was stored, not how the request sent it, and
+    -- a raw key can contain a newline.
+    recvUntilMN connection pending acc = do
       response <- recvResponse connection
       rejectProtocolError response
-      if responseCode response == "MN"
-        then return (reverse acc)
-        else recvUntilMN connection (response : acc)
-
-    -- Match the echoed key together with its base64 flag: a plain key can
-    -- have the same bytes as another key's base64 form.
-    responseKey response items = do
-      echoed <- find (B.isPrefixOf "k") (responseTokens response)
-      let wire = WireKey (B.drop 1 echoed) ("b" `elem` responseTokens response)
-      (key, _, _) <- find (\(_, wire', _) -> wire' == wire) items
-      return key
+      case (responseCode response, find (B.isPrefixOf "O") (responseTokens response)) of
+        ("MN", _) -> return (reverse acc)
+        ("EN", Nothing) -> recvUntilMN connection pending acc
+        (_, opaque) -> case dropWhile (\(_, opaque', _) -> Just opaque' /= opaque) pending of
+          (key, _, _) : rest -> recvUntilMN connection rest ((key, response) : acc)
+          [] -> throwIO $ ProtocolError UnexpectedResponse
+            { protocolError = "Expected a reply to a request in the batch, got: "
+                <> show (C.unwords (responseCode response : responseTokens response)) }
 
     request (_, _, req) = req
 

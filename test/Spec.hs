@@ -24,7 +24,7 @@ import qualified Network.Socket.ByteString as N
 import           Control.Concurrent        (forkIO, newEmptyMVar, putMVar, takeMVar,
                                             threadDelay)
 import           Control.Exception         (bracket, displayException)
-import           Control.Monad             ((>=>))
+import           Control.Monad             (forM_, (>=>))
 import           Data.Either               (isLeft)
 import           Data.Foldable             (toList)
 import           Data.IORef                (readIORef, writeIORef)
@@ -85,21 +85,24 @@ main = hspec $ do
         Left _ -> property True
         Right w -> conjoin
           [ oneLine (getRequest w)
-          , oneLine (getManyRequest w)
+          , oneLine (getManyRequest w 7)
           , oneLine (gatRequest w 30)
           , oneLine (touchRequest w 30)
           , oneLine (deleteRequest w 7)
-          , oneLine (deleteManyRequest w)
+          , oneLine (deleteManyRequest w 7)
           , oneLine (arithmeticRequest Incr w 1 2 30 7)
           ]
 
-    prop "encodes batch requests as the single-key request plus a key echo" $
+    prop "encodes batch requests as the single-key request plus an opaque" $
       forAll ((,,,) <$> keyGen <*> valueGen <*> arbitrary <*> arbitrary) $ \(key, value, flags, expiry) ->
+      forAll arbitrary $ \opaque ->
         case encodeKey key of
           Left _ -> property True
           Right w -> conjoin
-            [ setManyRequest w value flags expiry === echoKey (storeRequest Set w value flags expiry 0)
-            , deleteManyRequest w === echoKey (deleteRequest w 0)
+            [ getManyRequest w opaque === addFlags (" q O" <> C.pack (show opaque)) (getRequest w)
+            , setManyRequest w value flags expiry opaque
+                === addFlags (" O" <> C.pack (show opaque)) (storeRequest Set w value flags expiry 0)
+            , deleteManyRequest w opaque === addFlags (" O" <> C.pack (show opaque)) (deleteRequest w 0)
             ]
 
     it "rejects over-long keys without contacting the server" $
@@ -114,11 +117,11 @@ main = hspec $ do
 
     it "encodes all core request forms" $ do
       getRequest (wire "key") `shouldBe` "mg key v f c\r\n"
-      getManyRequest (wire "key") `shouldBe` "mg key v f c k q\r\n"
+      getManyRequest (wire "key") 3 `shouldBe` "mg key v f c q O3\r\n"
       gatRequest (wire "key") 30 `shouldBe` "mg key v f c T30\r\n"
       touchRequest (wire "key") 30 `shouldBe` "mg key T30 c\r\n"
       deleteRequest (wire "key") 9 `shouldBe` "md key C9\r\n"
-      deleteManyRequest (wire "key") `shouldBe` "md key k\r\n"
+      deleteManyRequest (wire "key") 3 `shouldBe` "md key O3\r\n"
       flushRequest Nothing `shouldBe` "flush_all\r\n"
       flushRequest (Just 30) `shouldBe` "flush_all 30\r\n"
       versionRequest `shouldBe` "version\r\n"
@@ -133,8 +136,9 @@ main = hspec $ do
       getRequest (wire "a b") `shouldBe` "mg " <> encoded <> " b v f c\r\n"
       deleteRequest (wire "a b") 0 `shouldBe` "md " <> encoded <> " b\r\n"
       modifyRequest Append (wire "a b") "x" 0 `shouldBe` "ms " <> encoded <> " 1 MA b c\r\nx\r\n"
-      setManyRequest (wire "a b") "x" 0 0 `shouldBe` "ms " <> encoded <> " 1 F0 T0 MS b c k\r\nx\r\n"
-      deleteManyRequest (wire "a b") `shouldBe` "md " <> encoded <> " b k\r\n"
+      getManyRequest (wire "a b") 0 `shouldBe` "mg " <> encoded <> " b v f c q O0\r\n"
+      setManyRequest (wire "a b") "x" 0 0 0 `shouldBe` "ms " <> encoded <> " 1 F0 T0 MS b c O0\r\nx\r\n"
+      deleteManyRequest (wire "a b") 0 `shouldBe` "md " <> encoded <> " b O0\r\n"
 
     it "places the binary-key flag after the data length" $
        storeRequest Set (wire "a b") "value" 3 20 0
@@ -145,7 +149,7 @@ main = hspec $ do
       storeRequest Replace (wire "key") "v" 1 2 5 `shouldBe` "ms key 1 F1 T2 C5 MR c\r\nv\r\n"
       modifyRequest Append (wire "key") "xyz" 5 `shouldBe` "ms key 3 MA C5 c\r\nxyz\r\n"
       modifyRequest Prepend (wire "key") "xyz" 0 `shouldBe` "ms key 3 MP c\r\nxyz\r\n"
-      setManyRequest (wire "key") "v" 1 2 `shouldBe` "ms key 1 F1 T2 MS c k\r\nv\r\n"
+      setManyRequest (wire "key") "v" 1 2 5 `shouldBe` "ms key 1 F1 T2 MS c O5\r\nv\r\n"
 
     it "encodes arithmetic with auto-creation" $
       arithmeticRequest Decr (wire "n") 10 2 60 7 `shouldBe` "ma n D2 C7 MD v c N60 J10\r\n"
@@ -163,7 +167,7 @@ main = hspec $ do
       forAll wireKeyGen $ \key ->
       forAll requestValueGen $ \value ->
       forAll ((,,) <$> numberGen <*> numberGen <*> numberGen) $ \(flags, expiry, version) ->
-      forAll ((,) <$> numberGen <*> numberGen) $ \(initial, delta) ->
+      forAll ((,,) <$> numberGen <*> numberGen <*> numberGen) $ \(initial, delta, opaque) ->
       forAll ((,) <$> elements [Set, Add, Replace, Append, Prepend] <*> elements [Incr, Decr]) $ \(mode, arith) ->
         let keyArgs = wireKey key <> binaryFlag key
             binaryFlag k = if wireB64 k then " b" else ""
@@ -181,13 +185,17 @@ main = hspec $ do
               Decr -> "D"
         in conjoin
           [ getRequest key === B.concat ["mg ", keyArgs, " v f c\r\n"]
-          , getManyRequest key === B.concat ["mg ", keyArgs, " v f c k q\r\n"]
+          , getManyRequest key opaque === B.concat ["mg ", keyArgs, " v f c q O", decimal opaque, "\r\n"]
           , gatRequest key expiry === B.concat ["mg ", keyArgs, " v f c T", decimal expiry, "\r\n"]
           , touchRequest key expiry === B.concat ["mg ", keyArgs, " T", decimal expiry, " c\r\n"]
           , storeRequest mode key value flags expiry version === B.concat
               [ "ms ", wireKey key, " ", decimal (B.length value), " F", decimal flags
               , " T", decimal expiry, casArg version, " M", modeLetter mode, binaryFlag key
               , " c\r\n", value, "\r\n" ]
+          , setManyRequest key value flags expiry opaque === B.concat
+              [ "ms ", wireKey key, " ", decimal (B.length value), " F", decimal flags
+              , " T", decimal expiry, " MS", binaryFlag key, " c O", decimal opaque
+              , "\r\n", value, "\r\n" ]
           , modifyRequest mode key value version === B.concat
               [ "ms ", wireKey key, " ", decimal (B.length value), " M", modeLetter mode
               , binaryFlag key, casArg version, " c\r\n", value, "\r\n" ]
@@ -196,6 +204,7 @@ main = hspec $ do
               , if expiry == maxBound then "" else " N" <> decimal expiry <> " J" <> decimal initial
               , "\r\n" ]
           , deleteRequest key version === B.concat ["md ", keyArgs, casArg version, "\r\n"]
+          , deleteManyRequest key opaque === B.concat ["md ", keyArgs, " O", decimal opaque, "\r\n"]
           , flushRequest (Just expiry) === B.concat ["flush_all ", decimal expiry, "\r\n"]
           , flushRequest Nothing === "flush_all\r\n"
           , statsRequest Nothing === "stats\r\n"
@@ -378,80 +387,122 @@ main = hspec $ do
         `shouldBe` "ProtocolError (UnknownStatus {protocolError = \"XX\"})"
 
   describe "getMany" $ do
-    it "matches echoed keys and skips misses" $
-      withServerAndClient [MR "VA 5 f1 c11 kone\r\nfirst\r\n", Noop, MR "MN\r\n"] $ \server client -> do
+    it "matches replies by opaque and skips misses" $
+      withServerAndClient [MR "VA 5 f1 c11 O0\r\nfirst\r\n", Noop, MR "MN\r\n"] $ \server client -> do
         Client.getMany client ["one", "two"] `shouldReturn` [("one", ("first", 1, 11))]
         mockRequests server `shouldReturn`
-          ["mg one v f c k q\r\n", "mg two v f c k q\r\n", "mn\r\n"]
+          ["mg one v f c q O0\r\n", "mg two v f c q O1\r\n", "mn\r\n"]
 
-    it "maps encoded keys back to the caller's key" $ do
-      let encoded = Base64.encode "a b"
-      withClient [MR ("VA 3 f0 c4 k" <> encoded <> " b\r\nabc\r\n"), MR "MN\r\n"] $ \client ->
+    it "maps encoded keys back to the caller's key" $
+      withClient [MR "VA 3 f0 c4 O0\r\nabc\r\n", MR "MN\r\n"] $ \client ->
         Client.getMany client ["a b"] `shouldReturn` [("a b", ("abc", 0, 4))]
 
     it "tells a plain key from another key's base64 form" $
-      -- " " is sent, and echoed, as IA== with the b flag.
-      withClient [MR "VA 1 f0 c1 kIA==\r\na\r\n", MR "VA 1 f0 c2 kIA== b\r\nb\r\n", MR "MN\r\n"] $ \client ->
-        Client.getMany client ["IA==", " "] `shouldReturn` [("IA==", ("a", 0, 1)), (" ", ("b", 0, 2))]
+      -- " " is sent as IA== with the b flag.
+      withServerAndClient [MR "VA 1 f0 c1 O0\r\na\r\n", MR "VA 1 f0 c2 O1\r\nb\r\n", MR "MN\r\n"] $
+        \server client -> do
+          Client.getMany client ["IA==", " "] `shouldReturn` [("IA==", ("a", 0, 1)), (" ", ("b", 0, 2))]
+          mockRequests server `shouldReturn` ["mg IA== v f c q O0\r\n", "mg IA== b v f c q O1\r\n", "mn\r\n"]
 
-    it "keeps a key containing byte 0xa0 whole" $
-      -- Cut off at 0xa0, the echo of "x\xa0" would be taken for "x"'s.
-      withClient
-        [ MR "VA 2 f0 c1 kcity:\xd0\xa0\xd0\xbe\xd0\xbc\r\nhi\r\n", MR "VA 3 f0 c2 kx\xa0\r\nnbs\r\n"
-        , Noop, MR "MN\r\n" ] $ \client ->
-        Client.getMany client ["city:\xd0\xa0\xd0\xbe\xd0\xbc", "x\xa0", "x"]
-          `shouldReturn` [("city:\xd0\xa0\xd0\xbe\xd0\xbc", ("hi", 0, 1)), ("x\xa0", ("nbs", 0, 2))]
+    -- memcached echoes a key raw or as base64 according to how its item was
+    -- stored, not how the request sent it: "a b" raw once an increment has
+    -- created it, and "foo" as base64 once another client has stored it with
+    -- the b flag.
+    it "matches replies by opaque, not by the key they echo" $
+      withClient [MR "VA 1 f0 c1 ka b O0\r\n5\r\n", MR "VA 1 f0 c2 kZm9v b O1\r\nz\r\n", MR "MN\r\n"] $ \client ->
+        Client.getMany client ["a b", "foo"] `shouldReturn` [("a b", ("5", 0, 1)), ("foo", ("z", 0, 2))]
+
+    -- Echoed raw, as it is once an increment has created it, the key's
+    -- newline would end the reply line, so the request asks for no echo.
+    it "gets a key containing a newline and a space" $
+      withServerAndClient [MR "VA 1 f0 c1 O0\r\n5\r\n", MR "VA 4 f7 c2 O1\r\nxval\r\n", MR "MN\r\n"] $
+        \server client -> do
+          Client.getMany client ["x\ny z", "x"] `shouldReturn` [("x\ny z", ("5", 0, 1)), ("x", ("xval", 7, 2))]
+          mockRequests server `shouldReturn`
+            ["mg " <> Base64.encode "x\ny z" <> " b v f c q O0\r\n", "mg x v f c q O1\r\n", "mn\r\n"]
+
+    it "returns a repeated key once per hit" $
+      withClient [MR "VA 1 f0 c1 O0\r\na\r\n", Noop, MR "VA 1 f0 c1 O2\r\na\r\n", MR "MN\r\n"] $ \client ->
+        Client.getMany client ["key", "other", "key"] `shouldReturn` [("key", ("a", 0, 1)), ("key", ("a", 0, 1))]
+
+    -- memcached sends a bare EN in place of a hit's VA line when reading the
+    -- value from extstore misses, and before 1.6.18 for any miss that is not
+    -- quiet.
+    it "skips a miss reply with no opaque" $
+      withServerAndClientOpts oneAttempt
+        [ MR "VA 1 f0 c1 O0\r\na\r\n", MR "EN\r\n", MR "VA 1 f0 c3 O2\r\nc\r\n", MR "MN\r\n"
+        , MR "VA 3 f2 c7\r\nfoo\r\n" ] $ \server client -> do
+          Client.getMany client ["one", "two", "three"]
+            `shouldReturn` [("one", ("a", 0, 1)), ("three", ("c", 0, 3))]
+          Client.get client "other" `shouldReturn` Just ("foo", 2, 7)
+          mockRequests server `shouldReturn`
+            [ "mg one v f c q O0\r\n", "mg two v f c q O1\r\n", "mg three v f c q O2\r\n", "mn\r\n"
+            , "mg other v f c\r\n" ]
+
+    forM_
+      [ ("no opaque", "VA 1 f0 c1\r\na\r\n")
+      , ("an unknown opaque", "VA 1 f0 c1 O2\r\na\r\n")
+      , ("an opaque out of order", "VA 1 f0 c2 O1\r\nb\r\nVA 1 f0 c1 O0\r\na\r\n")
+      , ("a repeated opaque", "VA 1 f0 c1 O0\r\na\r\nVA 1 f0 c1 O0\r\na\r\n") ] $ \(problem, replies) ->
+      it ("rejects a reply with " <> problem) $
+        withServerAndClientOpts oneAttempt [Noop, Noop, MR (replies <> "MN\r\n")] $ \_ client ->
+          Client.getMany client ["one", "two"] `shouldThrow` isUnexpectedResponse
+
+    it "closes the connection after a reply out of step, so the next request gets its own reply" $
+      -- Kept, the connection would answer the get with the stale VA.
+      withServerAndClientOpts oneAttempt
+        [Noop, MR "VA 1 f0 c1 O7\r\nx\r\nVA 3 f9 c9\r\nold\r\nMN\r\n", MR "VA 3 f2 c7\r\nfoo\r\n"] $
+        \server client -> do
+          Client.getMany client ["one"] `shouldThrow` isUnexpectedResponse
+          Client.get client "two" `shouldReturn` Just ("foo", 2, 7)
+          mockRequests server `shouldReturn` ["mg one v f c q O0\r\n", "mn\r\n", "mg two v f c\r\n"]
 
   describe "setMany" $ do
     it "stores each pair and returns its version" $
-      withServerAndClient [MR "HD c1 kone\r\n", MR "HD c2 ktwo\r\n", MR "MN\r\n"] $ \server client -> do
+      withServerAndClient [MR "HD c1 O0\r\n", MR "HD c2 O1\r\n", MR "MN\r\n"] $ \server client -> do
         Client.setMany client [("one", "first", 1, 30), ("two", "second", 2, 0)]
           `shouldReturn` [("one", 1), ("two", 2)]
         mockRequests server `shouldReturn`
-          [ "ms one 5 F1 T30 MS c k\r\nfirst\r\n"
-          , "ms two 6 F2 T0 MS c k\r\nsecond\r\n"
+          [ "ms one 5 F1 T30 MS c O0\r\nfirst\r\n"
+          , "ms two 6 F2 T0 MS c O1\r\nsecond\r\n"
           , "mn\r\n"
           ]
 
-    it "maps encoded keys back to the caller's key" $ do
-      let encoded = Base64.encode "a b"
-      withClient [MR ("HD c4 k" <> encoded <> " b\r\n"), MR "MN\r\n"] $ \client ->
+    it "maps encoded keys back to the caller's key" $
+      withClient [MR "HD c4 O0\r\n", MR "MN\r\n"] $ \client ->
         Client.setMany client [("a b", "v", 0, 0)] `shouldReturn` [("a b", 4)]
 
     it "tells a plain key from another key's base64 form" $
-      withClient [MR "HD c1 kIA==\r\n", MR "HD c2 kIA== b\r\n", MR "MN\r\n"] $ \client ->
+      withServerAndClient [MR "HD c1 O0\r\n", MR "HD c2 O1\r\n", MR "MN\r\n"] $ \server client -> do
         Client.setMany client [("IA==", "a", 0, 0), (" ", "b", 0, 0)] `shouldReturn` [("IA==", 1), (" ", 2)]
+        mockRequests server `shouldReturn`
+          ["ms IA== 1 F0 T0 MS c O0\r\na\r\n", "ms IA== 1 F0 T0 MS b c O1\r\nb\r\n", "mn\r\n"]
 
-    it "keeps a key containing byte 0xa0 whole" $
-      -- Cut off at 0xa0, the echo of "x\xa0" would be taken for "x"'s, and
-      -- that of "IA==\xa0\&b" for that of " ", which is IA== with the b flag.
-      withClient
-        [ MR "HD c1 kvoil\xc3\xa0\r\n", MR "HD c2 kx\xa0\r\n", MR "HD c3 kx\r\n"
-        , MR "HD c4 kIA==\xa0\&b\r\n", MR "HD c5 kIA== b\r\n", MR "MN\r\n" ] $ \client ->
-        Client.setMany client
-          [ ("voil\xc3\xa0", "a", 0, 0), ("x\xa0", "b", 0, 0), ("x", "c", 0, 0)
-          , ("IA==\xa0\&b", "d", 0, 0), (" ", "e", 0, 0) ]
-          `shouldReturn` [("voil\xc3\xa0", 1), ("x\xa0", 2), ("x", 3), ("IA==\xa0\&b", 4), (" ", 5)]
+    -- Error replies carry no opaque, so they must be read as errors before
+    -- the reply is matched by its opaque.
+    it "reports a server error in a batch as its status" $
+      withServerAndClientOpts oneAttempt [MR "SERVER_ERROR out of memory storing object\r\n"] $ \_ client ->
+        Client.setMany client [("key", "v", 0, 0)] `shouldThrow` (== OpError ErrOutOfMemory)
 
     it "stores a repeated key once per occurrence, in order" $
-      withServerAndClient [MR "HD c1 kkey\r\n", MR "HD c2 kkey\r\n", MR "MN\r\n"] $ \server client -> do
+      withServerAndClient [MR "HD c1 O0\r\n", MR "HD c2 O1\r\n", MR "MN\r\n"] $ \server client -> do
         Client.setMany client [("key", "old", 0, 0), ("key", "new", 0, 0)]
           `shouldReturn` [("key", 1), ("key", 2)]
         mockRequests server `shouldReturn`
-          ["ms key 3 F0 T0 MS c k\r\nold\r\n", "ms key 3 F0 T0 MS c k\r\nnew\r\n", "mn\r\n"]
+          ["ms key 3 F0 T0 MS c O0\r\nold\r\n", "ms key 3 F0 T0 MS c O1\r\nnew\r\n", "mn\r\n"]
 
     it "groups results by server, keeping each server's keys in order" $
       withTwoServerClient
-        [MR "HD c1 ka1\r\n", MR "HD c2 ka2\r\n", MR "MN\r\n"]
-        [MR "HD c3 kb1\r\n", MR "MN\r\n"] $ \a b client -> do
+        [MR "HD c1 O0\r\n", MR "HD c2 O2\r\n", MR "MN\r\n"]
+        [MR "HD c3 O1\r\n", MR "MN\r\n"] $ \a b client -> do
           Client.setMany client [("a1", "x", 0, 0), ("b1", "y", 0, 0), ("a2", "z", 0, 0)]
             `shouldReturn` [("a1", 1), ("a2", 2), ("b1", 3)]
           mockRequests a `shouldReturn`
-            ["ms a1 1 F0 T0 MS c k\r\nx\r\n", "ms a2 1 F0 T0 MS c k\r\nz\r\n", "mn\r\n"]
-          mockRequests b `shouldReturn` ["ms b1 1 F0 T0 MS c k\r\ny\r\n", "mn\r\n"]
+            ["ms a1 1 F0 T0 MS c O0\r\nx\r\n", "ms a2 1 F0 T0 MS c O2\r\nz\r\n", "mn\r\n"]
+          mockRequests b `shouldReturn` ["ms b1 1 F0 T0 MS c O1\r\ny\r\n", "mn\r\n"]
 
     it "checks every key before sending anything" $
-      withServerAndClient [MR "HD c1 kkey\r\n", MR "MN\r\n"] $ \server client -> do
+      withServerAndClient [MR "HD c1 O0\r\n", MR "MN\r\n"] $ \server client -> do
         Client.setMany client [("key", "v", 0, 0), (C.replicate 251 'a', "v", 0, 0)]
           `shouldThrow` isKeyTooLong
         Client.setMany client [("key", "v", 0, 0), ("", "v", 0, 0)] `shouldThrow` isKeyTooLong
@@ -465,8 +516,8 @@ main = hspec $ do
     it "closes a batch once its requests reach 1 MiB" $ do
       let value n = C.replicate n 'x'
       withServerAndClient
-        [ MR "HD c1 kone\r\n", MR "HD c2 ktwo\r\n", MR "MN\r\n"
-        , MR "HD c3 kthree\r\n", MR "MN\r\n", MR "HD c4 kfour\r\n", MR "MN\r\n" ] $ \server client -> do
+        [ MR "HD c1 O0\r\n", MR "HD c2 O1\r\n", MR "MN\r\n"
+        , MR "HD c3 O2\r\n", MR "MN\r\n", MR "HD c4 O3\r\n", MR "MN\r\n" ] $ \server client -> do
           -- one and two fit in 1 MiB; three is over 1 MiB, so it goes alone,
           -- and four would take its batch past 1 MiB.
           Client.setMany client
@@ -478,7 +529,7 @@ main = hspec $ do
     it "throws a reply other than stored, after reading the whole batch" $
       withMockServer
         [ MR "CLIENT_ERROR unauthenticated\r\n", MR "STORED\r\n"
-        , MR "HD c1 kone\r\n", MR "NS ktwo\r\n", MR "MN\r\n", MR "VA 1 f0 c1\r\nv\r\n" ] $ \server -> do
+        , MR "HD c1 O0\r\n", MR "NS O1\r\n", MR "MN\r\n", MR "VA 1 f0 c1\r\nv\r\n" ] $ \server -> do
         client <- Client.newClient [(mockServerSpec server) { ssAuth = Auth.Auth "user" "pass" }] Client.def
         Client.setMany client [("one", "v", 0, 0), ("two", "v", 0, 0)]
           `shouldThrow` (== OpError ErrItemNotStored)
@@ -488,24 +539,24 @@ main = hspec $ do
 
     it "returns the versions from a retried batch" $
       withServerAndClientOpts fastFailover
-        [MR "HD c1 kone\r\n", CloseConnection, MR "HD c3 kone\r\n", MR "HD c4 ktwo\r\n", MR "MN\r\n"] $ \_ client ->
+        [MR "HD c1 O0\r\n", CloseConnection, MR "HD c3 O0\r\n", MR "HD c4 O1\r\n", MR "MN\r\n"] $ \_ client ->
           Client.setMany client [("one", "v", 0, 0), ("two", "v", 0, 0)]
             `shouldReturn` [("one", 3), ("two", 4)]
 
   describe "deleteMany" $ do
     it "deletes present, missing and repeated keys alike" $
-      withServerAndClient [MR "HD kone\r\n", MR "NF ktwo\r\n", MR "NF kone\r\n", MR "MN\r\n"] $ \server client -> do
+      withServerAndClient [MR "HD O0\r\n", MR "NF O1\r\n", MR "NF O2\r\n", MR "MN\r\n"] $ \server client -> do
         Client.deleteMany client ["one", "two", "one"] `shouldReturn` ()
-        mockRequests server `shouldReturn` ["md one k\r\n", "md two k\r\n", "md one k\r\n", "mn\r\n"]
+        mockRequests server `shouldReturn` ["md one O0\r\n", "md two O1\r\n", "md one O2\r\n", "mn\r\n"]
 
     it "deletes keys on every server" $
-      withTwoServerClient [MR "HD ka1\r\n", MR "MN\r\n"] [MR "NF kb1\r\n", MR "MN\r\n"] $ \a b client -> do
+      withTwoServerClient [MR "HD O0\r\n", MR "MN\r\n"] [MR "NF O1\r\n", MR "MN\r\n"] $ \a b client -> do
         Client.deleteMany client ["a1", "b1"] `shouldReturn` ()
-        mockRequests a `shouldReturn` ["md a1 k\r\n", "mn\r\n"]
-        mockRequests b `shouldReturn` ["md b1 k\r\n", "mn\r\n"]
+        mockRequests a `shouldReturn` ["md a1 O0\r\n", "mn\r\n"]
+        mockRequests b `shouldReturn` ["md b1 O1\r\n", "mn\r\n"]
 
     it "checks every key before sending anything" $
-      withServerAndClient [MR "HD kkey\r\n", MR "MN\r\n"] $ \server client -> do
+      withServerAndClient [MR "HD O0\r\n", MR "MN\r\n"] $ \server client -> do
         Client.deleteMany client ["key", C.replicate 251 'a'] `shouldThrow` isKeyTooLong
         Client.deleteMany client ["key", ""] `shouldThrow` isKeyTooLong
         mockRequests server `shouldReturn` []
@@ -516,15 +567,15 @@ main = hspec $ do
         mockRequests server `shouldReturn` []
 
     it "throws a reply other than deleted or not found" $
-      withClient [MR "EX kkey\r\n", MR "MN\r\n"] $ \client ->
+      withClient [MR "EX O0\r\n", MR "MN\r\n"] $ \client ->
         Client.deleteMany client ["key"] `shouldThrow` (== OpError ErrKeyExists)
 
     it "succeeds when a retried batch finds keys already deleted" $
       withServerAndClientOpts fastFailover
-        [MR "HD kone\r\n", CloseConnection, MR "NF kone\r\n", MR "HD ktwo\r\n", MR "MN\r\n"] $ \server client -> do
+        [MR "HD O0\r\n", CloseConnection, MR "NF O0\r\n", MR "HD O1\r\n", MR "MN\r\n"] $ \server client -> do
           Client.deleteMany client ["one", "two"] `shouldReturn` ()
           mockRequests server `shouldReturn`
-            ["md one k\r\n", "md two k\r\n", "md one k\r\n", "md two k\r\n", "mn\r\n"]
+            ["md one O0\r\n", "md two O1\r\n", "md one O0\r\n", "md two O1\r\n", "mn\r\n"]
 
   describe "client operations" $ do
     it "gets a hit" $
@@ -1028,6 +1079,8 @@ main = hspec $ do
     allStats _ = False
     expectedAuthRequests = "version\r\nset auth 0 0 9\r\nuser pass\r\n"
     fastFailover = Client.def { Client.optsFailRetryDelay = 10, Client.optsDeadRetryDelay = 60000 }
+    -- One attempt per operation, and a server it marks dead is used again at once.
+    oneAttempt = Client.def { Client.optsServerRetries = 0, Client.optsDeadRetryDelay = 0 }
     fst3 (value, _, _) = value
     hour = 3600 * 1000000
     -- The endpoint check only looks for ".cfg" somewhere in the URI, so put it
@@ -1144,9 +1197,9 @@ unsafeByte c = c <= 0x20 || c == 0x7f
 base64Length :: B.ByteString -> Int
 base64Length key = 4 * ((B.length key + 2) `div` 3)
 
--- | Add the key-echo flag to the end of a request's command line.
-echoKey :: B.ByteString -> B.ByteString
-echoKey request = line <> " k" <> rest
+-- | Add flags to the end of a request's command line.
+addFlags :: B.ByteString -> B.ByteString -> B.ByteString
+addFlags flags request = line <> flags <> rest
   where (line, rest) = B.breakSubstring "\r\n" request
 
 -- | A request line: ends in CRLF and contains no other line break.
