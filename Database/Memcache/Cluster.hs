@@ -23,7 +23,8 @@ module Database.Memcache.Cluster (
         getServers, setServers,
 
         -- * Operations
-        Retries, keyedOp, keyedBatchOp, anyOp, allOp, allOp'
+        Retries, keyedOp, keyedOpExpecting, keyedBatchOp, anyOp, anyOpExpecting,
+        allOp, allOpExpecting, allOp'
     ) where
 
 import           Database.Memcache.Errors
@@ -32,7 +33,7 @@ import           Database.Memcache.Types
 
 import           Control.Concurrent       (threadDelay)
 import           Control.Concurrent.MVar  (MVar, readMVar)
-import           Control.Monad            (foldM, void)
+import           Control.Monad            (foldM, unless, void)
 import           Data.ByteString          (ByteString)
 import qualified Data.ByteString          as B
 import qualified Data.ByteString.Char8    as C
@@ -41,12 +42,12 @@ import           Data.Fixed               (Milli)
 import           Data.Hashable            (hash)
 import           Data.IORef
 import           Data.List                (find, sort)
-import           Data.Maybe               (fromMaybe)
+import           Data.Maybe               (fromMaybe, isJust)
 import           Data.Time.Clock          (NominalDiffTime)
 import           Data.Time.Clock.POSIX    (getPOSIXTime)
 import qualified Data.Vector              as V
 import           System.Timeout
-import           UnliftIO.Exception       (SomeException, fromException, handle, throwIO)
+import           UnliftIO.Exception       (Exception, SomeException, fromException, handle, throwIO)
 import           Database.Memcache.Socket (Response(..), WireKey, encodeKey, noOpRequest, recvResponse, responseStatus, sendRaw)
 
 -- | Number of times to retry an operation before considering it failed.
@@ -192,14 +193,17 @@ getServerForKeyDefault  c k = do
         else Just $ fromMaybe (V.last servers') (V.find searchF servers')
 
 -- | Run a Memcached operation against a particular server, handling any
--- failures that occur, retrying the specified number of times.
-serverOp :: Cluster -> Server -> ByteString -> IO Response
+-- failures that occur, retrying the specified number of times. The reply is
+-- checked with the given function while the connection is held, so that a
+-- reply it rejects closes the connection.
+serverOp :: Cluster -> Server -> (Response -> IO ()) -> ByteString -> IO Response
 {-# INLINE serverOp #-}
-serverOp c s req = retryOp c s $ withSocket s $ \connection -> do
-  sendRaw connection req
-  response <- recvResponse connection
-  rejectProtocolError response
-  return response
+serverOp c s check req = handle (\(OutOfStep err) -> throwIO err) $
+  retryOp c s $ withSocket s $ \connection -> do
+    sendRaw connection req
+    response <- recvResponse connection
+    check response
+    return response
 
 rejectProtocolError :: Response -> IO ()
 rejectProtocolError response
@@ -207,14 +211,62 @@ rejectProtocolError response
     void (responseStatus response)
   | otherwise = return ()
 
--- | Run a keyed request against the server selected for the key.
+-- | Reject a reply whose code is none of the given ones, as
+-- 'keyedOpExpecting' describes.
+expectReply :: String -> [ByteString] -> Response -> IO ()
+expectReply operation codes response = do
+  rejectProtocolError response
+  unless (responseCode response `elem` codes) $ handle (throwIO . OutOfStep) $ do
+    -- An unknown code throws 'UnknownStatus' here.
+    void (responseStatus response)
+    throwIO $ ProtocolError UnexpectedResponse
+      { protocolError = "Expected " <> operation <> ", got: " <> show (responseCode response) }
+
+-- | An error for a reply that shows its connection is out of step with its
+-- requests. @expectReply@ throws it inside 'withSocket', so that the
+-- connection is closed, and @serverOp@ throws the error it carries once
+-- @retryOp@ has let it through.
+newtype OutOfStep = OutOfStep MemcacheError
+  deriving Show
+
+instance Exception OutOfStep
+
+-- | Run a keyed request against the server selected for the key. Of the
+-- replies it can read, only an error reply throws: @ERROR@ throws
+-- 'UnknownOp', and @CLIENT_ERROR@ and @SERVER_ERROR@ throw 'BadCommand' and
+-- 'ServerError', or an 'OpError' when their text names a status, such as
+-- 'ErrValueTooLarge'. Any other reply is returned, and the connection goes
+-- back to the pool, so a reply the request cannot get leaves it out of step;
+-- 'keyedOpExpecting' rejects such a reply.
 keyedOp :: Cluster -> Key -> (WireKey -> ByteString) -> IO Response
 {-# INLINE keyedOp #-}
-keyedOp c k makeReq = do
+keyedOp c = keyedOpWith c rejectProtocolError
+
+-- | Like 'keyedOp', for a request whose reply can only have one of the given
+-- codes, such as @[\"VA\", \"EN\"]@ for a get with the @v@ flag. A reply with
+-- any other code shows that the connection is out of step with its requests:
+-- the reply is likely an earlier request's, and this request's own reply is
+-- still to come. Such a reply throws while the connection is held, so the
+-- connection is closed rather than returned to the pool, where later requests
+-- would read the replies left on it. A code that 'responseStatus' doesn't
+-- know throws 'UnknownStatus'. Any other throws 'UnexpectedResponse', whose
+-- message names the given operation and the code, as in
+-- @Expected GET, got: \"HD\"@. The server has received the request, so it
+-- is not sent again, and the error doesn't count towards marking the server
+-- dead. Error replies (@ERROR@, @CLIENT_ERROR@ and @SERVER_ERROR@) throw as
+-- they do for 'keyedOp'.
+keyedOpExpecting :: Cluster -> String -> [ByteString] -> Key -> (WireKey -> ByteString) -> IO Response
+{-# INLINE keyedOpExpecting #-}
+keyedOpExpecting c operation codes = keyedOpWith c (expectReply operation codes)
+
+-- | Run a keyed request, checking its reply with the given function.
+keyedOpWith :: Cluster -> (Response -> IO ()) -> Key -> (WireKey -> ByteString) -> IO Response
+{-# INLINE keyedOpWith #-}
+keyedOpWith c check k makeReq = do
     wire <- either (throwIO . ClientError) return (encodeKey k)
     s' <- cGetServerForKey c c k
     case s' of
-        Just s  -> serverOp c s (makeReq wire)
+        Just s  -> serverOp c s check (makeReq wire)
         Nothing -> throwIO $ ClientError NoServersReady
 
 -- | Run keyed requests grouped by their selected server, pipelining each
@@ -229,11 +281,12 @@ keyedOp c k makeReq = do
 -- return for it. memcached sends one when a read from extstore misses (for
 -- quiet gets too, from 1.6.40) and, before 1.6.18, for any get miss that is
 -- not quiet. Error replies (@ERROR@, @CLIENT_ERROR@ and @SERVER_ERROR@) throw
--- as they do for a single request. Any other reply with no opaque, with the
--- opaque of no request in its batch, or out of order throws
--- 'UnexpectedResponse', and the connection is closed rather than reused. Like
--- any server failure, the batch is then sent again on a new connection, and
--- the failure counts towards marking the server dead.
+-- as they do for 'keyedOp'. A reply with an unknown code throws
+-- 'UnknownStatus', as its length can't be known. Any other reply with no
+-- opaque, with the opaque of no request in its batch, or out of order throws
+-- 'UnexpectedResponse'. Either way the connection is closed rather than
+-- reused. Like any server failure, the batch is then sent again on a new
+-- connection, and the failure counts towards marking the server dead.
 keyedBatchOp :: Cluster -> [(Key, WireKey -> Int -> ByteString)] -> IO [(Key, Response)]
 keyedBatchOp c requests = do
     groups <- foldM add [] (zip [0..] requests)
@@ -267,14 +320,15 @@ keyedBatchOp c requests = do
     -- between got no reply. A bare EN is a miss whose opaque memcached
     -- dropped: we can't tell which request it answers, but it is one line
     -- with nothing to return, so skip it. Anything else means the replies
-    -- are out of step with the requests, so throw while the connection is
+    -- are out of step with the requests, as may a reply with an unknown
+    -- code, whose length we can't know. So throw while the connection is
     -- held, and it is closed rather than returned to the pool. Echoed keys
     -- can't be matched instead: memcached echoes a key raw or as base64
     -- according to how its item was stored, not how the request sent it, and
     -- a raw key can contain a newline.
     recvUntilMN connection pending acc = do
       response <- recvResponse connection
-      rejectProtocolError response
+      void (responseStatus response)
       case (responseCode response, find (B.isPrefixOf "O") (responseTokens response)) of
         ("MN", _) -> return (reverse acc)
         ("EN", Nothing) -> recvUntilMN connection pending acc
@@ -306,19 +360,43 @@ keyedBatchOp c requests = do
 
 -- | Run a Memcached operation against any single server in the cluster,
 -- handling any failures that occur, retrying the specified number of times.
+-- As with 'keyedOp', of the replies it can read, only an error reply throws;
+-- 'anyOpExpecting' also rejects a reply the request cannot get.
 anyOp :: Cluster -> ByteString -> IO Response
 {-# INLINE anyOp #-}
-anyOp c req = do
+anyOp c = anyOpWith c rejectProtocolError
+
+-- | Like 'anyOp', but rejects a reply whose code is none of the given ones,
+-- as 'keyedOpExpecting' does.
+anyOpExpecting :: Cluster -> String -> [ByteString] -> ByteString -> IO Response
+{-# INLINE anyOpExpecting #-}
+anyOpExpecting c operation codes = anyOpWith c (expectReply operation codes)
+
+-- | Run a request against any single server, checking its reply with the
+-- given function.
+anyOpWith :: Cluster -> (Response -> IO ()) -> ByteString -> IO Response
+{-# INLINE anyOpWith #-}
+anyOpWith c check req = do
     servers' <- aliveServers c
     case V.uncons servers' of
         Nothing     -> throwIO $ ClientError NoServersReady
-        Just (s, _) -> serverOp c s req
+        Just (s, _) -> serverOp c s check req
 
 -- | Run a Memcached operation against all servers in the cluster, handling any
--- failures that occur, retrying the specified number of times.
+-- failures that occur, retrying the specified number of times. As with
+-- 'keyedOp', of the replies it can read, only an error reply throws;
+-- 'allOpExpecting' also rejects a reply the request cannot get.
 allOp :: Cluster -> ByteString -> IO [(Server, Response)]
 {-# INLINE allOp #-}
-allOp c req = forAliveServers c $ \s -> serverOp c s req
+allOp c req = forAliveServers c $ \s -> serverOp c s rejectProtocolError req
+
+-- | Like 'allOp', but rejects a reply whose code is none of the given ones,
+-- as 'keyedOpExpecting' does. The servers after one whose reply is rejected
+-- are not sent the request, as with a server that fails.
+allOpExpecting :: Cluster -> String -> [ByteString] -> ByteString -> IO [(Server, Response)]
+{-# INLINE allOpExpecting #-}
+allOpExpecting c operation codes req =
+    forAliveServers c $ \s -> serverOp c s (expectReply operation codes) req
 
 -- | Run a Memcached operation against all servers in the cluster, handling any
 -- failures that occur, retrying the specified number of times. Similar to
@@ -365,11 +443,12 @@ retryOp Cluster{..} s op = go cRetries
 
 -- | A rejected command or a reported operation status is an answer, not a
 -- server failure: retrying it will fail identically and must not count towards
--- marking the server dead.
+-- marking the server dead. Nor is a reply out of step retried or counted: the
+-- server has the request, and may have carried it out.
 clientFault :: SomeException -> Bool
 clientFault err = case fromException err of
     Just (ProtocolError BadCommand{}) -> True
     Just (ProtocolError UnknownOp{})  -> True
     Just (OpError _)                  -> True
     Just (ClientError InvalidAuthentication{}) -> True
-    _                                 -> False
+    _                                 -> isJust (fromException err :: Maybe OutOfStep)

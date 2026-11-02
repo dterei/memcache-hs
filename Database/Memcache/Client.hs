@@ -32,7 +32,11 @@ We support the following logic for handling failure in operations:
 
 * __Retry__: on operation failure (timeout, network error) we close the
              connection and retry the operation, doing this up to a
-             configurable maximum.
+             configurable maximum. A reply to an operation's request that
+             shows the connection is out of step also closes it. Only
+             'getMany', 'setMany' and 'deleteMany' retry then; other
+             operations throw at once, as the server may have carried out
+             the request.
 
 * __Failover__: when an operation against a server in a cluster fails all
                 retries, we mark that server as dead and use the remaining
@@ -198,7 +202,7 @@ withClient specs opts = bracket (newClient specs opts) quit
 -- flags and CAS version. Returns 'Nothing' on a miss.
 get :: Client -> Key -> IO (Maybe (Value, Flags, Version))
 get c k = do
-  response <- keyedOp c k getRequest
+  response <- keyedOpExpecting c "GET" getReplies k getRequest
   status <- responseStatus response
   case (responseCode response, status) of
     ("VA", NoError) -> return $ Just (valueResult response)
@@ -224,7 +228,7 @@ getMany c keys = do
 -- expiration value of @0@ to store forever.
 gat :: Client -> Key -> Expiration -> IO (Maybe (Value, Flags, Version))
 gat c k e = do
-  response <- keyedOp c k (`gatRequest` e)
+  response <- keyedOpExpecting c "GAT" getReplies k (`gatRequest` e)
   status <- responseStatus response
   case (responseCode response, status) of
     ("VA", NoError) -> return $ Just (valueResult response)
@@ -236,7 +240,7 @@ gat c k e = do
 -- Use an expiration value of @0@ to store forever.
 touch :: Client -> Key -> Expiration -> IO (Maybe Version)
 touch c k e = do
-  response <- keyedOp c k (`touchRequest` e)
+  response <- keyedOpExpecting c "TOUCH" touchReplies k (`touchRequest` e)
   status <- responseStatus response
   case status of
     NoError | responseCode response == "HD" -> return $ Just (responseCas response)
@@ -283,7 +287,7 @@ setMany c items = do
 -- with 'set'.
 cas :: Client -> Key -> Value -> Flags -> Expiration -> Version -> IO (Maybe Version)
 cas c k v f e ver = do
-  response <- keyedOp c k (\wire -> storeRequest Set wire v f e ver)
+  response <- keyedOpExpecting c "SET" storeReplies k (\wire -> storeRequest Set wire v f e ver)
   status <- responseStatus response
   case status of
     NoError -> return $ Just (responseCas response)
@@ -296,7 +300,7 @@ cas c k v f e ver = do
 -- expiration value of @0@ to store forever.
 add :: Client -> Key -> Value -> Flags -> Expiration -> IO (Maybe Version)
 add c k v f e = do
-  response <- keyedOp c k (\wire -> storeRequest Add wire v f e 0)
+  response <- keyedOpExpecting c "ADD" storeReplies k (\wire -> storeRequest Add wire v f e 0)
   status <- responseStatus response
   case status of
     NoError -> return $ Just (responseCas response)
@@ -311,7 +315,7 @@ add c k v f e = do
 -- server, otherwise 'Nothing' is returned. A version of @0@ skips the check.
 replace :: Client -> Key -> Value -> Flags -> Expiration -> Version -> IO (Maybe Version)
 replace c k v f e ver = do
-  response <- keyedOp c k (\wire -> storeRequest Replace wire v f e ver)
+  response <- keyedOpExpecting c "REPLACE" storeReplies k (\wire -> storeRequest Replace wire v f e ver)
   status <- responseStatus response
   case status of
     NoError -> return $ Just (responseCas response)
@@ -322,7 +326,7 @@ replace c k v f e ver = do
 
 store :: Cluster -> Key -> Value -> Flags -> Expiration -> Version -> StoreMode -> String -> IO Version
 store c k v f e ver mode operation = do
-  response <- keyedOp c k (\wire -> storeRequest mode wire v f e ver)
+  response <- keyedOpExpecting c operation storeReplies k (\wire -> storeRequest mode wire v f e ver)
   status <- responseStatus response
   case status of
     NoError -> return $ responseCas response
@@ -356,7 +360,7 @@ decrement c k i d e ver = arithmetic c k i d e ver Decr "DECREMENT"
 
 arithmetic :: Cluster -> Key -> Initial -> Delta -> Expiration -> Version -> ArithMode -> String -> IO (Maybe (Word64, Version))
 arithmetic c k i d e ver mode operation = do
-  response <- keyedOp c k (\wire -> arithmeticRequest mode wire i d e ver)
+  response <- keyedOpExpecting c operation arithmeticReplies k (\wire -> arithmeticRequest mode wire i d e ver)
   status <- responseStatus response
   case status of
     NoError -> return $ Just (responseNumber response, responseCas response)
@@ -387,7 +391,7 @@ prepend c k v ver = modify c k v ver Prepend "PREPEND"
 
 modify :: Cluster -> Key -> Value -> Version -> StoreMode -> String -> IO (Maybe Version)
 modify c k v ver mode operation = do
-  response <- keyedOp c k (\wire -> modifyRequest mode wire v ver)
+  response <- keyedOpExpecting c operation storeReplies k (\wire -> modifyRequest mode wire v ver)
   status <- responseStatus response
   case status of
     NoError -> return $ Just (responseCas response)
@@ -402,7 +406,7 @@ modify c k v ver mode operation = do
 -- of @0@ deletes the key unconditionally.
 delete :: Client -> Key -> Version -> IO Bool
 delete c k ver = do
-  response <- keyedOp c k (`deleteRequest` ver)
+  response <- keyedOpExpecting c "DELETE" deleteReplies k (`deleteRequest` ver)
   status <- responseStatus response
   case status of
     NoError -> return True
@@ -433,10 +437,12 @@ deleteMany c keys = do
 
 -- | Remove (delete) all currently stored key-value pairs from the cluster. The
 -- expiration value can be used to cause this flush to occur in the future
--- rather than immediately.
+-- rather than immediately. The servers are flushed in turn, and one that
+-- fails, or gives a reply other than @OK@, throws and leaves the servers
+-- after it unflushed.
 flush :: Client -> Maybe Expiration -> IO ()
 flush c e = do
-  results <- allOp c (flushRequest e)
+  results <- allOpExpecting c "FLUSH" ["OK"] (flushRequest e)
   forM_ results $ \(_, response) -> do
     status <- responseStatus response
     when (status /= NoError) $ failResponse response "FLUSH"
@@ -475,11 +481,23 @@ stats c key = validateStatsArgs key >> allOp' c (runStats key)
 -- one server and assumes all servers in the cluster run the same version.
 version :: Client -> IO ByteString
 version c = do
-  response <- anyOp c versionRequest
+  response <- anyOpExpecting c "VERSION" ["VERSION"] versionRequest
   status <- responseStatus response
   if responseCode response == "VERSION" && status == NoError
     then return $ fromMaybe B.empty (listToMaybe (responseTokens response))
     else failResponse response "VERSION"
+
+-- | The codes of the replies, besides error replies, that memcached 1.6.13
+-- and later send to each request; a reply with any other code closes the
+-- connection, as 'keyedOpExpecting' describes. Up to 1.6.17, memcached run
+-- with @-o meta_response_old@ sends @OK@ in place of @HD@. Stores and deletes
+-- take it as success; 'touch' doesn't.
+getReplies, touchReplies, storeReplies, arithmeticReplies, deleteReplies :: [ByteString]
+getReplies = ["VA", "EN"]
+touchReplies = ["HD", "EN"]
+storeReplies = ["HD", "OK", "NS", "EX", "NF"]
+arithmeticReplies = ["VA", "NF", "NS", "EX"]
+deleteReplies = ["HD", "OK", "NF", "EX"]
 
 -- | The value, flags and CAS version carried by a @VA@ response.
 valueResult :: Response -> (Value, Flags, Version)
