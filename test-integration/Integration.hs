@@ -90,7 +90,7 @@ integrationSpecs port = beforeAll (newClient port) $ do
     M.touch client "integration-no-touch" 60 `shouldReturn` Nothing
 
   it "tells a plain key from another key's base64 form" $ \client -> do
-    -- " " is sent, and echoed, as IA== with the b flag.
+    -- " " is sent as IA== with the b flag.
     _ <- M.set client "IA==" "plain" 0 0
     _ <- M.set client " " "space" 0 0
     values <- M.getMany client ["IA==", " "]
@@ -122,7 +122,7 @@ integrationSpecs port = beforeAll (newClient port) $ do
       [(key, (value, flags, version)) | ((key, value, flags, _), (_, version)) <- zip items versions]
 
   it "sets a plain key and another key's base64 form separately" $ \client -> do
-    -- " " is sent, and echoed, as IA== with the b flag.
+    -- " " is sent as IA== with the b flag.
     versions <- M.setMany client [("IA==", "plain", 0, 0), (" ", "space", 0, 0)]
     map fst versions `shouldBe` ["IA==", " "]
     M.getMany client ["IA==", " "] `shouldReturn`
@@ -150,6 +150,27 @@ integrationSpecs port = beforeAll (newClient port) $ do
     M.getMany client keys `shouldReturn` []
     -- Every key is missing now, which is not an error.
     M.deleteMany client keys
+
+  it "gets many keys that increments created" $ \client -> do
+    -- memcached echoes the key of an item an increment created raw, even when
+    -- the request sent it as base64. Echoed, "integration-x\ny" would end its
+    -- reply line at the newline and pass for "integration-x".
+    let keys = ["integration-incr-many", "integration incr many", "integration-x\ny"]
+    created <- mapM (\key -> M.increment client key 5 1 0 0) keys
+    map (fmap fst) created `shouldBe` replicate 3 (Just 5)
+    plain <- M.set client "integration-x" "plain" 0 0
+    M.getMany client (keys ++ ["integration-x"]) `shouldReturn`
+      [(key, ("5", 0, version)) | (key, Just (_, version)) <- zip keys created]
+        ++ [("integration-x", ("plain", 0, plain))]
+
+  it "gets many keys after an append" $ \client -> do
+    -- An append replaces the item, and memcached then echoes an encoded key raw.
+    let keys = ["integration-append-many", "integration append many"]
+    forM_ keys $ \key -> M.set client key "x" 0 0
+    appended <- mapM (\key -> M.append client key "y" 0) keys
+    appended `shouldSatisfy` all isJust
+    M.getMany client keys `shouldReturn`
+      [(key, ("xy", 0, version)) | (key, Just version) <- zip keys appended]
 
   it "increments and decrements counters" $ \client -> do
     _ <- M.delete client "integration-counter" 0

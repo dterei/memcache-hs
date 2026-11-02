@@ -333,9 +333,14 @@ cas n = if n == 0 then mempty else bytes " C" <> word64Dec n
 getRequest :: WireKey -> ByteString
 getRequest key = cmdMetaGet <> " " <> keyArgs key <> " v f c" <> crlf
 
--- | Encode a quiet multi-get request for one key.
-getManyRequest :: WireKey -> ByteString
-getManyRequest key = cmdMetaGet <> " " <> keyArgs key <> " v f c k q" <> crlf
+-- | Encode a get request for a pipelined batch. It is 'getRequest' plus the
+-- @q@ flag, so a miss gets no reply, and the given opaque as the @O@ flag,
+-- which memcached copies into the reply so that it can be matched to its
+-- request.
+getManyRequest :: WireKey -> Int -> ByteString
+getManyRequest key opaque = render (B.length (wireKey key)) $
+  bytes cmdMetaGet <> bytes " " <> bytes (keyArgs key) <> bytes " v f c q O" <> intDec opaque
+  <> bytes crlf
 
 -- | Encode a get-and-touch request.
 gatRequest :: WireKey -> Expiration -> ByteString
@@ -358,13 +363,13 @@ storeRequest mode key value flags expiry version = render (B.length (wireKey key
   <> bytes crlf <> byteStringCopy value <> bytes crlf
 
 -- | Encode a set request for a pipelined batch. It is 'storeRequest' in 'Set'
--- mode without a CAS, plus the @k@ flag so the reply echoes the key it
--- answers.
-setManyRequest :: WireKey -> Value -> Flags -> Expiration -> ByteString
-setManyRequest key value flags expiry = render (B.length (wireKey key) + B.length value) $
+-- mode without a CAS, plus the given opaque as the @O@ flag, which memcached
+-- copies into the reply so that it can be matched to its request.
+setManyRequest :: WireKey -> Value -> Flags -> Expiration -> Int -> ByteString
+setManyRequest key value flags expiry opaque = render (B.length (wireKey key) + B.length value) $
   bytes cmdMetaSet <> bytes " " <> bytes (wireKey key) <> bytes " " <> intDec (B.length value)
   <> bytes " F" <> word32Dec flags <> bytes " T" <> word32Dec expiry
-  <> bytes " M" <> bytes (storeMode Set) <> bytes (keyFlag key) <> bytes " c k"
+  <> bytes " M" <> bytes (storeMode Set) <> bytes (keyFlag key) <> bytes " c O" <> intDec opaque
   <> bytes crlf <> byteStringCopy value <> bytes crlf
 
 -- | Encode an increment or decrement request. Unless the expiration is
@@ -393,9 +398,11 @@ deleteRequest key version = render (B.length (wireKey key)) $
   bytes cmdMetaDelete <> bytes " " <> bytes (keyArgs key) <> cas version <> bytes crlf
 
 -- | Encode a delete request for a pipelined batch. It is 'deleteRequest'
--- without a CAS, plus the @k@ flag so the reply echoes the key it answers.
-deleteManyRequest :: WireKey -> ByteString
-deleteManyRequest key = cmdMetaDelete <> " " <> keyArgs key <> " k" <> crlf
+-- without a CAS, plus the given opaque as the @O@ flag, which memcached copies
+-- into the reply so that it can be matched to its request.
+deleteManyRequest :: WireKey -> Int -> ByteString
+deleteManyRequest key opaque = render (B.length (wireKey key)) $
+  bytes cmdMetaDelete <> bytes " " <> bytes (keyArgs key) <> bytes " O" <> intDec opaque <> bytes crlf
 
 -- | Encode a flush request, optionally delayed until the given expiration.
 flushRequest :: Maybe Expiration -> ByteString
