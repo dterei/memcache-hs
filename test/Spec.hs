@@ -24,7 +24,7 @@ import qualified Network.Socket.ByteString as N
 import           Control.Concurrent        (forkIO, newEmptyMVar, putMVar, takeMVar,
                                             threadDelay)
 import           Control.Exception         (bracket, displayException)
-import           Control.Monad             (forM_, (>=>))
+import           Control.Monad             (forM_, void, (>=>))
 import           Data.Either               (isLeft)
 import           Data.Foldable             (toList)
 import           Data.IORef                (readIORef, writeIORef)
@@ -448,6 +448,10 @@ main = hspec $ do
         withServerAndClientOpts oneAttempt [Noop, Noop, MR (replies <> "MN\r\n")] $ \_ client ->
           Client.getMany client ["one", "two"] `shouldThrow` isUnexpectedResponse
 
+    it "rejects a reply with an unknown code and no opaque as an unknown status" $
+      withServerAndClientOpts oneAttempt [Noop, MR "XX\r\nMN\r\n"] $ \_ client ->
+        Client.getMany client ["one"] `shouldThrow` (== ProtocolError (UnknownStatus "XX"))
+
     it "closes the connection after a reply out of step, so the next request gets its own reply" $
       -- Kept, the connection would answer the get with the stale VA.
       withServerAndClientOpts oneAttempt
@@ -456,6 +460,34 @@ main = hspec $ do
           Client.getMany client ["one"] `shouldThrow` isUnexpectedResponse
           Client.get client "two" `shouldReturn` Just ("foo", 2, 7)
           mockRequests server `shouldReturn` ["mg one v f c q O0\r\n", "mn\r\n", "mg two v f c\r\n"]
+
+    it "closes the connection after a reply with an unknown code, so the next request gets its own reply" $
+      -- The client can't tell where such a reply ends. Here the reply's two
+      -- bytes read as the batch's MN, so, kept, the connection would answer
+      -- the get with the real MN.
+      withServerAndClientOpts oneAttempt
+        [MR "XX 2 O0\r\nMN\r\n", MR "MN\r\n", MR "VA 3 f2 c7\r\nfoo\r\n"] $ \server client -> do
+          Client.getMany client ["one"] `shouldThrow` (== ProtocolError (UnknownStatus "XX"))
+          Client.get client "two" `shouldReturn` Just ("foo", 2, 7)
+          mockRequests server `shouldReturn` ["mg one v f c q O0\r\n", "mn\r\n", "mg two v f c\r\n"]
+
+    -- As for a server failure, the batch is sent again on a new connection,
+    -- and the failure counts towards marking the server dead.
+    it "sends the batch again after a reply with an unknown code" $
+      withServerAndClientOpts fastFailover
+        [MR "XX O0\r\n", MR "MN\r\n", MR "VA 3 f2 c7 O0\r\nfoo\r\n", MR "MN\r\n"] $ \server client -> do
+          Client.getMany client ["one"] `shouldReturn` [("one", ("foo", 2, 7))]
+          mockRequests server `shouldReturn`
+            ["mg one v f c q O0\r\n", "mn\r\n", "mg one v f c q O0\r\n", "mn\r\n"]
+
+    -- The unknown reply answers the batch's mn, so the mock has recorded both
+    -- requests of each attempt before the client sees it.
+    it "marks the server dead once a batch's retries all get an unknown code" $
+      withServerAndClientOpts fastFailover
+        [Noop, MR "XX O0\r\nMN\r\n", Noop, MR "XX O0\r\nMN\r\n"] $ \server client -> do
+          Client.getMany client ["one"] `shouldThrow` (== ProtocolError (UnknownStatus "XX"))
+          Client.get client "two" `shouldThrow` (== ClientError NoServersReady)
+          length <$> mockRequests server `shouldReturn` 4
 
   describe "setMany" $ do
     it "stores each pair and returns its version" $
@@ -677,6 +709,11 @@ main = hspec $ do
       withClient [MR "NS\r\n"] $ \client ->
         Client.increment client "counter" 0 1 30 0 `shouldReturn` Nothing
 
+    it "returns Nothing for arithmetic on a missing key it may not create, or with a stale CAS" $
+      withClient [MR "NF\r\n", MR "EX\r\n"] $ \client -> do
+        Client.increment client "counter" 0 1 maxBound 0 `shouldReturn` Nothing
+        Client.decrement client "counter" 0 1 0 5 `shouldReturn` Nothing
+
     it "returns the new counter value and CAS" $
       withServerAndClient [MR "VA 1 c2\r\n0\r\n"] $ \server client -> do
         Client.decrement client "counter" 10 1 60 0 `shouldReturn` Just (0, 2)
@@ -713,6 +750,71 @@ main = hspec $ do
         result <- Client.stats client Nothing
         map snd result `shouldBe` [[]]
 
+  -- A reply the request cannot get is likely an earlier request's, so the
+  -- connection must be closed. Kept, it would answer the next request with
+  -- the stale reply scripted after it, such as "VA 3 f9 c9\r\nold\r\n".
+  describe "replies out of step" $ do
+    it "closes the connection after an unknown reply, so the next request gets its own reply" $
+      withServerAndClient [MR "XX\r\nVA 3 f9 c9\r\nold\r\n", MR "EN\r\n"] $ \server client -> do
+        Client.get client "a" `shouldThrow` (== ProtocolError (UnknownStatus "XX"))
+        Client.get client "b" `shouldReturn` Nothing
+        mockRequests server `shouldReturn` ["mg a v f c\r\n", "mg b v f c\r\n"]
+
+    forM_
+      [ ("a get", "GET", "HD c1\r\n", \c -> void (Client.get c "key"))
+      , ("a get", "GET", "NF\r\n", \c -> void (Client.get c "key"))
+      , ("a get-and-touch", "GAT", "HD c1\r\n", \c -> void (Client.gat c "key" 0))
+      , ("a touch", "TOUCH", "VA 1 f0 c1\r\nx\r\n", \c -> void (Client.touch c "key" 0))
+      , ("a touch", "TOUCH", "OK\r\n", \c -> void (Client.touch c "key" 0))
+      , ("a set", "SET", "VA 1 f0 c1\r\nx\r\n", \c -> void (Client.set c "key" "v" 0 0))
+      , ("an add", "ADD", "VA 1 f0 c1\r\nx\r\n", \c -> void (Client.add c "key" "v" 0 0))
+      , ("a replace", "REPLACE", "VA 1 f0 c1\r\nx\r\n", \c -> void (Client.replace c "key" "v" 0 0 0))
+      , ("a cas", "SET", "VA 1 f0 c1\r\nx\r\n", \c -> void (Client.cas c "key" "v" 0 0 1))
+      , ("an append", "APPEND", "VA 1 f0 c1\r\nx\r\n", \c -> void (Client.append c "key" "v" 0))
+      , ("a prepend", "PREPEND", "VA 1 f0 c1\r\nx\r\n", \c -> void (Client.prepend c "key" "v" 0))
+      , ("an increment", "INCREMENT", "HD c1\r\n", \c -> void (Client.increment c "key" 0 1 0 0))
+      , ("a decrement", "DECREMENT", "HD c1\r\n", \c -> void (Client.decrement c "key" 0 1 0 0))
+      , ("a delete", "DELETE", "VA 1 f0 c1\r\nx\r\n", \c -> void (Client.delete c "key" 0))
+      , ("a delete", "DELETE", "EN\r\n", \c -> void (Client.delete c "key" 0))
+      , ("a flush", "FLUSH", "HD\r\n", (`Client.flush` Nothing))
+      , ("a version", "VERSION", "OK\r\n", void . Client.version) ] $
+      \(request, operation, reply, run) -> do
+        let code = C.takeWhile (\b -> b /= ' ' && b /= '\r') reply
+        it ("closes the connection when " <> request <> " is answered with " <> C.unpack code) $
+          withServerAndClient [MR (reply <> "VA 3 f9 c9\r\nold\r\n"), MR "VA 3 f2 c7\r\nfoo\r\n"] $
+            \_ client -> do
+              run client `shouldThrow` (== ProtocolError (UnexpectedResponse
+                ("Expected " <> operation <> ", got: " <> show code)))
+              Client.get client "next" `shouldReturn` Just ("foo", 2, 7)
+
+    -- The reproduction from the review: the reply to a get from the classic
+    -- text protocol, which leaves "foo" and "END" unread.
+    it "answers each later request with its own reply" $
+      withServerAndClient
+        [MR "VALUE key 0 3\r\nfoo\r\nEND\r\n", MR "HD c9\r\n", MR "NF\r\n", MR "EN\r\n"] $ \server client -> do
+          Client.get client "a" `shouldThrow` (== ProtocolError (UnknownStatus "VALUE"))
+          Client.set client "b" "v" 0 0 `shouldReturn` 9
+          Client.delete client "c" 0 `shouldReturn` False
+          Client.get client "d" `shouldReturn` Nothing
+          mockRequests server `shouldReturn`
+            ["mg a v f c\r\n", "ms b 1 F0 T0 MS c\r\nv\r\n", "md c\r\n", "mg d v f c\r\n"]
+
+    -- memcached 1.6.13 to 1.6.17, run with -o meta_response_old, sends OK
+    -- in place of HD.
+    it "takes OK as success for stores and deletes" $
+      withClient [MR "OK c5\r\n", MR "OK\r\n"] $ \client -> do
+        Client.set client "key" "v" 0 0 `shouldReturn` 5
+        Client.delete client "key" 0 `shouldReturn` True
+
+    -- These take any command, such as the classic delete, which gets DELETED.
+    it "returns any reply but an error from keyedOp, anyOp and allOp" $
+      withServerAndClient (replicate 3 (MR "DELETED\r\n")) $ \server client -> do
+        keyed <- Cluster.keyedOp client "key" (const "delete key\r\n")
+        anyReply <- Cluster.anyOp client "delete key\r\n"
+        allReplies <- Cluster.allOp client "delete key\r\n"
+        map responseCode (keyed : anyReply : map snd allReplies) `shouldBe` replicate 3 "DELETED"
+        mockRequests server `shouldReturn` replicate 3 "delete key\r\n"
+
   describe "retries and failover" $ do
     let fast = Client.def
           { Client.optsServerTimeout = 300
@@ -722,6 +824,11 @@ main = hspec $ do
 
     it "retries after the server drops the connection" $
       withServerAndClientOpts fast [CloseConnection, MR "VA 3 f2 c7\r\nfoo\r\n"] $ \server client -> do
+        Client.get client "key" `shouldReturn` Just ("foo", 2, 7)
+        length <$> mockRequests server `shouldReturn` 2
+
+    it "retries after a server error" $
+      withServerAndClientOpts fast [MR "SERVER_ERROR busy\r\n", MR "VA 3 f2 c7\r\nfoo\r\n"] $ \server client -> do
         Client.get client "key" `shouldReturn` Just ("foo", 2, 7)
         length <$> mockRequests server `shouldReturn` 2
 
@@ -869,6 +976,21 @@ main = hspec $ do
         mockRequests server `shouldReturn`
           ["version\r\n", "set auth 0 0 9\r\nuser pass\r\n", "mg key v f c\r\n"]
 
+    -- memcached reports success with STORED alone. Kept, the connection
+    -- would answer the get with the stale reply scripted after HD.
+    it "does not use a connection whose authentication got another reply" $
+      withMockServer
+        [ MR "CLIENT_ERROR unauthenticated\r\n", MR "HD\r\nVA 3 f9 c9\r\nold\r\n"
+        , MR "CLIENT_ERROR unauthenticated\r\n", MR "STORED\r\n", MR "VA 3 f2 c7\r\nfoo\r\n" ] $ \server -> do
+        let spec = (mockServerSpec server) { ssAuth = Auth.Auth "user" "pass" }
+        client <- Client.newClient [spec] oneAttempt
+        Client.get client "key"
+          `shouldThrow` (== ProtocolError (UnexpectedResponse "Expected AUTH, got: \"HD\""))
+        Client.get client "key" `shouldReturn` Just ("foo", 2, 7)
+        mockRequests server `shouldReturn`
+          [ "version\r\n", "set auth 0 0 9\r\nuser pass\r\n"
+          , "version\r\n", "set auth 0 0 9\r\nuser pass\r\n", "mg key v f c\r\n" ]
+
   describe "credentials in output" $ do
     it "shows credentials without the password" $ do
       let auth = Auth.Auth "user" "secret"
@@ -1007,6 +1129,15 @@ main = hspec $ do
         Client.flush client Nothing
         mockRequests a `shouldReturn` ["flush_all\r\n"]
         mockRequests b `shouldReturn` ["flush_all\r\n"]
+
+    it "stops flushing at a server whose reply is rejected" $
+      withMockServer [MR "HD\r\n"] $ \a ->
+      withMockServer [MR "HD\r\n"] $ \b -> do
+        client <- Client.newClient [mockServerSpec a, mockServerSpec b] Client.def
+        Client.flush client Nothing
+          `shouldThrow` (== ProtocolError (UnexpectedResponse "Expected FLUSH, got: \"HD\""))
+        requests <- (++) <$> mockRequests a <*> mockRequests b
+        requests `shouldBe` ["flush_all\r\n"]
 
     it "collects stats from every server" $
       withMockServer [MR "STAT pid 1\r\nEND\r\n"] $ \a ->
