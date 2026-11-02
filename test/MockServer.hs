@@ -110,7 +110,9 @@ withMockServer responses action = do
 recvReq :: N.Socket -> IO B.ByteString
 recvReq s = do
   line <- recvLine s []
-  case payloadLen (C.words line) of
+  -- Split on spaces only, as memcached does: a raw key can contain other
+  -- whitespace bytes, such as 0xa0.
+  case payloadLen (filter (not . B.null) (C.split ' ' line)) of
     Just n  -> do
       payload <- recvAll s n
       trailer <- recvLine s []

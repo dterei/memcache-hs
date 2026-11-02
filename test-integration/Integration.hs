@@ -128,6 +128,15 @@ integrationSpecs port = beforeAll (newClient port) $ do
     M.getMany client ["IA==", " "] `shouldReturn`
       [(key, (value, 0, version)) | ((key, version), value) <- zip versions ["plain", "space"]]
 
+  it "sets and gets many keys containing byte 0xa0" $ \client -> do
+    -- In UTF-8, 0xa0 is the last byte of U+00E0 (C3 A0) and of the Cyrillic
+    -- Er (D0 A0). Cut off at 0xa0, the third key is the fourth.
+    let keys =
+          ["integration-voil\xc3\xa0", "integration-city:\xd0\xa0\xd0\xbe", "integration-x\xa0", "integration-x"]
+    versions <- M.setMany client [(key, key, 0, 0) | key <- keys]
+    map fst versions `shouldBe` keys
+    M.getMany client keys `shouldReturn` [(key, (key, 0, version)) | (key, version) <- versions]
+
   it "sets a key repeated in a batch to its last value" $ \client -> do
     let key = "integration-set-many-twice"
     [(_, old), (_, new)] <- M.setMany client [(key, "old", 0, 0), (key, "new", 0, 0)]
