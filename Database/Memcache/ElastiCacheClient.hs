@@ -20,7 +20,7 @@ where
 
 import Control.Concurrent (forkIO, threadDelay)
 import Control.Concurrent.MVar (MVar, modifyMVar_, newMVar)
-import Control.Monad (forever, guard, (<=<))
+import Control.Monad (forever, guard, when, (<=<))
 import Data.Bifunctor (first)
 import Data.ByteString (ByteString)
 import qualified Data.ByteString.Char8 as C
@@ -32,15 +32,17 @@ import qualified Data.Text.Encoding as T
 import qualified Data.Vector as V
 import Data.Version (Version, makeVersion)
 import qualified Data.Version as Version
-import Database.Memcache.Client (Client, optsServerSpecsToServers, optsServerOptions)
+import Database.Memcache.Client (Client, optsServerSpecsToServers, optsServerOptions, optsServerTimeout)
 import qualified Database.Memcache.Client as Client
 import Database.Memcache.Cluster (Options, getServers, setServers)
+import Database.Memcache.Errors (ClientError (Timeout), MemcacheError (ClientError))
 import Database.Memcache.Server (Server, withSocket)
 import Database.Memcache.Socket (Connection, crlf, recvRawUntil, sendRaw, versionRequest)
 import Database.Memcache.Types.ServerSpec (ServerSpec, parseServerSpec)
 import Database.Memcache.Util (note)
+import System.Timeout (timeout)
 import Text.ParserCombinators.ReadP (readP_to_S)
-import UnliftIO.Exception (bracket, throwString)
+import UnliftIO.Exception (bracket, throwIO, throwString)
 
 -- | Parse an ElastiCache configuration endpoint.
 --
@@ -79,6 +81,13 @@ newtype ConfigurationEndpoint
 --
 -- This function discovers all the nodes in a cluster and sets up a new thread to run autodiscovery on an interval.
 --
+-- The first discovery must finish within 'optsServerTimeout' (connecting,
+-- then asking for the version and for the cluster configuration), or this
+-- throws v'ClientError' 'Timeout'. If the endpoint sends an error reply, such
+-- as the @ERROR@ that plain memcached sends as it has no @config@ command,
+-- this throws a @StringException@ from "UnliftIO.Exception", as it does for a
+-- reply that can't be parsed.
+--
 -- N.B. The interval is in the same units as 'threadDelay'.
 newClient :: Options -> Int -> ConfigurationEndpoint -> IO Client
 newClient options interval cfgEndpoint = bracket acquireCfgClient releaseCfgClient resolveCluster'
@@ -86,7 +95,7 @@ newClient options interval cfgEndpoint = bracket acquireCfgClient releaseCfgClie
     acquireCfgClient = Client.newClient [unConfigurationEndpoint cfgEndpoint] options
     releaseCfgClient = Client.quit
     resolveCluster' cfgClient = do
-      serverSpecs <- resolveCluster cfgClient
+      serverSpecs <- resolveClusterWithin options cfgClient
 
       -- Create client where cServers = Right <Vector Server>
       client <- Client.newClient serverSpecs options
@@ -132,6 +141,17 @@ resolveCluster cfgClient = do
 
     unTry $ handleRawNodeInfo rawNodeInfo
 
+-- Run 'resolveCluster', throwing 'ClientError' 'Timeout' unless it finishes,
+-- connecting and both requests included, within the options'
+-- 'optsServerTimeout'.
+resolveClusterWithin :: Options -> Client -> IO [ServerSpec]
+resolveClusterWithin opts cfgClient = do
+  found <- timeout serverTimeout $ resolveCluster cfgClient
+  maybe (throwIO $ ClientError Timeout) pure found
+  where
+    -- 'optsServerTimeout' is in milliseconds; 'timeout' takes microseconds.
+    serverTimeout = truncate (optsServerTimeout opts * 1000)
+
 -- Handle the raw response from /memcached/.
 --
 -- See: https://docs.aws.amazon.com/AmazonElastiCache/latest/mem-ug/AutoDiscovery.AddingToYourClientLibrary.html#AutoDiscovery.AddingToYourClientLibrary.OutputFormat
@@ -173,7 +193,7 @@ firstCfgCmdVersion = makeVersion [1, 4, 14]
 resolveViaAutoDiscoveryKey :: Connection -> IO ByteString
 resolveViaAutoDiscoveryKey socket = do
   sendRaw socket ("get " <> autoDiscoveryKey <> crlf)
-  recvRawUntil ("END" <> crlf) socket
+  recvConfigReply socket
 
 -- Before 'firstCfgCmdVersion', /ElastiCache/ stored configuration in a special-purpose key within the /Configuration Endpoint/.
 --
@@ -186,10 +206,28 @@ autoDiscoveryKey = "AmazonElastiCache:cluster"
 resolveViaConfigCmd :: Connection -> IO ByteString
 resolveViaConfigCmd socket = do
   sendRaw socket (configGetCluster <> crlf)
-  recvRawUntil ("END" <> crlf) socket
+  recvConfigReply socket
 
 configGetCluster :: ByteString
 configGetCluster = "config get cluster"
+
+-- Receive the reply to the config command or to the get of the cluster key,
+-- through the END line that ends it. An error reply is a single line with no
+-- END line, and the server keeps the connection open after it, so throw on
+-- one instead of waiting for END.
+recvConfigReply :: Connection -> IO ByteString
+recvConfigReply socket = do
+  line <- recvRawUntil crlf socket
+  let text = C.dropEnd (C.length crlf) line
+  when (C.takeWhile (/= ' ') text `elem` ["ERROR", "CLIENT_ERROR", "SERVER_ERROR"]) $
+    throwString $ "Configuration endpoint replied: " <> C.unpack text
+  -- Otherwise read through the first END. This line can end with it: when
+  -- the cluster key is missing, the reply is the END line alone.
+  if end `C.isSuffixOf` line
+    then pure line
+    else (line <>) <$> recvRawUntil end socket
+  where
+    end = "END" <> crlf
 
 unTry :: Either String a -> IO a
 unTry = either throwString pure

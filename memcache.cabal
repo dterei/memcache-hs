@@ -144,6 +144,7 @@ test-suite integration
     , network
     , process
     , time
+    , unliftio
 
 benchmark parser
   import:           shared
