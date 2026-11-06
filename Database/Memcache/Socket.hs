@@ -44,6 +44,7 @@ import           Data.ByteString.Builder.Extra (byteStringCopy, smallChunkSize, 
                                                 untrimmedStrategy)
 import qualified Data.ByteString.Char8     as C
 import qualified Data.ByteString.Lazy      as BL
+import           Data.Char                 (toLower)
 import           Data.IORef
 import           Data.List                 (find, isInfixOf)
 import           Data.Maybe                (fromMaybe)
@@ -131,10 +132,12 @@ responseStatus (Response code tokens _) = case code of
 
     -- Meta Text reports these as free-form error text where the binary
     -- protocol had dedicated status codes; match them back so callers keep
-    -- seeing 'OpError' rather than an opaque protocol failure.
+    -- seeing 'OpError' rather than an opaque protocol failure. memcached
+    -- capitalises some of its out-of-memory errors, such as "Out of memory
+    -- during read", so that match ignores case.
     serverFailure
       | "object too large" `isInfixOf` message = throwStatus ErrValueTooLarge
-      | "out of memory"    `isInfixOf` message = throwStatus ErrOutOfMemory
+      | "out of memory"    `isInfixOf` map toLower message = throwStatus ErrOutOfMemory
       | otherwise = throwIO $ ProtocolError ServerError { protocolError = message }
 
     clientFailure
