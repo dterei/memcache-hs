@@ -30,6 +30,7 @@ module Database.Memcache.Cluster (
 import           Database.Memcache.Errors
 import           Database.Memcache.Server
 import           Database.Memcache.Types
+import           Database.Memcache.Types.Server (Server (slotTaken))
 
 import           Control.Concurrent       (threadDelay)
 import           Control.Concurrent.MVar  (MVar, readMVar)
@@ -57,7 +58,11 @@ type Retries = Int
 data Options = Options {
         -- | Number of times to retry an operation on failure. If consecutive
         -- failures exceed this value for a server, we mark it as down and
-        -- failover to a different server for the next operation.
+        -- failover to a different server for the next operation. An attempt
+        -- that only ran out of time waiting for a free connection to the
+        -- server counts towards this like any failure, but the last attempt
+        -- decides: if it was such an attempt, the server isn't marked down,
+        -- whatever the earlier attempts did (see 'optsServerTimeout').
         --
         -- Default is 2.
         optsServerRetries        :: Retries,
@@ -71,8 +76,21 @@ data Options = Options {
         --
         -- Default is 1500ms.
         optsDeadRetryDelay       :: Milli,
-        -- | How long to wait for an operation to complete before considering
-        -- it failed.
+        -- | How long each attempt at an operation may take before it is
+        -- considered failed. @getMany@, @setMany@ and @deleteMany@ make their
+        -- attempts for each batch, and @stats@ and @flush@ for each server in
+        -- turn. The time counts from the start of the attempt: it covers
+        -- waiting for a free connection in the server's pool, opening and
+        -- authenticating a new connection if one is needed, sending the
+        -- request and reading the reply.
+        --
+        -- An attempt that runs out of time while it is still waiting for a
+        -- free connection never reached the server. It is retried like any
+        -- failed attempt, but if it was the last attempt, the operation
+        -- throws v'Timeout' without marking the server down. Running out of
+        -- time afterwards, while opening, authenticating or using the
+        -- connection, is a server failure like any other, however long the
+        -- attempt waited first.
         --
         -- Default is 750ms.
         optsServerTimeout        :: Milli,
@@ -199,7 +217,7 @@ getServerForKeyDefault  c k = do
 serverOp :: Cluster -> Server -> (Response -> IO ()) -> ByteString -> IO Response
 {-# INLINE serverOp #-}
 serverOp c s check req = handle (\(OutOfStep err) -> throwIO err) $
-  retryOp c s $ withSocket s $ \connection -> do
+  retryOp c s $ \s' -> withSocket s' $ \connection -> do
     sendRaw connection req
     response <- recvResponse connection
     check response
@@ -311,7 +329,7 @@ keyedBatchOp c requests = do
     -- Write the whole batch in one go, then read it back. Batches are bounded
     -- so the server's replies cannot fill the socket buffers while we are
     -- still writing, which would deadlock both ends until the op times out.
-    runBatch server items = retryOp c server $ withSocket server $ \connection -> do
+    runBatch server items = retryOp c server $ \server' -> withSocket server' $ \connection -> do
       sendRaw connection (B.concat (map request items ++ [noOpRequest]))
       recvUntilMN connection items []
 
@@ -401,10 +419,15 @@ allOpExpecting c operation codes req =
 -- | Run a Memcached operation against all servers in the cluster, handling any
 -- failures that occur, retrying the specified number of times. Similar to
 -- 'anyOp' but allows more flexible interaction with the 'Server' than a single
--- request and response.
+-- request and response. The operation must make its requests with
+-- 'withSocket' on the 'Server' it is given, not on another value for the same
+-- server, or its timeouts never mark the server down (see
+-- 'optsServerTimeout'). Once one of its 'withSocket' calls has got a
+-- connection, a timeout is a server failure, even while a later call waits
+-- for one.
 allOp' :: Cluster -> (Server -> IO a) -> IO [(Server, a)]
 {-# INLINE allOp' #-}
-allOp' c op = forAliveServers c $ \s -> retryOp c s (op s)
+allOp' c op = forAliveServers c $ \s -> retryOp c s op
 
 -- | Run an action against every server not marked as failed, pairing each
 -- result with its server. Throws 'NoServersReady' if there are none.
@@ -419,27 +442,47 @@ forAliveServers c f = do
             return $ V.toList $ V.zip servers' res
 
 -- | Run an IO operation multiple times if an exception is thrown, marking the
--- server as dead if it fails more than the allowed number of retries.
-retryOp :: forall a. Cluster -> Server -> IO a -> IO a
+-- server as dead if it fails more than the allowed number of retries. Each
+-- attempt is given the server with a new @slotTaken@, which 'withSocket' sets
+-- once it holds a slot in the server's pool. An attempt that runs out of time
+-- before that never reached the server. It is retried like any failure, but
+-- if it is the last attempt, it throws v'Timeout' without marking the server
+-- dead: the last attempt alone decides, whatever the earlier ones did.
+retryOp :: forall a. Cluster -> Server -> (Server -> IO a) -> IO a
 {-# INLINE retryOp #-}
 retryOp Cluster{..} s op = go cRetries
   where
     go :: Int -> IO a
     {-# INLINE go #-}
     go !n = handle (handleErrs $ n - 1) $ do
-        mr <- timeout cTimeout op
+        taken <- newIORef False
+        mr <- timeout cTimeout (op s { slotTaken = Just taken })
         case mr of
             Just r  -> return r
-            Nothing -> close s >> throwIO (ClientError Timeout)
+            Nothing -> do
+                held <- readIORef taken
+                if held
+                    then close s >> throwIO (ClientError Timeout)
+                    else throwIO WaitedForSlot
 
     handleErrs :: Int -> SomeException -> IO a
     {-# INLINE handleErrs #-}
     handleErrs n err
         | clientFault err = throwIO err
-        | n <= 0 = do
-            writeIORef (failed s) =<< getPOSIXTime
-            throwIO err
+        | n <= 0 = case fromException err of
+            Just WaitedForSlot -> throwIO (ClientError Timeout)
+            Nothing -> do
+                writeIORef (failed s) =<< getPOSIXTime
+                throwIO err
         | otherwise = threadDelay cFailDelay >> go n
+
+-- | Thrown by an attempt that runs out of time while it waits for a slot in
+-- the server's pool. @retryOp@ retries it like a failure, but if it is the
+-- last attempt, throws v'Timeout' instead, without marking the server dead.
+data WaitedForSlot = WaitedForSlot
+  deriving Show
+
+instance Exception WaitedForSlot
 
 -- | A rejected command or a reported operation status is an answer, not a
 -- server failure: retrying it will fail identically and must not count towards
