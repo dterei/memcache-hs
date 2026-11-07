@@ -7,9 +7,13 @@ import           Control.Exception        (SomeException, bracket, try)
 import           Control.Monad            (forM_, void)
 import qualified Data.ByteString.Char8    as B
 import           Data.Either              (isRight)
+import           Data.Foldable            (toList)
+import           Data.IORef               (readIORef)
 import           Data.Maybe               (isJust)
 import           Data.Time.Clock.POSIX    (getPOSIXTime)
 import qualified Database.Memcache.Client as M
+import qualified Database.Memcache.Cluster as Cluster
+import qualified Database.Memcache.Server as Server
 import           Database.Memcache.Types  (ServerSpec (..))
 import           Network.Socket           (Family (AF_INET), SocketOption (ReuseAddr),
                                            SocketType (Stream), addrAddress, addrFamily,
@@ -42,6 +46,7 @@ main = do
           describe "single server" $ integrationSpecs port
           describe "auth-file authentication" $ authSpecs authPort
           describe "three-server cluster" $ clusterSpecs clusterPorts
+          describe "restarted server" $ restartSpecs path
 
 integrationSpecs :: Int -> Spec
 integrationSpecs port = beforeAll (newClient port) $ do
@@ -303,6 +308,25 @@ clusterSpecs ports = beforeAll newClusterClient $ do
     M.flush client Nothing
     return client
 
+-- | memcached closes every connection when it stops, so a pool that held
+-- several connections holds only closed ones once it is back.
+restartSpecs :: FilePath -> Spec
+restartSpecs executable =
+  it "isn't marked dead when the pool held several connections" $ do
+    port <- freePort
+    client <- M.newClient [ServerSpec "127.0.0.1" (show port) M.NoAuth]
+      M.def { M.optsServerOptions = M.def { M.soNumResources = 3 } }
+    [server] <- toList <$> Cluster.getServers client
+    withMemcachedOn executable [] port $ do
+      _ <- M.set client "integration-restart" "value" 0 0
+      -- Hold three connections at once, so that the pool keeps three.
+      Server.withSocket server $ \_ -> Server.withSocket server $ \_ ->
+        Server.withSocket server $ \_ -> return ()
+    -- That memcached has exited, closing all three. A new one starts empty.
+    withMemcachedOn executable [] port $ do
+      M.get client "integration-restart" `shouldReturn` Nothing
+      readIORef (Server.failed server) `shouldReturn` 0
+
 newClient :: Int -> IO M.Client
 newClient port = do
   client <- M.newClient [ServerSpec "127.0.0.1" (show port) M.NoAuth] M.def
@@ -319,15 +343,26 @@ withMemcached
   -> [String]
   -> (Int -> IO a)
   -> IO a
-withMemcached executable args action = bracket acquire release (action . fst)
+withMemcached executable args action = do
+  port <- freePort
+  withMemcachedOn executable args port (action port)
+
+-- | Run an action against a memcached started with the given extra
+-- arguments on the given port, and stop it once the action is done.
+withMemcachedOn
+  :: FilePath
+  -> [String]
+  -> Int
+  -> IO a
+  -> IO a
+withMemcachedOn executable args port action = bracket acquire release (const action)
  where
   acquire = do
-    port <- freePort
     (_, _, _, process) <-
       createProcess (proc executable (["-l", "127.0.0.1", "-p", show port, "-U", "0"] ++ args))
     waitForPort port process
-    return (port, process)
-  release (_, process) = do
+    return process
+  release process = do
     terminateProcess process
     void (waitForProcess process)
 

@@ -424,7 +424,11 @@ allOpExpecting c operation codes req =
 -- server, or its timeouts never mark the server down (see
 -- 'optsServerTimeout'). Once one of its 'withSocket' calls has got a
 -- connection, a timeout is a server failure, even while a later call waits
--- for one.
+-- for one. So is any exception the operation throws other than an
+-- 'OpError', a 'BadCommand' or 'UnknownOp' protocol error, or an
+-- 'InvalidAuthentication' client error, which are rethrown at once. Each
+-- server failure closes the server's idle connections, before the operation
+-- is retried or the server marked down.
 allOp' :: Cluster -> (Server -> IO a) -> IO [(Server, a)]
 {-# INLINE allOp' #-}
 allOp' c op = forAliveServers c $ \s -> retryOp c s op
@@ -447,7 +451,9 @@ forAliveServers c f = do
 -- once it holds a slot in the server's pool. An attempt that runs out of time
 -- before that never reached the server. It is retried like any failure, but
 -- if it is the last attempt, it throws v'Timeout' without marking the server
--- dead: the last attempt alone decides, whatever the earlier ones did.
+-- dead: the last attempt alone decides, whatever the earlier ones did. Every
+-- other failure but a client fault first closes the server's idle
+-- connections, before the operation is retried or the server marked dead.
 retryOp :: forall a. Cluster -> Server -> (Server -> IO a) -> IO a
 {-# INLINE retryOp #-}
 retryOp Cluster{..} s op = go cRetries
@@ -462,23 +468,38 @@ retryOp Cluster{..} s op = go cRetries
             Nothing -> do
                 held <- readIORef taken
                 if held
-                    then close s >> throwIO (ClientError Timeout)
+                    then throwIO (ClientError Timeout)
                     else throwIO WaitedForSlot
 
     handleErrs :: Int -> SomeException -> IO a
     {-# INLINE handleErrs #-}
     handleErrs n err
         | clientFault err = throwIO err
-        | n <= 0 = case fromException err of
-            Just WaitedForSlot -> throwIO (ClientError Timeout)
+        | otherwise = case fromException err of
+            Just WaitedForSlot -> retryOr n $ throwIO (ClientError Timeout)
             Nothing -> do
-                writeIORef (failed s) =<< getPOSIXTime
-                throwIO err
+                -- The attempt's own connection, if it had one, is closed
+                -- already, unless the operation had given it back before
+                -- failing. What made the attempt fail, such as a restart of
+                -- the server, may have broken the idle ones too, and the
+                -- retry, or the next operation once the server is back,
+                -- would take one of those.
+                close s
+                retryOr n $ do
+                    writeIORef (failed s) =<< getPOSIXTime
+                    throwIO err
+
+    -- Retry the operation if it has attempts left, or else give up.
+    retryOr :: Int -> IO a -> IO a
+    {-# INLINE retryOr #-}
+    retryOr n giveUp
+        | n <= 0 = giveUp
         | otherwise = threadDelay cFailDelay >> go n
 
 -- | Thrown by an attempt that runs out of time while it waits for a slot in
--- the server's pool. @retryOp@ retries it like a failure, but if it is the
--- last attempt, throws v'Timeout' instead, without marking the server dead.
+-- the server's pool. @retryOp@ retries it like a failure, but without closing
+-- the idle connections, and if it is the last attempt, throws v'Timeout'
+-- instead, without marking the server dead.
 data WaitedForSlot = WaitedForSlot
   deriving Show
 

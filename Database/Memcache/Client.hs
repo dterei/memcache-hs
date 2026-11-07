@@ -33,11 +33,14 @@ We support the following logic for handling failure in operations:
 
 * __Retry__: on operation failure (timeout, network error) we close the
              connection, if any, and retry the operation, doing this up to a
-             configurable maximum. A reply to an operation's request that
-             shows the connection is out of step also closes it. Only
-             'getMany', 'setMany' and 'deleteMany' retry then; other
-             operations throw at once, as the server may have carried out
-             the request.
+             configurable maximum. Unless the attempt only ran out of time
+             waiting for a free connection, we also close the server's idle
+             connections, as what made it fail, such as a restart of the
+             server, may have broken them too. A reply to an operation's
+             request that shows the connection is out of step also closes
+             it. Only 'getMany', 'setMany' and 'deleteMany' retry then, and
+             close the idle connections too; other operations throw at once,
+             as the server may have carried out the request.
 
 * __Failover__: when an operation against a server in a cluster fails all
                 retries, we mark that server as dead and use the remaining
