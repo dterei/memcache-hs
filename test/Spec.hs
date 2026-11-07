@@ -29,6 +29,7 @@ import           Data.Either               (isLeft)
 import           Data.Foldable             (toList)
 import           Data.IORef                (readIORef, writeIORef)
 import           Data.List                 (find, nub)
+import           GHC.Clock                 (getMonotonicTime)
 import           GHC.Conc                  (ThreadStatus (..), threadStatus)
 import           System.Timeout            (timeout)
 import           UnliftIO.Async            (async, asyncThreadId, wait)
@@ -1205,6 +1206,50 @@ main = hspec $ do
           Client.get client "key" `shouldReturn` Just ("foo", 0, 1)
           waitForRequests cfg 2 `shouldReturn`
             ["version\r\n", "get AmazonElastiCache:cluster\r\n"]
+
+    -- An error reply is one line with no END line after it, and memcached
+    -- keeps the connection open, as the Noop does: discovery must not wait
+    -- for END. Plain memcached answers config get cluster with ERROR, as it
+    -- has no config command. The outer timeout turns a hang into a failure.
+    forM_ [("1.6.12", "config get cluster"), ("1.4.5", "get AmazonElastiCache:cluster")] $ \(version, request) ->
+      forM_ ["ERROR", "CLIENT_ERROR bad command line format", "SERVER_ERROR out of memory"] $ \reply ->
+        it ("throws at once when " <> C.unpack request <> " gets " <> reply) $
+          withMockServer [MR ("VERSION " <> version <> "\r\n"), MR (C.pack reply <> "\r\n"), Noop] $ \cfg -> do
+            timeout 5000000 (EC.newClient Client.def hour (endpoint cfg)) `shouldThrow`
+              \(StringException message _) -> message == "Configuration endpoint replied: " <> reply
+            mockRequests cfg `shouldReturn` ["version\r\n", request <> "\r\n"]
+
+    -- With no Noop the mock closes the connection after the error line, as
+    -- memcached started with -o idle_timeout does to an idle connection. The
+    -- error line is reported, not the closed connection.
+    it "reports an error reply even when the endpoint then closes the connection" $
+      withMockServer [MR "VERSION 1.6.12\r\n", MR "ERROR\r\n"] $ \cfg ->
+        timeout 5000000 (EC.newClient Client.def hour (endpoint cfg)) `shouldThrow`
+          \(StringException message _) -> message == "Configuration endpoint replied: ERROR"
+
+    -- A miss is END alone, so the reply's first line is also its last.
+    it "reports a missing cluster key on engines before 1.4.14" $
+      withMockServer [MR "VERSION 1.4.5\r\n", MR "END\r\n", Noop] $ \cfg ->
+        timeout 5000000 (EC.newClient Client.def hour (endpoint cfg)) `shouldThrow`
+          \(StringException message _) -> message == "Unrecognized number of lines: 1"
+
+    -- When a request is never answered, discovery gives up once
+    -- optsServerTimeout has passed. The limit is above the 750 ms default, so
+    -- giving up no sooner than 1 s shows that the default was not used. The
+    -- extra Noop keeps the mock reading, as an endpoint that has stopped
+    -- answering would, rather than closing the connection.
+    forM_ [ ("version", [], ["version\r\n"])
+          , ("config get cluster", [MR "VERSION 1.6.12\r\n"], ["version\r\n", "config get cluster\r\n"])
+          ] $ \(request, replies, requests) ->
+      it ("gives up after optsServerTimeout when the endpoint never answers " <> request) $
+        withMockServer (replies ++ [Noop, Noop]) $ \cfg -> do
+          start <- getMonotonicTime
+          timeout 5000000 (EC.newClient Client.def { Client.optsServerTimeout = 1000 } hour (endpoint cfg))
+            `shouldThrow` (== ClientError Timeout)
+          elapsed <- subtract start <$> getMonotonicTime
+          elapsed `shouldSatisfy` (>= 1)
+          -- Nothing answers the last request, so wait for the mock to record it.
+          waitForRequests cfg (length requests) `shouldReturn` requests
 
   where
     recvResponseFrom bytes =
