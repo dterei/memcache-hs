@@ -1176,6 +1176,83 @@ main = hspec $ do
           wait first `shouldThrow` isUnexpectedEOF
           wait second `shouldReturn` Just ("foo", 0, 1)
 
+    -- The same goes for opening a connection that is interrupted, as it is
+    -- when the request's time runs out. Here the mock never answers
+    -- authentication on the first connection, and the get opening it is
+    -- cancelled once the second get is queued behind it. The cap turns a
+    -- connect that can't be interrupted into a failure rather than a hang.
+    it "doesn't leave a request queued for the only connection blocked when opening it is interrupted" $
+      withMockServer
+        [ Noop, MR "CLIENT_ERROR unauthenticated\r\n", MR "STORED\r\n"
+        , MR "VA 3 f0 c1\r\nfoo\r\n" ] $ \server -> do
+          let spec = (mockServerSpec server) { ssAuth = Auth.Auth "user" "pass" }
+          client <- Client.newClient [spec]
+            Client.def { Client.optsServerRetries = 1, Client.optsServerTimeout = 3000 }
+          first <- async $ Client.get client "key"
+          waitForRequests server 1 `shouldReturn` ["version\r\n"]
+          second <- async $ Client.get client "key"
+          waitUntilBlocked second
+          timeout 5000000 (cancel first) `shouldReturn` Just ()
+          wait second `shouldReturn` Just ("foo", 0, 1)
+
+    -- With two connections, a request queued behind one that failed to open
+    -- stayed blocked even once the other was back in the pool, idle. Here
+    -- another thread holds the first connection while the mock drops the
+    -- second 300 ms into authentication, and the thread then gives the first
+    -- connection back. The get queued behind them must get a connection
+    -- rather than run out of time: a new one, or with resource-pool 0.2.3.2
+    -- possibly the one given back. It must queue within those 300 ms, as the
+    -- drop fails the only attempt of the get opening the second connection
+    -- and so marks the server dead. This mock serves both connections at the
+    -- same time, as the first stays open throughout.
+    it "doesn't leave a request queued for two connections blocked when opening one fails" $
+      withConcurrentMockServer
+        [ [MR "CLIENT_ERROR unauthenticated\r\n", MR "STORED\r\n", MR "VA 3 f0 c1\r\nfoo\r\n"]
+        , [DelayMS 300 CloseConnection]
+        , [MR "CLIENT_ERROR unauthenticated\r\n", MR "STORED\r\n", MR "VA 3 f0 c1\r\nfoo\r\n"] ] $ \server -> do
+          let spec = (mockServerSpec server) { ssAuth = Auth.Auth "user" "pass" }
+          client <- Client.newClient [spec] Client.def
+            { Client.optsServerRetries = 1, Client.optsServerTimeout = 3000
+            , Client.optsServerOptions = Client.defaultServerOptions { Client.soNumResources = 2 } }
+          [s] <- toList <$> Cluster.getServers client
+          held <- newEmptyMVar
+          release <- newEmptyMVar
+          holder <- async $ Server.withSocket s $ \_ -> putMVar held () >> takeMVar release
+          takeMVar held
+          first <- async $ Client.get client "key"
+          waitForRequests server 3 `shouldReturn`
+            ["version\r\n", "set auth 0 0 9\r\nuser pass\r\n", "version\r\n"]
+          second <- async $ Client.get client "key"
+          waitUntilBlocked second
+          wait first `shouldThrow` isUnexpectedEOF
+          putMVar release ()
+          wait holder
+          wait second `shouldReturn` Just ("foo", 0, 1)
+
+    -- Rejected credentials are an answer, not a server failure. Here the mock
+    -- rejects them on the first connection 300 ms into authentication, and
+    -- the get queued behind it must get the same answer on a connection of
+    -- its own rather than run out of time. Neither answer marks the server
+    -- dead.
+    it "reports rejected credentials to a request queued for the only connection" $
+      withMockServer
+        [ DelayMS 300 (MR "CLIENT_ERROR unauthenticated\r\n"), MR "CLIENT_ERROR authentication failure\r\n"
+        , MR "CLIENT_ERROR unauthenticated\r\n", MR "CLIENT_ERROR authentication failure\r\n" ] $ \server -> do
+          let spec = (mockServerSpec server) { ssAuth = Auth.Auth "user" "pass" }
+          client <- Client.newClient [spec]
+            Client.def { Client.optsServerRetries = 1, Client.optsServerTimeout = 3000 }
+          first <- async $ Client.get client "key"
+          waitForRequests server 1 `shouldReturn` ["version\r\n"]
+          second <- async $ Client.get client "key"
+          waitUntilBlocked second
+          wait first `shouldThrow` (== OpError TextAuthFail)
+          wait second `shouldThrow` (== OpError TextAuthFail)
+          mockRequests server `shouldReturn`
+            [ "version\r\n", "set auth 0 0 9\r\nuser pass\r\n"
+            , "version\r\n", "set auth 0 0 9\r\nuser pass\r\n" ]
+          [s] <- toList <$> Cluster.getServers client
+          readIORef (Server.failed s) `shouldReturn` 0
+
   -- The mock serves one connection at a time, so it only answers a second
   -- client once the first client's connection has closed.
   describe "closing connections" $ do
