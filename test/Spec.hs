@@ -23,7 +23,7 @@ import qualified Network.Socket            as N
 import qualified Network.Socket.ByteString as N
 import           Control.Concurrent        (forkIO, newEmptyMVar, putMVar, takeMVar,
                                             threadDelay)
-import           Control.Exception         (bracket, displayException)
+import           Control.Exception         (bracket, displayException, try)
 import           Control.Monad             (forM_, void, (>=>))
 import           Data.Either               (isLeft)
 import           Data.Foldable             (toList)
@@ -32,7 +32,8 @@ import           Data.List                 (find, nub)
 import           GHC.Clock                 (getMonotonicTime)
 import           GHC.Conc                  (ThreadStatus (..), threadStatus)
 import           System.Timeout            (timeout)
-import           UnliftIO.Async            (async, asyncThreadId, wait)
+import           UnliftIO.Async            (Async, async, asyncThreadId, cancel,
+                                            mapConcurrently, wait)
 import           UnliftIO.Exception        (StringException (..))
 
 main :: IO ()
@@ -852,6 +853,27 @@ main = hspec $ do
           , Client.optsFailRetryDelay = 10
           , Client.optsDeadRetryDelay = 300
           }
+        -- A server marked dead stays dead for the rest of the test.
+        fastStaysDead = fast { Client.optsDeadRetryDelay = 60000 }
+        -- Up to three connections to the server, rather than one.
+        threeConnections opts = opts
+          { Client.optsServerOptions = Client.defaultServerOptions { Client.soNumResources = 3 } }
+        -- Leave three connections idle in the pool, each closed by the mock,
+        -- as a restart of the server or memcached's idle_timeout leaves them.
+        -- The mock reads a request on each, then closes it without replying.
+        -- If a second request was sent, the mock closes the connection with
+        -- it unread, so Linux resets the connection, as a firewall may.
+        -- Reading each connection must then fail as the given selector
+        -- expects. The mock serves one connection at a time, so every request
+        -- is sent before any connection is read. The server from getServers
+        -- has no time limit, so this gives up after 5 s, which fails the test
+        -- rather than hanging it.
+        leaveThreeClosed s requests failure = do
+          finished <- timeout 5000000 $
+            Server.withSocket s $ \a -> Server.withSocket s $ \b -> Server.withSocket s $ \c -> do
+              mapM_ (`sendRaw` requests) [a, b, c]
+              mapM_ ((`shouldThrow` failure) . recvResponse) [a, b, c]
+          finished `shouldBe` Just ()
 
     it "retries after the server drops the connection" $
       withServerAndClientOpts fast [CloseConnection, MR "VA 3 f2 c7\r\nfoo\r\n"] $ \server client -> do
@@ -875,6 +897,391 @@ main = hspec $ do
         Client.get client "key" `shouldThrow` (== ClientError NoServersReady)
         threadDelay 400000
         Client.get client "key" `shouldReturn` Just ("foo", 2, 7)
+
+    -- The first attempt fails on one of the closed connections: it reads
+    -- the end of a closed one, and can't send on a reset one. The retry must
+    -- open a new connection rather than take another of them.
+    forM_
+      [ ("closed", \s -> leaveThreeClosed s "mn\r\n" isUnexpectedEOF)
+      , ("reset", \s -> leaveThreeClosed s "mn\r\nmn\r\n" anyIOException)
+      ] $ \(ended, leaveThree) ->
+      it ("retries on a new connection when the server has " <> ended <> " the idle ones") $
+        withServerAndClientOpts (threeConnections fast)
+          [CloseConnection, CloseConnection, CloseConnection, MR "EN\r\n"] $ \server client -> do
+            [s] <- toList <$> Cluster.getServers client
+            leaveThree s
+            Client.get client "key" `shouldReturn` Nothing
+            readIORef (Server.failed s) `shouldReturn` 0
+            mockRequests server `shouldReturn` replicate 3 "mn\r\n" ++ ["mg key v f c\r\n"]
+
+    -- An attempt that times out holding a connection closes the idle ones
+    -- too. The mock reads the first connection's requests but never answers
+    -- them, and has yet to read the others', so a retry on one of those
+    -- would read the reply to its old request, MN. Whichever connection the
+    -- first attempt takes, the mock answers a new one with EN.
+    it "retries on a new connection when a request times out while others are idle" $
+      withServerAndClientOpts (threeConnections fast)
+        [Noop, Noop, MR "MN\r\n", MR "MN\r\n", MR "EN\r\n"] $ \_ client -> do
+          [s] <- toList <$> Cluster.getServers client
+          Server.withSocket s $ \a -> Server.withSocket s $ \b -> Server.withSocket s $ \c ->
+            mapM_ (`sendRaw` "mn\r\n") [a, b, c]
+          Client.get client "key" `shouldReturn` Nothing
+          readIORef (Server.failed s) `shouldReturn` 0
+
+    -- The only attempt fails on one of the closed connections and marks the
+    -- server dead, which oneAttempt uses again at once. On Linux, it reads
+    -- the end of that connection even once its request has drawn a reset.
+    -- The next get must open a new connection rather than take another of
+    -- them.
+    it "opens a new connection once a server marked dead by a closed connection is back" $
+      withServerAndClientOpts (threeConnections oneAttempt)
+        [CloseConnection, CloseConnection, CloseConnection, MR "EN\r\n"] $ \server client -> do
+          [s] <- toList <$> Cluster.getServers client
+          leaveThreeClosed s "mn\r\n" isUnexpectedEOF
+          Client.get client "key" `shouldThrow` isUnexpectedEOF
+          readIORef (Server.failed s) >>= (`shouldNotBe` 0)
+          Client.get client "key" `shouldReturn` Nothing
+          mockRequests server `shouldReturn` replicate 3 "mn\r\n" ++ ["mg key v f c\r\n"]
+
+    -- A failed request closes only the idle connections. Here the mock drops
+    -- the get's connection 300 ms after the request, while another thread
+    -- holds the pool's second connection, which must stay open.
+    it "leaves open a connection another thread is using when a request fails" $
+      withServerAndClientOpts (threeConnections oneAttempt) [DelayMS 300 CloseConnection, Noop] $ \server client -> do
+        [s] <- toList <$> Cluster.getServers client
+        failing <- async $ Client.get client "key"
+        waitForRequests server 1 `shouldReturn` ["mg key v f c\r\n"]
+        held <- newEmptyMVar
+        release <- newEmptyMVar
+        holder <- async $ Server.withSocket s $ \c -> putMVar held c >> takeMVar release
+        inUse <- takeMVar held
+        wait failing `shouldThrow` isUnexpectedEOF
+        putMVar release ()
+        wait holder
+        sendRaw inUse "mn\r\n" `shouldReturn` ()
+
+    -- The reply to a request that timed out still comes, on its connection,
+    -- so the connection must be closed rather than handed to the thread
+    -- waiting for the pool, which would read that reply. The waiting thread
+    -- uses Server.withSocket, with no time limit, and returns the reply it
+    -- reads. The mock serves one connection at a time: it answers that
+    -- thread once it has sent the late reply, 250 ms after the get gives up.
+    it "doesn't hand the connection of a request that timed out to a waiting thread" $
+      withServerAndClientOpts fastStaysDead { Client.optsServerRetries = 1, Client.optsServerTimeout = 500 }
+        [DelayMS 750 (MR "VA 3 f9 c9\r\nold\r\n"), MR "VA 3 f2 c7\r\nfoo\r\n"] $ \server client -> do
+          [s] <- toList <$> Cluster.getServers client
+          timingOut <- async $ Client.get client "key"
+          waitForRequests server 1 `shouldReturn` ["mg key v f c\r\n"]
+          waiting <- async $ Server.withSocket s $ \c -> sendRaw c "mg key v f c\r\n" >> recvResponse c
+          waitUntilBlocked waiting
+          wait timingOut `shouldThrow` (== ClientError Timeout)
+          fmap responseValue <$> timeout 5000000 (wait waiting) `shouldReturn` Just "foo"
+
+    -- The same goes for a request that fails against the server in another
+    -- way: a batch's connection may still hold replies it hasn't read, and
+    -- one the server dropped can only fail again. retryOp's close s, which
+    -- closes the idle connections, can't protect the waiting thread: from
+    -- resource-pool 0.3 on, it has the slot as soon as withSocket gives it
+    -- back. The mock fails the request 300 ms after it has recorded it.
+    forM_
+      [ ("a batch whose replies are out of step", \c -> void (Client.getMany c ["one"]),
+          [Noop, DelayMS 300 (MR "VA 1 f0 c1 O7\r\nx\r\nVA 3 f9 c9\r\nold\r\nMN\r\n")],
+          ["mg one v f c q O0\r\n", "mn\r\n"], isUnexpectedResponse)
+      , ("a batch whose reply has an unknown code", \c -> void (Client.getMany c ["one"]),
+          [Noop, DelayMS 300 (MR "XX 2 O0\r\nMN\r\n")],
+          ["mg one v f c q O0\r\n", "mn\r\n"], isUnknownStatus)
+      , ("a request the server dropped", \c -> void (Client.get c "key"),
+          [DelayMS 300 CloseConnection], ["mg key v f c\r\n"], isUnexpectedEOF)
+      ] $ \(request, run, replies, requests, failure) ->
+      it ("doesn't hand the connection of " <> request <> " to a waiting thread") $
+        withServerAndClientOpts oneAttempt (replies ++ [MR "VA 3 f2 c7\r\nfoo\r\n"]) $ \server client -> do
+          [s] <- toList <$> Cluster.getServers client
+          failing <- async $ run client
+          waitForRequests server (length requests) `shouldReturn` requests
+          waiting <- async $ Server.withSocket s $ \c -> sendRaw c "mg two v f c\r\n" >> recvResponse c
+          waitUntilBlocked waiting
+          wait failing `shouldThrow` failure
+          fmap responseValue <$> timeout 5000000 (wait waiting) `shouldReturn` Just "foo"
+
+    -- Another thread holds the only connection, through Server.withSocket,
+    -- until the operation has given up. Both of its attempts wait their whole
+    -- timeout for the connection, so it never reaches the server. Single
+    -- requests, batches and stats each reach withSocket by their own path.
+    -- The holder lets go after 3 s at the latest, so a wait with no limit
+    -- fails the test rather than hanging it.
+    forM_
+      [ ("a request", \c -> void (Client.delete c "key" 0), [MR "HD\r\n"], ["md key\r\n"])
+      , ("a batch", \c -> void (Client.getMany c ["key"]), [Noop, MR "MN\r\n"], ["mg key v f c q O0\r\n", "mn\r\n"])
+      , ("stats", \c -> void (Client.stats c Nothing), [MR "END\r\n"], ["stats\r\n"])
+      ] $ \(operation, run, replies, requests) ->
+      it ("doesn't mark a server dead when " <> operation <> " times out waiting for its only connection") $
+        withServerAndClientOpts fastStaysDead replies $ \server client -> do
+          [s] <- toList <$> Cluster.getServers client
+          held <- newEmptyMVar
+          done <- newEmptyMVar
+          holder <- async $ Server.withSocket s $ \_ -> putMVar held () >> timeout 3000000 (takeMVar done)
+          takeMVar held
+          start <- getMonotonicTime
+          run client `shouldThrow` (== ClientError Timeout)
+          end <- getMonotonicTime
+          putMVar done ()
+          _ <- wait holder
+          -- It was retried: each attempt waited the whole timeout.
+          (end - start) `shouldSatisfy` (>= 0.6)
+          readIORef (Server.failed s) `shouldReturn` 0
+          run client
+          mockRequests server `shouldReturn` requests
+
+    -- An attempt that runs out of time before it holds a slot never reached
+    -- the server, so unlike a server failure it closes no idle connection.
+    -- With one stripe, an attempt waits only while every slot is taken, so
+    -- none is idle then. But with optsServerTimeout = 0, every attempt runs
+    -- out of time before it starts. Here the client with that timeout shares
+    -- the server with one that has left a connection idle in the pool. If
+    -- optsServerTimeout = 0 is ever given another meaning, this test needs
+    -- another way to reach that path.
+    it "doesn't close the idle connections when a request runs out of time before it gets one" $
+      withServerAndClientOpts fastStaysDead [Noop] $ \_ client -> do
+        servers <- Cluster.getServers client
+        [s] <- return (toList servers)
+        idle <- Server.withSocket s return
+        impatient <- Client.newClient [] fastStaysDead { Client.optsServerTimeout = 0 }
+        Client.get (Cluster.setServers impatient (Right servers)) "key"
+          `shouldThrow` (== ClientError Timeout)
+        readIORef (Server.failed s) `shouldReturn` 0
+        sendRaw idle "mn\r\n" `shouldReturn` ()
+
+    -- An error reply is an answer, not a server failure, so it closes no idle
+    -- connection either. The get opens the pool's first connection, and the
+    -- mock holds back its reply for 300 ms. Meanwhile a second connection is
+    -- opened and given back, so it is idle when the reply comes.
+    it "doesn't close the idle connections when a request gets an error reply" $
+      withServerAndClientOpts (threeConnections oneAttempt)
+        [DelayMS 300 (MR "CLIENT_ERROR bad\r\n"), Noop] $ \server client -> do
+          [s] <- toList <$> Cluster.getServers client
+          failing <- async $ Client.get client "key"
+          waitForRequests server 1 `shouldReturn` ["mg key v f c\r\n"]
+          idle <- Server.withSocket s return
+          wait failing `shouldThrow` isBadCommand
+          readIORef (Server.failed s) `shouldReturn` 0
+          sendRaw idle "mn\r\n" `shouldReturn` ()
+
+    -- A request opens its connection, and authenticates, only once it holds
+    -- a slot in the pool, so the server is to blame when either never ends,
+    -- as it is when a request never gets its reply. The extra Noop keeps the
+    -- mock reading, so the last attempt times out rather than reading the
+    -- end of the connection. The cap turns an attempt that has lost its time
+    -- limit into a failure rather than a hang. An attempt must also open its
+    -- connection and send within its 300 ms to reach that stage, and one that
+    -- runs out of time first counts against the server all the same, so the
+    -- requests of one of the two attempts may be missing.
+    forM_
+      [ ("authentication", Auth.Auth "user" "pass", \c -> void (Client.get c "key"), ["version\r\n"])
+      , ("a request", Auth.NoAuth, \c -> void (Client.get c "key"), ["mg key v f c\r\n"])
+      , ("a batch", Auth.NoAuth, \c -> void (Client.getMany c ["key"]), ["mg key v f c q O0\r\n", "mn\r\n"])
+      , ("stats", Auth.NoAuth, \c -> void (Client.stats c Nothing), ["stats\r\n"])
+      ] $ \(stage, credentials, run, requests) ->
+      it ("marks a server dead once every attempt times out in " <> stage) $
+        withMockServer (replicate (2 * length requests + 1) Noop) $ \server -> do
+          let spec = (mockServerSpec server) { ssAuth = credentials }
+          client <- Client.newClient [spec] fastStaysDead
+          timeout 5000000 (run client) `shouldThrow` (== ClientError Timeout)
+          waitForRequests server (2 * length requests)
+            >>= (`shouldSatisfy` (`elem` [requests, requests ++ requests]))
+          run client `shouldThrow` (== ClientError NoServersReady)
+
+    -- The delete waits for the only connection, which another thread holds,
+    -- and gets it once it is waiting. Its time runs out while the mock holds
+    -- back the reply, and as it holds the connection then, that counts
+    -- against the server although it waited first: its only attempt marks
+    -- the server dead.
+    it "marks a server dead when a request that waited for its connection times out using it" $
+      withServerAndClientOpts fastStaysDead { Client.optsServerRetries = 1 } [Noop, Noop] $ \server client -> do
+        [s] <- toList <$> Cluster.getServers client
+        held <- newEmptyMVar
+        release <- newEmptyMVar
+        holder <- async $ Server.withSocket s $ \_ -> putMVar held () >> takeMVar release
+        takeMVar held
+        deleting <- async $ Client.delete client "key" 0
+        waitUntilBlocked deleting
+        putMVar release ()
+        wait holder
+        wait deleting `shouldThrow` (== ClientError Timeout)
+        waitForRequests server 1 `shouldReturn` ["md key\r\n"]
+        readIORef (Server.failed s) >>= (`shouldNotBe` 0)
+
+    -- An attempt has one timeout, for the wait and the request together.
+    -- Here the delete waits 500 ms for the only connection, and the mock
+    -- takes 800 ms over the reply, so the delete runs out of its 1 s using
+    -- the connection, and its only attempt marks the server dead. With a new
+    -- 1 s once it had the connection, it would get the reply.
+    it "counts the wait for the connection towards the attempt's timeout" $
+      withServerAndClientOpts fastStaysDead { Client.optsServerRetries = 1, Client.optsServerTimeout = 1000 }
+        [DelayMS 800 (MR "HD\r\n")] $ \server client -> do
+          [s] <- toList <$> Cluster.getServers client
+          held <- newEmptyMVar
+          release <- newEmptyMVar
+          holder <- async $ Server.withSocket s $ \_ -> putMVar held () >> takeMVar release
+          takeMVar held
+          deleting <- async $ Client.delete client "key" 0
+          waitUntilBlocked deleting
+          threadDelay 500000
+          putMVar release ()
+          wait holder
+          wait deleting `shouldThrow` (== ClientError Timeout)
+          waitForRequests server 1 `shouldReturn` ["md key\r\n"]
+          readIORef (Server.failed s) >>= (`shouldNotBe` 0)
+
+    -- The last attempt decides whether the server is marked dead. Here the
+    -- first attempt times out waiting for the connection, which another
+    -- thread holds for 800 ms. The second attempt starts 1 s later, gets the
+    -- connection, and the mock drops it.
+    it "marks a server dead when a wait timeout is followed by a server failure" $
+      withServerAndClientOpts fastStaysDead { Client.optsFailRetryDelay = 1000 }
+        [CloseConnection] $ \server client -> do
+          [s] <- toList <$> Cluster.getServers client
+          held <- newEmptyMVar
+          holder <- async $ Server.withSocket s $ \_ -> putMVar held () >> threadDelay 800000
+          takeMVar held
+          Client.delete client "key" 0 `shouldThrow` isUnexpectedEOF
+          wait holder
+          mockRequests server `shouldReturn` ["md key\r\n"]
+          readIORef (Server.failed s) >>= (`shouldNotBe` 0)
+          Client.delete client "key" 0 `shouldThrow` (== ClientError NoServersReady)
+
+    -- The first attempt fails after 300 ms, as the mock drops its connection
+    -- or its time runs out: a server failure either way. Another thread,
+    -- queued for the connection by then, gets it and holds it until the
+    -- delete has given up. The second attempt starts 300 ms later and times
+    -- out waiting.
+    it "doesn't mark a server dead when a server failure is followed by a wait timeout" $
+      withServerAndClientOpts fastStaysDead { Client.optsFailRetryDelay = 300 }
+        [DelayMS 300 CloseConnection, MR "HD\r\n"] $ \server client -> do
+          [s] <- toList <$> Cluster.getServers client
+          deleting <- async $ Client.delete client "key" 0
+          waitForRequests server 1 `shouldReturn` ["md key\r\n"]
+          held <- newEmptyMVar
+          done <- newEmptyMVar
+          holder <- async $ Server.withSocket s $ \_ -> putMVar held () >> timeout 3000000 (takeMVar done)
+          takeMVar held
+          wait deleting `shouldThrow` (== ClientError Timeout)
+          putMVar done ()
+          _ <- wait holder
+          readIORef (Server.failed s) `shouldReturn` 0
+          Client.delete client "key" 0 `shouldReturn` True
+          mockRequests server `shouldReturn` ["md key\r\n", "md key\r\n"]
+
+    -- The pool holds one connection and the mock takes 90 ms over each
+    -- reply, so only about six of 8 deletes sent at once get theirs within
+    -- the 600 ms timeout. The rest run out of time, the first of them using
+    -- the connection and any others waiting for it, and are retried. Their
+    -- retries need about 300 ms of their 600, so every delete succeeds and
+    -- the server isn't marked dead.
+    it "doesn't mark a server dead when retries clear a burst queued for its only connection" $
+      withServerAndClientOpts fastStaysDead { Client.optsServerTimeout = 600 }
+        (repeat (DelayMS 90 (MR "HD\r\n"))) $ \_ client -> do
+          results <- mapConcurrently
+            (\i -> try @MemcacheError (Client.delete client (C.pack (show i)) 0)) [1 .. 8 :: Int]
+          results `shouldBe` replicate 8 (Right True)
+          [s] <- toList <$> Cluster.getServers client
+          readIORef (Server.failed s) `shouldReturn` 0
+          Client.delete client "next" 0 `shouldReturn` True
+
+    -- With resource-pool 0.3.0.0 to 0.5.0.0, a connection that failed while
+    -- the pool opened it left a request queued for the pool blocked until
+    -- its own time ran out. Here the mock drops the first connection 300 ms
+    -- into authentication, and the get queued behind it must then open its
+    -- own connection.
+    it "doesn't leave a request queued for the only connection blocked when opening it fails" $
+      withMockServer
+        [ DelayMS 300 CloseConnection, MR "CLIENT_ERROR unauthenticated\r\n", MR "STORED\r\n"
+        , MR "VA 3 f0 c1\r\nfoo\r\n" ] $ \server -> do
+          let spec = (mockServerSpec server) { ssAuth = Auth.Auth "user" "pass" }
+          client <- Client.newClient [spec]
+            Client.def { Client.optsServerRetries = 1, Client.optsServerTimeout = 3000 }
+          first <- async $ Client.get client "key"
+          waitForRequests server 1 `shouldReturn` ["version\r\n"]
+          second <- async $ Client.get client "key"
+          waitUntilBlocked second
+          wait first `shouldThrow` isUnexpectedEOF
+          wait second `shouldReturn` Just ("foo", 0, 1)
+
+    -- The same goes for opening a connection that is interrupted, as it is
+    -- when the request's time runs out. Here the mock never answers
+    -- authentication on the first connection, and the get opening it is
+    -- cancelled once the second get is queued behind it. The cap turns a
+    -- connect that can't be interrupted into a failure rather than a hang.
+    it "doesn't leave a request queued for the only connection blocked when opening it is interrupted" $
+      withMockServer
+        [ Noop, MR "CLIENT_ERROR unauthenticated\r\n", MR "STORED\r\n"
+        , MR "VA 3 f0 c1\r\nfoo\r\n" ] $ \server -> do
+          let spec = (mockServerSpec server) { ssAuth = Auth.Auth "user" "pass" }
+          client <- Client.newClient [spec]
+            Client.def { Client.optsServerRetries = 1, Client.optsServerTimeout = 3000 }
+          first <- async $ Client.get client "key"
+          waitForRequests server 1 `shouldReturn` ["version\r\n"]
+          second <- async $ Client.get client "key"
+          waitUntilBlocked second
+          timeout 5000000 (cancel first) `shouldReturn` Just ()
+          wait second `shouldReturn` Just ("foo", 0, 1)
+
+    -- With two connections, a request queued behind one that failed to open
+    -- stayed blocked even once the other was back in the pool, idle. Here
+    -- another thread holds the first connection while the mock drops the
+    -- second 300 ms into authentication, and the thread then gives the first
+    -- connection back. The get queued behind them must get a connection
+    -- rather than run out of time: a new one, or with resource-pool 0.2.3.2
+    -- possibly the one given back. It must queue within those 300 ms, as the
+    -- drop fails the only attempt of the get opening the second connection
+    -- and so marks the server dead. This mock serves both connections at the
+    -- same time, as the first stays open throughout.
+    it "doesn't leave a request queued for two connections blocked when opening one fails" $
+      withConcurrentMockServer
+        [ [MR "CLIENT_ERROR unauthenticated\r\n", MR "STORED\r\n", MR "VA 3 f0 c1\r\nfoo\r\n"]
+        , [DelayMS 300 CloseConnection]
+        , [MR "CLIENT_ERROR unauthenticated\r\n", MR "STORED\r\n", MR "VA 3 f0 c1\r\nfoo\r\n"] ] $ \server -> do
+          let spec = (mockServerSpec server) { ssAuth = Auth.Auth "user" "pass" }
+          client <- Client.newClient [spec] Client.def
+            { Client.optsServerRetries = 1, Client.optsServerTimeout = 3000
+            , Client.optsServerOptions = Client.defaultServerOptions { Client.soNumResources = 2 } }
+          [s] <- toList <$> Cluster.getServers client
+          held <- newEmptyMVar
+          release <- newEmptyMVar
+          holder <- async $ Server.withSocket s $ \_ -> putMVar held () >> takeMVar release
+          takeMVar held
+          first <- async $ Client.get client "key"
+          waitForRequests server 3 `shouldReturn`
+            ["version\r\n", "set auth 0 0 9\r\nuser pass\r\n", "version\r\n"]
+          second <- async $ Client.get client "key"
+          waitUntilBlocked second
+          wait first `shouldThrow` isUnexpectedEOF
+          putMVar release ()
+          wait holder
+          wait second `shouldReturn` Just ("foo", 0, 1)
+
+    -- Rejected credentials are an answer, not a server failure. Here the mock
+    -- rejects them on the first connection 300 ms into authentication, and
+    -- the get queued behind it must get the same answer on a connection of
+    -- its own rather than run out of time. Neither answer marks the server
+    -- dead.
+    it "reports rejected credentials to a request queued for the only connection" $
+      withMockServer
+        [ DelayMS 300 (MR "CLIENT_ERROR unauthenticated\r\n"), MR "CLIENT_ERROR authentication failure\r\n"
+        , MR "CLIENT_ERROR unauthenticated\r\n", MR "CLIENT_ERROR authentication failure\r\n" ] $ \server -> do
+          let spec = (mockServerSpec server) { ssAuth = Auth.Auth "user" "pass" }
+          client <- Client.newClient [spec]
+            Client.def { Client.optsServerRetries = 1, Client.optsServerTimeout = 3000 }
+          first <- async $ Client.get client "key"
+          waitForRequests server 1 `shouldReturn` ["version\r\n"]
+          second <- async $ Client.get client "key"
+          waitUntilBlocked second
+          wait first `shouldThrow` (== OpError TextAuthFail)
+          wait second `shouldThrow` (== OpError TextAuthFail)
+          mockRequests server `shouldReturn`
+            [ "version\r\n", "set auth 0 0 9\r\nuser pass\r\n"
+            , "version\r\n", "set auth 0 0 9\r\nuser pass\r\n" ]
+          [s] <- toList <$> Cluster.getServers client
+          readIORef (Server.failed s) `shouldReturn` 0
 
   -- The mock serves one connection at a time, so it only answers a second
   -- client once the first client's connection has closed.
@@ -922,18 +1329,41 @@ main = hspec $ do
         Server.closeAll s
         -- The pool holds one connection, so this waits for the first one.
         second <- async $ Server.withSocket s return
-        let waitBlocked = do
-              status <- threadStatus (asyncThreadId second)
-              case status of
-                ThreadBlocked _ -> return ()
-                _ -> threadDelay 1000 >> waitBlocked
-        waitBlocked
+        waitUntilBlocked second
         putMVar release ()
         wait first
         c2 <- wait second
         -- The connection in use was closed, not handed to the waiting thread.
         sendRaw c1 "x\r\n" `shouldThrow` anyException
         sendRaw c2 "x\r\n" `shouldReturn` ()
+
+    -- The mock answers the first request of authentication after 500 ms, so
+    -- closeAll runs while the connection is being opened. The function
+    -- returns the requests the mock had received when it ran.
+    it "closeAll closes a connection being opened instead of handing it to the function" $
+      withMockServer
+        [ DelayMS 500 (MR "CLIENT_ERROR unauthenticated\r\n"), MR "STORED\r\n"
+        , MR "CLIENT_ERROR unauthenticated\r\n", MR "STORED\r\n" ] $ \server -> do
+          let spec = (mockServerSpec server) { ssAuth = Auth.Auth "user" "pass" }
+          s <- Server.newServerDefault Server.defaultServerOptions spec
+          opening <- async $ Server.withSocket s $ \_ -> mockRequests server
+          waitForRequests server 1 `shouldReturn` ["version\r\n"]
+          Server.closeAll s
+          -- It ran on a second connection, opened after closeAll. The mock
+          -- serves one connection at a time, so it answers the second only
+          -- once the first is closed.
+          timeout 2000000 (wait opening) `shouldReturn` Just
+            ["version\r\n", "set auth 0 0 9\r\nuser pass\r\n", "version\r\n", "set auth 0 0 9\r\nuser pass\r\n"]
+
+    -- The caller cancels the get while it waits for its reply, which the
+    -- mock sends later on the same connection. So that connection must be
+    -- closed, or the next get would read that reply.
+    it "closes a connection whose request the caller interrupts" $
+      withServerAndClient [DelayMS 300 (MR "VA 3 f9 c9\r\nold\r\n"), MR "VA 3 f2 c7\r\nfoo\r\n"] $ \server client -> do
+        interrupted <- async $ Client.get client "key"
+        waitForRequests server 1 `shouldReturn` ["mg key v f c\r\n"]
+        cancel interrupted
+        Client.get client "key" `shouldReturn` Just ("foo", 2, 7)
 
     it "withClient returns the action's result and closes the connection" $
       withMockServer [MR "VA 3 f2 c7\r\nfoo\r\n", MR "VA 3 f2 c7\r\nbar\r\n"] $ \server -> do
@@ -1351,6 +1781,16 @@ waitForRequests server n = do
     go = do
       requests <- mockRequests server
       if length requests >= n then return requests else threadDelay 1000 >> go
+
+-- | Wait until the thread is blocked, as when it waits for the pool. A thread
+-- that ends instead fails the test rather than hanging it.
+waitUntilBlocked :: Async a -> IO ()
+waitUntilBlocked thread = do
+  status <- threadStatus (asyncThreadId thread)
+  case status of
+    ThreadRunning -> threadDelay 1000 >> waitUntilBlocked thread
+    ThreadBlocked _ -> return ()
+    _ -> expectationFailure "the thread ended without blocking"
 
 -- | Receive exactly @n@ bytes from a socket.
 recvExactly :: N.Socket -> Int -> IO B.ByteString
