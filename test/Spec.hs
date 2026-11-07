@@ -1711,6 +1711,55 @@ main = hspec $ do
         mockRequests a `shouldReturn` ["flush_all\r\n"]
         mockRequests b `shouldReturn` ["flush_all\r\n"]
 
+    -- A refresh that gets an error reply throws, as the first discovery
+    -- does. memcached keeps the connection open after one, as the mock does.
+    it "keeps discovering after a refresh gets an error reply" $
+      withMockServer [MR "OK\r\n"] $ \a ->
+      withMockServer [MR "OK\r\n"] $ \b ->
+      withMockServer (refreshTo [a]
+          ++ [MR "VERSION 1.6.12\r\n", MR "ERROR\r\n"]
+          ++ refreshTo [a, b]
+          ++ [MR "VERSION 1.6.12\r\n", MR "SERVER_ERROR out of memory\r\n"]
+          ++ [MR "VERSION 1.6.12\r\n"]) $ \cfg ->
+      withDiscovery Client.def $ \opts start -> do
+        client <- EC.newClient opts tenMs (endpoint cfg)
+        start
+        waitFor 9 (length <$> mockRequests cfg) `shouldReturn` 9
+        mockRequests cfg `shouldReturn`
+          concat (replicate 4 ["version\r\n", "config get cluster\r\n"]) ++ ["version\r\n"]
+        -- The refresh after the second error reply has started, so that one
+        -- has been handled, and it may not drop the servers.
+        length <$> Cluster.getServers client `shouldReturn` 2
+        Client.flush client Nothing
+        mockRequests a `shouldReturn` ["flush_all\r\n"]
+        mockRequests b `shouldReturn` ["flush_all\r\n"]
+
+    -- Each connection to the endpoint gets its own replies. The first refresh
+    -- gets its reply only after the limit. Had the client waited for it, it
+    -- would have moved to b alone, and the next refresh, on the same
+    -- connection, would have got no reply at all.
+    it "abandons a refresh slower than optsServerTimeout and runs the next one" $
+      withMockServer [MR "OK\r\n"] $ \a ->
+      withMockServer [MR "OK\r\n"] $ \b ->
+      withConcurrentMockServer
+          [ refreshTo [a]
+          , MR "VERSION 1.6.12\r\n"
+            : DelayMS 2000 (MR ("CONFIG cluster 0 " <> nodeList [b] <> "END\r\n"))
+            : repeat Noop
+          , refreshTo [a, b] ] $ \cfg ->
+      withDiscovery Client.def { Client.optsServerTimeout = 1000 } $ \opts start -> do
+        client <- EC.newClient opts tenMs (endpoint cfg)
+        begin <- getMonotonicTime
+        start
+        waitFor 2 (length <$> Cluster.getServers client) `shouldReturn` 2
+        -- The limit is above the 750 ms default, so taking at least 1 s shows
+        -- that the refresh was given the caller's limit.
+        elapsed <- subtract begin <$> getMonotonicTime
+        elapsed `shouldSatisfy` (>= 1)
+        Client.flush client Nothing
+        mockRequests a `shouldReturn` ["flush_all\r\n"]
+        mockRequests b `shouldReturn` ["flush_all\r\n"]
+
     it "keeps discovering after a refresh gets no reply" $
       withMockServer [MR "OK\r\n"] $ \a ->
       withMockServer [MR "OK\r\n"] $ \b ->
