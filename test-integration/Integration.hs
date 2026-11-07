@@ -13,6 +13,7 @@ import           Data.Maybe               (isJust)
 import           Data.Time.Clock.POSIX    (getPOSIXTime)
 import qualified Database.Memcache.Client as M
 import qualified Database.Memcache.Cluster as Cluster
+import qualified Database.Memcache.ElastiCacheClient as EC
 import qualified Database.Memcache.Server as Server
 import           Database.Memcache.Types  (ServerSpec (..))
 import           Network.Socket           (Family (AF_INET), SocketOption (ReuseAddr),
@@ -27,7 +28,9 @@ import           System.IO                (hClose, hPutStr, openTempFileWithDefa
 import           System.Process           (ProcessHandle, createProcess, proc,
                                            getProcessExitCode, terminateProcess,
                                            waitForProcess)
+import           System.Timeout           (timeout)
 import           Test.Hspec
+import           UnliftIO.Exception       (StringException (..))
 
 main :: IO ()
 main = do
@@ -50,6 +53,7 @@ main = do
           describe "three-server cluster" $ clusterSpecs clusterPorts
           describe "restarted server" $ restartSpecs path
           describe "server out of memory" $ outOfMemorySpecs fullPort
+          describe "ElastiCache discovery" $ elastiCacheSpecs port
 
 integrationSpecs :: Int -> Spec
 integrationSpecs port = beforeAll (newClient port) $ do
@@ -343,6 +347,19 @@ outOfMemorySpecs port =
     -- left for it either: memcached replies "Out of memory allocating new item".
     M.increment client "integration-counter" 0 1 0 0 `shouldThrow` (== M.OpError M.ErrOutOfMemory)
     fmap first <$> M.get client "integration-fill-0" `shouldReturn` Just "x"
+
+-- | ElastiCache discovery against plain memcached, which has no config
+-- command: it answers config get cluster with ERROR and keeps the connection
+-- open.
+elastiCacheSpecs :: Int -> Spec
+elastiCacheSpecs port =
+  it "throws when the endpoint isn't ElastiCache" $ do
+    -- The endpoint check only looks for ".cfg" somewhere in the URI.
+    endpoint <- either fail pure $
+      EC.parseConfigurationEndpoint ("memcached://127.0.0.1:" <> show port <> "/x.cfg")
+    -- The outer timeout turns a hang into a failure.
+    timeout 5000000 (EC.newClient M.def (3600 * 1000000) endpoint) `shouldThrow`
+      \(StringException message _) -> message == "Configuration endpoint replied: ERROR"
 
 newClient :: Int -> IO M.Client
 newClient port = do
