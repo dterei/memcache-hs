@@ -36,7 +36,7 @@ import Database.Memcache.Client (Client, optsServerSpecsToServers, optsServerOpt
 import qualified Database.Memcache.Client as Client
 import Database.Memcache.Cluster (Options, getServers, setServers)
 import Database.Memcache.Errors (ClientError (Timeout), MemcacheError (ClientError))
-import Database.Memcache.Server (Server, close, withSocket)
+import Database.Memcache.Server (Server, closeAll, withSocket)
 import Database.Memcache.Socket (Connection, crlf, recvRawUntil, sendRaw, versionRequest)
 import Database.Memcache.Types.ServerSpec (ServerSpec (..), parseServerSpec)
 import Database.Memcache.Util (note)
@@ -92,11 +92,12 @@ newtype ConfigurationEndpoint
 -- Servers are made by calling 'optsServerSpecsToServers' with one node at a
 -- time. A refresh keeps the 'Server', and so the connections and failure
 -- state, of every node still listed with the same host and port, makes servers
--- only for new nodes, and closes the idle connections of nodes no longer
--- listed. Each refresh has the same time limit as the first discovery. A
--- refresh that fails, for example because it runs out of time or the reply is
--- an error, can't be parsed or lists no nodes, leaves the servers as they are,
--- and discovery tries again after the next interval.
+-- only for new nodes, and closes the connections of nodes no longer listed:
+-- idle ones at once, and one in use as soon as its request finishes. Each
+-- refresh has the same time limit as the first discovery. A refresh that
+-- fails, for example because it runs out of time or the reply is an error,
+-- can't be parsed or lists no nodes, leaves the servers as they are, and
+-- discovery tries again after the next interval.
 --
 -- N.B. The interval is in the same units as 'threadDelay'.
 newClient :: Options -> Int -> ConfigurationEndpoint -> IO Client
@@ -131,11 +132,10 @@ repeatAutoDiscover opts interval cfgEndpoint mVar initialNodes = do
           Left _ -> refresh nodes
           Right (nodes', gone) -> do
             modifyMVar_ mVar $ \_curServers -> pure $ nodeServers nodes'
-            -- Close the idle connections of nodes that have gone. A request
-            -- still using one of their connections finishes normally, and the
-            -- pool closes that connection once it has been idle for
-            -- 'soKeepAlive'.
-            mapM_ close gone
+            -- Close the connections of nodes that have gone. A request still
+            -- using one of them finishes normally, and its connection is
+            -- closed then instead of going back to the pool.
+            mapM_ closeAll gone
             refresh nodes'
   refresh initialNodes
 

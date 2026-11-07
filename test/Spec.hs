@@ -1760,6 +1760,26 @@ main = hspec $ do
         -- client.
         length initial `shouldBe` 2
 
+    -- b answers the flush late, so the refresh that drops b runs while the
+    -- flush is still using b's connection. With a reply left, b's mock then
+    -- waits on that connection until it closes.
+    it "closes a connection in use by a node no longer listed once its request finishes" $
+      withMockServer [MR "OK\r\n"] $ \a ->
+      withMockServer [DelayMS 300 (MR "OK\r\n"), MR "OK\r\n"] $ \b ->
+      withMockServer (refreshTo [a, b] ++ refreshTo [a]) $ \cfg ->
+      withDiscovery Client.def $ \opts start -> do
+        client <- EC.newClient opts tenMs (endpoint cfg)
+        initial <- Cluster.getServers client
+        flushing <- async $ Client.flush client Nothing
+        waitForRequests b 1 `shouldReturn` ["flush_all\r\n"]
+        start
+        waitFor 1 (length <$> Cluster.getServers client) `shouldReturn` 1
+        -- The flush isn't interrupted: it gets b's reply.
+        wait flushing
+        waitFor 1 (mockClosed b) `shouldReturn` 1
+        -- Checked last, as in the test above.
+        length initial `shouldBe` 2
+
   where
     recvResponseFrom bytes =
       bracket
