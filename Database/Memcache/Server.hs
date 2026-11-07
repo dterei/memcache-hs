@@ -26,6 +26,7 @@ module Database.Memcache.Server (
 
 import           Database.Memcache.Auth
 import           Database.Memcache.Socket
+import           Database.Memcache.Types.Server
 
 import           Control.Monad            (when)
 import           Data.Default
@@ -33,46 +34,15 @@ import           Data.Hashable
 import           Data.IORef
 import qualified Data.Pool as P
 import           Data.Pool (Pool)
-import           Data.Time.Clock.POSIX    (POSIXTime)
 import           Database.Memcache.Types  (ServerSpec (..))
 import           UnliftIO.Exception
 
-import           Network.Socket           (HostName, ServiceName, getAddrInfo)
+import           Network.Socket           (getAddrInfo)
 import qualified Network.Socket           as S
 #if MIN_VERSION_resource_pool(0,4,0)
 #else
 import           Data.Time.Clock          (NominalDiffTime)
 #endif
-
--- | Memcached server connection.
-data Server = Server {
-        -- | ID of server for consistent hashing.
-        sid    :: {-# UNPACK #-} !Int,
-        -- | Connection pool to server. Each connection is paired with the
-        -- 'generation' it was opened in.
-        pool   :: Pool (Int, Connection),
-        -- | Hostname of server.
-        addr   :: !HostName,
-        -- | Port number of server.
-        port   :: !ServiceName,
-        -- | Credentials for server.
-        auth   :: !Authentication,
-        -- | When did the server fail? 0 if it is alive.
-        failed :: IORef POSIXTime,
-        -- | Bumped by 'closeAll'. A connection opened in an earlier generation
-        -- is closed instead of being used again or returned to the pool.
-        generation :: IORef Int
-    }
-
-instance Show Server where
-  show Server{..} =
-    "Server [" ++ show sid ++ "] " ++ addr ++ ":" ++ show port
-
-instance Eq Server where
-    (==) x y = sid x == sid y
-
-instance Ord Server where
-    compare x y = compare (sid x) (sid y)
 
 -- | Configurable options when creating a @Server@.
 --
@@ -114,10 +84,10 @@ instance Default ServerOptions where
 
 -- | Create a server using the default socket-pool implementation.
 newServerDefault :: ServerOptions -> ServerSpec -> IO Server
-newServerDefault serverOptions ss@ServerSpec{..} = do
+newServerDefault serverOptions ServerSpec{..} = do
     fat <- newIORef 0
     gen <- newIORef 0
-    pSock <- getNewPool serverOptions ss gen
+    pSock <- getNewPool serverOptions
     return Server
         { sid      = serverHash
         , pool     = pSock
@@ -126,6 +96,7 @@ newServerDefault serverOptions ss@ServerSpec{..} = do
         , auth     = ssAuth
         , failed   = fat
         , generation = gen
+        , slotTaken = Nothing
         }
   where
     serverHash = hash (ssHost, ssPort)
@@ -138,13 +109,16 @@ newServerDefault serverOptions ss@ServerSpec{..} = do
 withSocket :: Server -> (Connection -> IO a) -> IO a
 {-# INLINE withSocket #-}
 withSocket svr act = mask $ \restore -> do
-    (res@(born, conn), local) <- takeCurrent
-    r <- restore (act conn) `onException` P.destroyResource (pool svr) local res
+    (slot, local) <- P.takeResource (pool svr)
+    -- Record that the request has stopped waiting (see 'slotTaken').
+    mapM_ (`writeIORef` True) (slotTaken svr)
+    (born, conn) <- connectionIn slot `onException` P.destroyResource (pool svr) local slot
+    r <- restore (act conn) `onException` P.destroyResource (pool svr) local slot
     stale <- (/= born) <$> currentGeneration svr
     if stale
-      then P.destroyResource (pool svr) local res
+      then P.destroyResource (pool svr) local slot
       else do
-        P.putResource local res
+        P.putResource local slot
         -- 'closeAll' may have run between the check and the put, and closed
         -- the idle connections before this one was back. If so, close them
         -- again, without letting an exception cut that short.
@@ -152,13 +126,20 @@ withSocket svr act = mask $ \restore -> do
         when raced $ uninterruptibleMask_ $ P.destroyAllResources (pool svr)
     return r
   where
-    -- Take a connection, closing any opened before the latest 'closeAll'.
-    takeCurrent = do
-      (res@(born, _), local) <- P.takeResource (pool svr)
+    -- The slot's connection, opening one if the slot has none or closing and
+    -- replacing one opened before the latest 'closeAll'. 'closeAll' may run
+    -- while a connection is being opened, so check the new one too.
+    connectionIn slot = do
+      held <- readIORef slot
       current <- currentGeneration svr
-      if born == current
-        then return (res, local)
-        else P.destroyResource (pool svr) local res >> takeCurrent
+      case held of
+        Just res@(born, _) | born == current -> return res
+        _ -> do
+          releaseSlot slot
+          writeIORef slot Nothing
+          res <- connectTagged (generation svr) (ServerSpec (addr svr) (port svr) (auth svr))
+          writeIORef slot (Just res)
+          connectionIn slot
 
 -- | Close the connections that are idle in the pool. Connections in use stay
 -- open and go back to the pool when their request finishes; 'closeAll' closes
@@ -183,17 +164,23 @@ closeAll srv = do
 currentGeneration :: Server -> IO Int
 currentGeneration svr = atomicModifyIORef' (generation svr) (\g -> (g, g))
 
+-- Slots start empty: 'withSocket' opens a connection in a slot once it holds
+-- the slot, so that connecting isn't part of waiting for one.
 #if MIN_VERSION_resource_pool(0,4,0)
-getNewPool :: ServerOptions -> ServerSpec -> IORef Int -> IO (Pool (Int, Connection))
-getNewPool serverOptions ss gen =
+getNewPool :: ServerOptions -> IO (Pool Slot)
+getNewPool serverOptions =
   P.newPool
     $ P.setNumStripes (Just $ soNumStripes serverOptions)
-    $ P.defaultPoolConfig (connectTagged gen ss) (releaseSocket . snd) (soKeepAlive serverOptions) (soNumResources serverOptions)
+    $ P.defaultPoolConfig (newIORef Nothing) releaseSlot (soKeepAlive serverOptions) (soNumResources serverOptions)
 #else
-getNewPool :: ServerOptions -> ServerSpec -> IORef Int -> IO (Pool (Int, Connection))
-getNewPool serverOptions ss gen =
-  P.createPool (connectTagged gen ss) (releaseSocket . snd) (soNumStripes serverOptions) (soKeepAlive serverOptions) (soNumResources serverOptions)
+getNewPool :: ServerOptions -> IO (Pool Slot)
+getNewPool serverOptions =
+  P.createPool (newIORef Nothing) releaseSlot (soNumStripes serverOptions) (soKeepAlive serverOptions) (soNumResources serverOptions)
 #endif
+
+-- | Close the slot's connection, if it has one.
+releaseSlot :: Slot -> IO ()
+releaseSlot slot = readIORef slot >>= mapM_ (releaseSocket . snd)
 
 -- | Open a connection, paired with the generation current when it was opened.
 connectTagged :: IORef Int -> ServerSpec -> IO (Int, Connection)

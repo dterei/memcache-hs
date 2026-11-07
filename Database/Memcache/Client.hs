@@ -27,20 +27,26 @@ while unexpected errors are thrown as exceptions. Exceptions are either of type
 
 We support the following logic for handling failure in operations:
 
-* __Timeouts__: we timeout any operation that takes too long and consider it
-                failed.
+* __Timeouts__: we time out any attempt at an operation that takes longer
+                than 'optsServerTimeout', including time spent waiting for a
+                free connection to the server, and consider it failed.
 
 * __Retry__: on operation failure (timeout, network error) we close the
-             connection and retry the operation, doing this up to a
-             configurable maximum. A reply to an operation's request that
-             shows the connection is out of step also closes it. Only
-             'getMany', 'setMany' and 'deleteMany' retry then; other
-             operations throw at once, as the server may have carried out
-             the request.
+             connection, if any, and retry the operation, doing this up to a
+             configurable maximum. Unless the attempt only ran out of time
+             waiting for a free connection, we also close the server's idle
+             connections, as what made it fail, such as a restart of the
+             server, may have broken them too. A reply to an operation's
+             request that shows the connection is out of step also closes
+             it. Only 'getMany', 'setMany' and 'deleteMany' retry then, and
+             close the idle connections too; other operations throw at once,
+             as the server may have carried out the request.
 
 * __Failover__: when an operation against a server in a cluster fails all
                 retries, we mark that server as dead and use the remaining
-                servers in the cluster to handle all operations. After a
+                servers in the cluster to handle all operations. That doesn't
+                happen when the last attempt only ran out of time waiting for
+                a free connection, as it never reached the server. After a
                 configurable period of time has passed, we consider the server
                 alive again and try to use it. This can lead to consistency
                 issues (stale data), but is usually fine for caching purposes
@@ -157,7 +163,10 @@ type StatResults = [(ByteString, ByteString)]
 -- request instead opens (and, with credentials, authenticates) a new
 -- connection to every server it uses, every time. Each pool holds up to
 -- 'soNumResources' connections, one by default, so concurrent requests to a
--- server beyond that wait for a free connection.
+-- server beyond that wait for a free connection. The wait counts towards each
+-- attempt's 'optsServerTimeout'. If the last attempt runs out of time while
+-- still waiting, the server isn't marked down; running out of time afterwards
+-- is a server failure, however long the wait was.
 newClient :: [ServerSpec] -> Options -> IO Client
 newClient scs = newCluster $ if null scs then [defaultServerSpec] else scs
 
