@@ -242,6 +242,17 @@ main = hspec $ do
       (recvResponseFrom "CLIENT_ERROR cannot increment or decrement non-numeric value\r\n" >>= responseStatus)
         `shouldThrow` (== OpError ErrValueNonNumeric)
 
+    -- Every out-of-memory error in memcached's text protocol. It capitalises
+    -- two: for a large value it runs out of memory while reading, and for a
+    -- counter it can't create.
+    forM_
+      [ "out of memory storing object", "out of memory", "Out of memory allocating new item"
+      , "Out of memory during read", "out of memory reading request"
+      , "out of memory writing get response", "out of memory writing stats" ] $ \text ->
+      it ("maps SERVER_ERROR " <> C.unpack text <> " to ErrOutOfMemory") $
+        (recvResponseFrom ("SERVER_ERROR " <> text <> "\r\n") >>= responseStatus)
+          `shouldThrow` (== OpError ErrOutOfMemory)
+
     it "rejects unknown and empty response lines" $ do
       (recvResponseFrom "ERROR\r\n" >>= responseStatus) `shouldThrow` isUnknownOp
       (recvResponseFrom "XX\r\n" >>= responseStatus) `shouldThrow` isUnknownStatus
@@ -746,6 +757,25 @@ main = hspec $ do
     it "reports a server out of memory as a status" $
       withClient [MR "SERVER_ERROR out of memory storing object\r\n"] $ \client ->
         Client.set client "key" "foo" 0 0 `shouldThrow` (== OpError ErrOutOfMemory)
+
+    -- memcached capitalises its out-of-memory errors for a large value it
+    -- can't get memory for while reading it, and for a counter it can't
+    -- create. They are statuses like the lowercase ones. Retried, a set
+    -- would upload its value a second time, and the failures would mark a
+    -- full but healthy server dead.
+    it "reports a large value the server ran out of memory reading as a status, sending it once" $
+      withServerAndClient [MR "SERVER_ERROR Out of memory during read\r\n", MR "VA 3 f2 c7\r\nfoo\r\n"] $
+        \server client -> do
+          Client.set client "key" "foo" 0 0 `shouldThrow` (== OpError ErrOutOfMemory)
+          Client.get client "key" `shouldReturn` Just ("foo", 2, 7)
+          mockRequests server `shouldReturn` ["ms key 3 F0 T0 MS c\r\nfoo\r\n", "mg key v f c\r\n"]
+
+    it "reports a counter the server ran out of memory creating as a status, sending it once" $
+      withServerAndClient [MR "SERVER_ERROR Out of memory allocating new item\r\n", MR "VA 3 f2 c7\r\nfoo\r\n"] $
+        \server client -> do
+          Client.increment client "counter" 0 1 0 0 `shouldThrow` (== OpError ErrOutOfMemory)
+          Client.get client "key" `shouldReturn` Just ("foo", 2, 7)
+          mockRequests server `shouldReturn` ["ma counter D1 MI v c N0 J0\r\n", "mg key v f c\r\n"]
 
     it "returns no stats on a reset reply" $
       withClient [MR "RESET\r\n"] $ \client -> do

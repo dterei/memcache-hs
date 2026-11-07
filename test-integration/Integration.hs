@@ -42,11 +42,14 @@ main = do
       withAuthfile $ \authfile ->
       withMemcached path ["-Y", authfile] $ \authPort ->
       withMemcacheds path 3 $ \clusterPorts ->
+      -- 2 MiB of memory, and -M to report running out instead of evicting.
+      withMemcached path ["-M", "-m", "2"] $ \fullPort ->
         hspec $ do
           describe "single server" $ integrationSpecs port
           describe "auth-file authentication" $ authSpecs authPort
           describe "three-server cluster" $ clusterSpecs clusterPorts
           describe "restarted server" $ restartSpecs path
+          describe "server out of memory" $ outOfMemorySpecs fullPort
 
 integrationSpecs :: Int -> Spec
 integrationSpecs port = beforeAll (newClient port) $ do
@@ -326,6 +329,20 @@ restartSpecs executable =
     withMemcachedOn executable [] port $ do
       M.get client "integration-restart" `shouldReturn` Nothing
       readIORef (Server.failed server) `shouldReturn` 0
+
+-- | Tests against a server that reports running out of memory instead of
+-- evicting.
+outOfMemorySpecs :: Int -> Spec
+outOfMemorySpecs port =
+  it "reports a counter it has no memory to create as a status, and isn't marked dead" $ do
+    client <- newClient port
+    -- 200 batches of 256 small values need over twice the server's 2 MiB.
+    let batch n = [(B.pack ("integration-fill-" <> show (n * 256 + i)), "x", 0, 0) | i <- [0 .. 255]]
+    mapM_ (M.setMany client . batch) [0 .. 199 :: Int] `shouldThrow` (== M.OpError M.ErrOutOfMemory)
+    -- The counter needs as much memory as one of the values, so there is none
+    -- left for it either: memcached replies "Out of memory allocating new item".
+    M.increment client "integration-counter" 0 1 0 0 `shouldThrow` (== M.OpError M.ErrOutOfMemory)
+    fmap first <$> M.get client "integration-fill-0" `shouldReturn` Just "x"
 
 newClient :: Int -> IO M.Client
 newClient port = do
