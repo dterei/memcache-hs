@@ -20,7 +20,7 @@ where
 
 import Control.Concurrent (forkIO, threadDelay)
 import Control.Concurrent.MVar (MVar, modifyMVar_, newMVar)
-import Control.Monad (guard, (<=<))
+import Control.Monad (guard, when, (<=<))
 import Data.Bifunctor (first)
 import Data.ByteString (ByteString)
 import qualified Data.ByteString.Char8 as C
@@ -35,6 +35,7 @@ import qualified Data.Version as Version
 import Database.Memcache.Client (Client, optsServerSpecsToServers, optsServerOptions, optsServerTimeout)
 import qualified Database.Memcache.Client as Client
 import Database.Memcache.Cluster (Options, getServers, setServers)
+import Database.Memcache.Errors (ClientError (Timeout), MemcacheError (ClientError))
 import Database.Memcache.Server (Server, close, withSocket)
 import Database.Memcache.Socket (Connection, crlf, recvRawUntil, sendRaw, versionRequest)
 import Database.Memcache.Types.ServerSpec (ServerSpec (..), parseServerSpec)
@@ -42,7 +43,7 @@ import Database.Memcache.Util (note)
 import Network.Socket (HostName, ServiceName)
 import System.Timeout (timeout)
 import Text.ParserCombinators.ReadP (readP_to_S)
-import UnliftIO.Exception (bracket, throwString, tryAny)
+import UnliftIO.Exception (bracket, throwIO, throwString, tryAny)
 
 -- | Parse an ElastiCache configuration endpoint.
 --
@@ -81,14 +82,21 @@ newtype ConfigurationEndpoint
 --
 -- This function discovers all the nodes in a cluster and sets up a new thread to run autodiscovery on an interval.
 --
+-- The first discovery must finish within 'optsServerTimeout' (connecting,
+-- then asking for the version and for the cluster configuration), or this
+-- throws v'ClientError' 'Timeout'. If the endpoint sends an error reply, such
+-- as the @ERROR@ that plain memcached sends as it has no @config@ command,
+-- this throws a @StringException@ from "UnliftIO.Exception", as it does for a
+-- reply that can't be parsed.
+--
 -- Servers are made by calling 'optsServerSpecsToServers' with one node at a
 -- time. A refresh keeps the 'Server', and so the connections and failure
 -- state, of every node still listed with the same host and port, makes servers
 -- only for new nodes, and closes the idle connections of nodes no longer
--- listed. A refresh that fails, such as one whose reply cannot be parsed or
--- lists no nodes, or that does not complete within 'optsServerTimeout'
--- (connecting and both requests), leaves the servers as they are, and
--- discovery tries again after the next interval.
+-- listed. Each refresh has the same time limit as the first discovery. A
+-- refresh that fails, for example because it runs out of time or the reply is
+-- an error, can't be parsed or lists no nodes, leaves the servers as they are,
+-- and discovery tries again after the next interval.
 --
 -- N.B. The interval is in the same units as 'threadDelay'.
 newClient :: Options -> Int -> ConfigurationEndpoint -> IO Client
@@ -97,7 +105,7 @@ newClient options interval cfgEndpoint = bracket acquireCfgClient releaseCfgClie
     acquireCfgClient = Client.newClient [unConfigurationEndpoint cfgEndpoint] options
     releaseCfgClient = Client.quit
     resolveCluster' cfgClient = do
-      serverSpecs <- resolveCluster cfgClient
+      serverSpecs <- resolveClusterWithin options cfgClient
       (nodes, _) <- reuseServers options [] serverSpecs
 
       -- Prepare MVar
@@ -117,8 +125,7 @@ repeatAutoDiscover opts interval cfgEndpoint mVar initialNodes = do
         -- servers. 'tryAny' lets asynchronous exceptions, such as
         -- 'killThread', through.
         result <- tryAny $ do
-          found <- timeout serverTimeout $ resolveCluster cfgClient
-          serverSpecs <- maybe (throwString "Discovery timed out") pure found
+          serverSpecs <- resolveClusterWithin opts cfgClient
           reuseServers opts nodes serverSpecs
         case result of
           Left _ -> refresh nodes
@@ -131,9 +138,6 @@ repeatAutoDiscover opts interval cfgEndpoint mVar initialNodes = do
             mapM_ close gone
             refresh nodes'
   refresh initialNodes
-  where
-    -- 'optsServerTimeout' is in milliseconds; 'timeout' takes microseconds.
-    serverTimeout = truncate (optsServerTimeout opts * 1000)
 
 -- | The nodes found by discovery, by host and port, with the servers made for
 -- each.
@@ -182,6 +186,17 @@ resolveCluster cfgClient = do
 
     unTry $ handleRawNodeInfo rawNodeInfo
 
+-- Run 'resolveCluster', throwing 'ClientError' 'Timeout' unless it finishes,
+-- connecting and both requests included, within the options'
+-- 'optsServerTimeout'.
+resolveClusterWithin :: Options -> Client -> IO [ServerSpec]
+resolveClusterWithin opts cfgClient = do
+  found <- timeout serverTimeout $ resolveCluster cfgClient
+  maybe (throwIO $ ClientError Timeout) pure found
+  where
+    -- 'optsServerTimeout' is in milliseconds; 'timeout' takes microseconds.
+    serverTimeout = truncate (optsServerTimeout opts * 1000)
+
 -- Handle the raw response from /memcached/.
 --
 -- See: https://docs.aws.amazon.com/AmazonElastiCache/latest/mem-ug/AutoDiscovery.AddingToYourClientLibrary.html#AutoDiscovery.AddingToYourClientLibrary.OutputFormat
@@ -199,8 +214,13 @@ handleConfigGetClusterResponse bs = do
 --
 -- See: https://docs.aws.amazon.com/AmazonElastiCache/latest/mem-ug/AutoDiscovery.AddingToYourClientLibrary.html#AutoDiscovery.AddingToYourClientLibrary.OutputFormat
 handleRawNodeInfo :: Text -> Either String [ServerSpec]
-handleRawNodeInfo = mapM (parseServerSpec <=< pure . T.unpack <=< convertToUri) . T.splitOn " "
+handleRawNodeInfo = mapM (parseNode . T.unpack <=< convertToUri) . T.splitOn " "
   where
+    -- Node addresses come from the server and hold no credentials, so name
+    -- the one that failed.
+    parseNode :: String -> Either String ServerSpec
+    parseNode uri = first (<> (": " <> uri)) (parseServerSpec uri)
+
     convertToUri :: Text -> Either String Text
     convertToUri t =
       case T.splitOn "|" t of
@@ -218,7 +238,7 @@ firstCfgCmdVersion = makeVersion [1, 4, 14]
 resolveViaAutoDiscoveryKey :: Connection -> IO ByteString
 resolveViaAutoDiscoveryKey socket = do
   sendRaw socket ("get " <> autoDiscoveryKey <> crlf)
-  recvRawUntil ("END" <> crlf) socket
+  recvConfigReply socket
 
 -- Before 'firstCfgCmdVersion', /ElastiCache/ stored configuration in a special-purpose key within the /Configuration Endpoint/.
 --
@@ -231,10 +251,28 @@ autoDiscoveryKey = "AmazonElastiCache:cluster"
 resolveViaConfigCmd :: Connection -> IO ByteString
 resolveViaConfigCmd socket = do
   sendRaw socket (configGetCluster <> crlf)
-  recvRawUntil ("END" <> crlf) socket
+  recvConfigReply socket
 
 configGetCluster :: ByteString
 configGetCluster = "config get cluster"
+
+-- Receive the reply to the config command or to the get of the cluster key,
+-- through the END line that ends it. An error reply is a single line with no
+-- END line, and the server keeps the connection open after it, so throw on
+-- one instead of waiting for END.
+recvConfigReply :: Connection -> IO ByteString
+recvConfigReply socket = do
+  line <- recvRawUntil crlf socket
+  let text = C.dropEnd (C.length crlf) line
+  when (C.takeWhile (/= ' ') text `elem` ["ERROR", "CLIENT_ERROR", "SERVER_ERROR"]) $
+    throwString $ "Configuration endpoint replied: " <> C.unpack text
+  -- Otherwise read through the first END. This line can end with it: when
+  -- the cluster key is missing, the reply is the END line alone.
+  if end `C.isSuffixOf` line
+    then pure line
+    else (line <>) <$> recvRawUntil end socket
+  where
+    end = "END" <> crlf
 
 unTry :: Either String a -> IO a
 unTry = either throwString pure
