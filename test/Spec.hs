@@ -1688,13 +1688,13 @@ main = hspec $ do
       withMockServer [MR "OK\r\n"] $ \b ->
       withMockServer (refreshTo [a]
           -- The endpoint drops the connection and replies with garbage
-          -- before a refresh succeeds. Then it lists no nodes, and after one
-          -- more reply it drops the connection and stops listening.
+          -- before a refresh succeeds. Then it lists no nodes, and then it
+          -- stops answering.
           ++ [CloseConnection]
           ++ [MR "VERSION 1.6.12\r\n", MR "garbage\r\nEND\r\n"]
           ++ refreshTo [a, b]
           ++ refreshTo []
-          ++ [MR "VERSION 1.6.12\r\n"]) $ \cfg ->
+          ++ noReplies) $ \cfg ->
       withDiscovery Client.def $ \opts start -> do
         client <- EC.newClient opts tenMs (endpoint cfg)
         start
@@ -1720,7 +1720,7 @@ main = hspec $ do
           ++ [MR "VERSION 1.6.12\r\n", MR "ERROR\r\n"]
           ++ refreshTo [a, b]
           ++ [MR "VERSION 1.6.12\r\n", MR "SERVER_ERROR out of memory\r\n"]
-          ++ [MR "VERSION 1.6.12\r\n"]) $ \cfg ->
+          ++ noReplies) $ \cfg ->
       withDiscovery Client.def $ \opts start -> do
         client <- EC.newClient opts tenMs (endpoint cfg)
         start
@@ -1742,11 +1742,12 @@ main = hspec $ do
       withMockServer [MR "OK\r\n"] $ \a ->
       withMockServer [MR "OK\r\n"] $ \b ->
       withConcurrentMockServer
-          [ refreshTo [a]
-          , MR "VERSION 1.6.12\r\n"
+          ( refreshTo [a]
+          : ( MR "VERSION 1.6.12\r\n"
             : DelayMS 2000 (MR ("CONFIG cluster 0 " <> nodeList [b] <> "END\r\n"))
-            : repeat Noop
-          , refreshTo [a, b] ] $ \cfg ->
+            : noReplies )
+          : refreshTo [a, b]
+          : repeat noReplies ) $ \cfg ->
       withDiscovery Client.def { Client.optsServerTimeout = 1000 } $ \opts start -> do
         client <- EC.newClient opts tenMs (endpoint cfg)
         begin <- getMonotonicTime
@@ -1763,7 +1764,7 @@ main = hspec $ do
     it "keeps discovering after a refresh gets no reply" $
       withMockServer [MR "OK\r\n"] $ \a ->
       withMockServer [MR "OK\r\n"] $ \b ->
-      withMockServer (refreshTo [a] ++ [Noop] ++ refreshTo [a, b]) $ \cfg ->
+      withMockServer (refreshTo [a] ++ [Noop] ++ refreshTo [a, b] ++ noReplies) $ \cfg ->
       withDiscovery Client.def { Client.optsServerTimeout = 100 } $ \opts start -> do
         client <- EC.newClient opts tenMs (endpoint cfg)
         start
@@ -1776,7 +1777,7 @@ main = hspec $ do
       withMockServer [MR "OK\r\n", MR "OK\r\n"] $ \a ->
       withMockServer [MR "OK\r\n"] $ \b ->
       -- Listing b first checks that servers are matched by host and port.
-      withMockServer (refreshTo [a] ++ refreshTo [b, a]) $ \cfg ->
+      withMockServer (refreshTo [a] ++ refreshTo [b, a] ++ noReplies) $ \cfg ->
       withDiscovery Client.def $ \opts start -> do
         client <- EC.newClient opts tenMs (endpoint cfg)
         Client.flush client Nothing
@@ -1793,7 +1794,7 @@ main = hspec $ do
       withMockServer [MR "OK\r\n", MR "OK\r\n"] $ \a ->
       -- With a reply left, b's mock waits on its connection until it closes.
       withMockServer [MR "OK\r\n", MR "OK\r\n"] $ \b ->
-      withMockServer (refreshTo [a, b] ++ refreshTo [a]) $ \cfg ->
+      withMockServer (refreshTo [a, b] ++ refreshTo [a] ++ noReplies) $ \cfg ->
       withDiscovery Client.def $ \opts start -> do
         client <- EC.newClient opts tenMs (endpoint cfg)
         Client.flush client Nothing
@@ -1815,7 +1816,7 @@ main = hspec $ do
     it "closes a connection in use by a node no longer listed once its request finishes" $
       withMockServer [MR "OK\r\n"] $ \a ->
       withMockServer [DelayMS 300 (MR "OK\r\n"), MR "OK\r\n"] $ \b ->
-      withMockServer (refreshTo [a, b] ++ refreshTo [a]) $ \cfg ->
+      withMockServer (refreshTo [a, b] ++ refreshTo [a] ++ noReplies) $ \cfg ->
       withDiscovery Client.def $ \opts start -> do
         client <- EC.newClient opts tenMs (endpoint cfg)
         initial <- Cluster.getServers client
@@ -1882,6 +1883,13 @@ main = hspec $ do
     -- whether it creates a client or refreshes one.
     refreshTo nodes =
       [MR "VERSION 1.6.12\r\n", MR ("CONFIG cluster 0 " <> nodeList nodes <> "END\r\n")]
+    -- What the endpoint does once a test's script is done: it reads requests
+    -- and never answers. A mock that stopped listening instead would give
+    -- its port back while the refresh thread, which runs until the test
+    -- ends, still connects to it every interval. Another process running
+    -- the tests could then get that port for a mock of its own, and the
+    -- thread would take that mock's replies.
+    noReplies = repeat Noop
 
 -- | Run an action with a client connected to a fresh mock server.
 withClient :: [MockResponse] -> (Client.Client -> IO a) -> IO a
