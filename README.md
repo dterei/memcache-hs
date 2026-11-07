@@ -81,7 +81,13 @@ server it uses (and authenticates, if credentials are set) every time.
 around your whole program, a worker or a test, not around single requests.
 Each server's pool holds one connection by default, so concurrent requests to
 the same server wait for each other; see
-[Architecture Notes](#architecture-notes) to allow more.
+[Architecture Notes](#architecture-notes) to allow more. The wait counts
+towards each attempt's `optsServerTimeout`. An attempt that runs out of time
+while still waiting is retried like any failed attempt, but if it was the last
+attempt, the operation fails with `Timeout` and the server isn't marked dead.
+An attempt that runs out of time afterwards, while opening, authenticating or
+using its connection, counts as a server failure, however long it waited
+first.
 
 ### Servers and authentication
 
