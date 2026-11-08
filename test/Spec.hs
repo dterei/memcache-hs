@@ -330,6 +330,27 @@ main = hspec $ do
         recvRawUntil "END\r\n" connection `shouldReturn` "CONFIG x\r\nEND\r\n"
         recvExact connection 4 `shouldReturn` "rest"
 
+    -- The client reads a line, and with it the first 2,045 bytes of the first
+    -- reply, before the rest is sent. So its 4 KiB reads are out of step with
+    -- the reply, and the reply's END comes in a read that crosses 1 MiB. The
+    -- stream ends after the second reply, so that a read with no limit ends
+    -- too.
+    it "reads through a delimiter that ends 1 MiB in, but no further without one" $
+      bracket (N.socketPair N.AF_UNIX N.Stream 0) closePair $ \(left, right) -> do
+        connection <- newConnection left
+        let reply = C.replicate (1024 * 1024 - 5) 'x' <> "END\r\n"
+        lineRead <- newEmptyMVar
+        sent <- newEmptyMVar
+        _ <- forkIO $ (N.sendAll right ("a\r\n" <> B.take 2045 reply) >> takeMVar lineRead
+            >> N.sendAll right (B.drop 2045 reply <> C.replicate (1024 * 1024 + 8192) 'x')
+            >> N.shutdown right N.ShutdownSend)
+          `finally` putMVar sent ()
+        recvLine connection `shouldReturn` "a\r"
+        putMVar lineRead ()
+        recvRawUntil "END\r\n" connection `shouldReturn` reply
+        recvRawUntil "END\r\n" connection `shouldThrow` isBadLength
+        takeMVar sent
+
     it "reports EOF in a value" $
       bracket (N.socketPair N.AF_UNIX N.Stream 0) closePair $ \(left, right) -> do
         connection <- newConnection left
