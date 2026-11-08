@@ -87,17 +87,20 @@ newtype ConfigurationEndpoint
 -- throws v'ClientError' 'Timeout'. If the endpoint sends an error reply, such
 -- as the @ERROR@ that plain memcached sends as it has no @config@ command,
 -- this throws a @StringException@ from "UnliftIO.Exception", as it does for a
--- reply that can't be parsed.
+-- reply that can't be parsed. If a reply goes on for more than 1 MiB without
+-- the line end or the @END@ line that discovery is waiting for, this throws
+-- v'Database.Memcache.Errors.ProtocolError'
+-- 'Database.Memcache.Errors.BadLength'.
 --
 -- Servers are made by calling 'optsServerSpecsToServers' with one node at a
 -- time. A refresh keeps the 'Server', and so the connections and failure
 -- state, of every node still listed with the same host and port, makes servers
 -- only for new nodes, and closes the connections of nodes no longer listed:
 -- idle ones at once, and one in use as soon as its request finishes. Each
--- refresh has the same time limit as the first discovery. A refresh that
--- fails, for example because it runs out of time or the reply is an error,
--- can't be parsed or lists no nodes, leaves the servers as they are, and
--- discovery tries again after the next interval.
+-- refresh has the same time and length limits as the first discovery. A
+-- refresh that fails, for example because it runs out of time or the reply is
+-- an error, is too long, can't be parsed or lists no nodes, leaves the servers
+-- as they are, and discovery tries again after the next interval.
 --
 -- N.B. The interval is in the same units as 'threadDelay'.
 newClient :: Options -> Int -> ConfigurationEndpoint -> IO Client

@@ -330,6 +330,27 @@ main = hspec $ do
         recvRawUntil "END\r\n" connection `shouldReturn` "CONFIG x\r\nEND\r\n"
         recvExact connection 4 `shouldReturn` "rest"
 
+    -- The client reads a line, and with it the first 2,045 bytes of the first
+    -- reply, before the rest is sent. So its 4 KiB reads are out of step with
+    -- the reply, and the reply's END comes in a read that crosses 1 MiB. The
+    -- stream ends after the second reply, so that a read with no limit ends
+    -- too.
+    it "reads through a delimiter that ends 1 MiB in, but no further without one" $
+      bracket (N.socketPair N.AF_UNIX N.Stream 0) closePair $ \(left, right) -> do
+        connection <- newConnection left
+        let reply = C.replicate (1024 * 1024 - 5) 'x' <> "END\r\n"
+        lineRead <- newEmptyMVar
+        sent <- newEmptyMVar
+        _ <- forkIO $ (N.sendAll right ("a\r\n" <> B.take 2045 reply) >> takeMVar lineRead
+            >> N.sendAll right (B.drop 2045 reply <> C.replicate (1024 * 1024 + 8192) 'x')
+            >> N.shutdown right N.ShutdownSend)
+          `finally` putMVar sent ()
+        recvLine connection `shouldReturn` "a\r"
+        putMVar lineRead ()
+        recvRawUntil "END\r\n" connection `shouldReturn` reply
+        recvRawUntil "END\r\n" connection `shouldThrow` isBadLength
+        takeMVar sent
+
     it "reports EOF in a value" $
       bracket (N.socketPair N.AF_UNIX N.Stream 0) closePair $ \(left, right) -> do
         connection <- newConnection left
@@ -454,11 +475,24 @@ main = hspec $ do
             [ "mg one v f c q O0\r\n", "mg two v f c q O1\r\n", "mg three v f c q O2\r\n", "mn\r\n"
             , "mg other v f c\r\n" ]
 
+    -- Each bare EN answers a request, so here the second is a reply too many.
+    it "rejects bare EN replies without end, then uses a new connection" $
+      withServerAndClientOpts oneAttempt
+        [Repeat "EN\r\n", MR "VA 1 f0 c1 O0\r\ny\r\nMN\r\n"] $ \_ client -> do
+          Client.getMany client ["one"] `shouldThrow` isUnexpectedResponse
+          Client.getMany client ["one"] `shouldReturn` [("one", ("y", 0, 1))]
+
+    it "rejects a bare EN after the reply to the last request" $
+      withServerAndClientOpts oneAttempt [Noop, MR "VA 1 f0 c2 O1\r\nb\r\nEN\r\nMN\r\n"] $ \_ client ->
+        Client.getMany client ["one", "two"] `shouldThrow` isUnexpectedResponse
+
     forM_
       [ ("no opaque", "VA 1 f0 c1\r\na\r\n")
       , ("an unknown opaque", "VA 1 f0 c1 O2\r\na\r\n")
       , ("an opaque out of order", "VA 1 f0 c2 O1\r\nb\r\nVA 1 f0 c1 O0\r\na\r\n")
-      , ("a repeated opaque", "VA 1 f0 c1 O0\r\na\r\nVA 1 f0 c1 O0\r\na\r\n") ] $ \(problem, replies) ->
+      , ("a repeated opaque", "VA 1 f0 c1 O0\r\na\r\nVA 1 f0 c1 O0\r\na\r\n")
+      , ("the opaque of the request a bare EN was counted for", "EN\r\nVA 1 f0 c1 O0\r\na\r\n")
+      ] $ \(problem, replies) ->
       it ("rejects a reply with " <> problem) $
         withServerAndClientOpts oneAttempt [Noop, Noop, MR (replies <> "MN\r\n")] $ \_ client ->
           Client.getMany client ["one", "two"] `shouldThrow` isUnexpectedResponse
@@ -719,6 +753,42 @@ main = hspec $ do
       withClient [MR "ITEM key [3 b; 0 s]\r\nEND\r\n"] $ \client -> do
         result <- Client.stats client (Just "cachedump 1 1")
         map snd result `shouldBe` [[("ITEM", "key [3 b; 0 s]")]]
+
+    -- stats reads its reply a line at a time: a line that starts with VA is
+    -- an entry like any other, and each line is split as other replies are.
+    it "splits each stats line as other replies are, even one that starts with VA" $
+      withServerAndClientOpts oneAttempt
+        [MR "STAT  a\tb   c\v \r\nVA 1\r\nz\r\nEND\r\n", MR "STAT a 1\r\n\r\nEND\r\n"] $ \_ client -> do
+        map snd <$> Client.stats client Nothing `shouldReturn` [[("a\tb", "c\v"), ("VA", "1"), ("z", "")]]
+        Client.stats client Nothing `shouldThrow` isUnknownPkt
+
+    -- At 15 MiB, the first reply also checks that the byte limit leaves room
+    -- for the longest lines stats conns sends.
+    it "accepts a stats conns reply of 262,144 entries, but no entry more" $
+      withServerAndClientOpts (slowStats oneAttempt)
+        [ MR (B.concat (replicate 65536 connStats) <> "END\r\n")
+        , MR (B.concat (replicate 65536 connStats) <> "STAT pid 1\r\nEND\r\n") ] $ \_ client -> do
+        result <- Client.stats client (Just "conns")
+        map (length . snd) result `shouldBe` [262144]
+        Client.stats client (Just "conns") `shouldThrow` isBadLength
+
+    it "rejects an endless stats reply, then uses a new connection" $
+      withServerAndClientOpts (slowStats oneAttempt)
+        [Repeat (B.concat (replicate 100 "STAT pid 1\r\n")), MR "STAT pid 2\r\nEND\r\n"] $ \_ client -> do
+        Client.stats client Nothing `shouldThrow` isBadLength
+        map snd <$> Client.stats client Nothing `shouldReturn` [[("pid", "2")]]
+
+    -- Each line counts as sent, wherever its bytes are. 2,100 of these lines
+    -- come to just over 16 MiB.
+    forM_ [ ("long names", "STAT " <> C.replicate 8000 'x' <> " 1\r\n")
+          , ("long values", "STAT big " <> C.replicate 8000 'x' <> "\r\n")
+          , ("padding between tokens", "STAT a" <> C.replicate 8100 ' ' <> "b\r\n")
+          , ("long keys in ITEM lines", "ITEM " <> C.replicate 8000 'x' <> " [1 b; 0 s]\r\n")
+          ] $ \(shape, line) ->
+      it ("rejects a stats reply of more than 16 MiB of lines with " <> shape) $
+        withServerAndClientOpts (slowStats oneAttempt)
+          [MR (B.concat (replicate 2100 line) <> "END\r\n")] $ \_ client ->
+          Client.stats client Nothing `shouldThrow` isBadLength
 
     it "returns Nothing when arithmetic cannot create the item" $
       withClient [MR "NS\r\n"] $ \client ->
@@ -1653,6 +1723,16 @@ main = hspec $ do
     it "rejects an endpoint that is not a configuration endpoint" $
       isLeft (EC.parseConfigurationEndpoint "memcached://cache.example:11211") `shouldBe` True
 
+    -- With this time limit, the reply reaches the length limit long before
+    -- discovery could run out of time.
+    forM_ [ ("whose first line never ends", C.replicate 4096 'x')
+          , ("whose END line never comes", "CONFIG cluster 0 9\r\n" <> C.replicate 4096 'x' <> "\r\n")
+          ] $ \(problem, bytes) ->
+      it ("gives up on a config reply " <> problem) $
+        withMockServer [MR "VERSION 1.6.12\r\n", Repeat bytes] $ \cfg ->
+          EC.newClient Client.def { Client.optsServerTimeout = 10000 } hour (endpoint cfg)
+            `shouldThrow` isBadLength
+
     it "discovers nodes with the config command" $
       withMockServer [MR "VA 3 f0 c1\r\nfoo\r\n"] $ \node -> do
         let config = "CONFIG cluster 0 " <> nodeList [node] <> "END\r\n"
@@ -1814,6 +1894,23 @@ main = hspec $ do
         mockRequests a `shouldReturn` ["flush_all\r\n"]
         mockRequests b `shouldReturn` ["flush_all\r\n"]
 
+    -- The time limit is longer than waitFor waits, so the reply's length
+    -- must end the refresh.
+    it "keeps the servers when a refresh gets a config reply that never ends" $
+      withMockServer [MR "OK\r\n"] $ \a ->
+      withMockServer (refreshTo [a]
+          ++ [MR "VERSION 1.6.12\r\n", Repeat ("CONFIG cluster 0 9\r\n" <> C.replicate 4096 'x' <> "\r\n")]
+          ++ noReplies) $ \cfg ->
+      withDiscovery Client.def { Client.optsServerTimeout = 10000 } $ \opts start _ -> do
+        client <- EC.newClient opts tenMs (endpoint cfg)
+        start
+        -- The refresh after the one whose reply never ends has sent its
+        -- request, so that one has ended, and it may not drop the server.
+        waitFor 5 (length <$> mockRequests cfg) `shouldReturn` 5
+        length <$> Cluster.getServers client `shouldReturn` 1
+        Client.flush client Nothing
+        mockRequests a `shouldReturn` ["flush_all\r\n"]
+
     it "keeps the connections of nodes still listed" $
       withMockServer [MR "OK\r\n", MR "OK\r\n"] $ \a ->
       withMockServer [MR "OK\r\n"] $ \b ->
@@ -1940,6 +2037,14 @@ main = hspec $ do
     fastFailover = Client.def { Client.optsFailRetryDelay = 10, Client.optsDeadRetryDelay = 60000 }
     -- One attempt per operation, and a server it marks dead is used again at once.
     oneAttempt = Client.def { Client.optsServerRetries = 0, Client.optsDeadRetryDelay = 0 }
+    -- Long enough to read a stats reply of hundreds of thousands of lines.
+    slowStats opts = opts { Client.optsServerTimeout = 10000 }
+    -- What @stats conns@ reports for one client connection at its longest,
+    -- 240 bytes: a five-digit descriptor, a server listening on a Unix socket
+    -- at a 107-byte path (the longest memcached takes), the longest state name
+    -- and a ten-digit idle time. Over TCP the longest take 224 bytes.
+    connStats = "STAT 65535:addr ?:<AF 0>\r\nSTAT 65535:listen_addr unix:" <> C.replicate 107 'p'
+      <> "\r\nSTAT 65535:state conn_io_pending\r\nSTAT 65535:secs_since_last_cmd 2147483647\r\n"
     fst3 (value, _, _) = value
     hour = 3600 * 1000000
     tenMs = 10 * 1000
