@@ -89,6 +89,7 @@ library
 
   other-modules:
     Database.Memcache.Types.Authentication
+    Database.Memcache.Types.Server
     Database.Memcache.Types.ServerSpec
     Database.Memcache.Util
 
@@ -144,6 +145,7 @@ test-suite integration
     , network
     , process
     , time
+    , unliftio
 
 benchmark parser
   import:           shared

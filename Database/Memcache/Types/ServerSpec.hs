@@ -31,6 +31,8 @@ import Network.Socket (HostName, ServiceName)
 import Network.URI (URI (..), URIAuth (..), parseAbsoluteURI, unEscapeString)
 
 -- | A Memcached server connection configuration.
+--
+-- 'show' hides the password; see 'Authentication'.
 data ServerSpec = ServerSpec
   { -- | Hostname of server to connect to.
     ssHost :: HostName,
@@ -47,9 +49,11 @@ data ServerSpec = ServerSpec
 -- @memcached:\/\/user:p%40ss\@cache.example@ has the password @p\@ss@, and
 -- must pass 'validateCredentials'; one given without the other is ignored.
 -- An IPv6 address goes in brackets, as in @memcached:\/\/[::1]:11211@.
+--
+-- Error messages never quote the URI, as it may contain a password.
 parseServerSpec :: String -> Either String ServerSpec
 parseServerSpec s = do
-  uri <- note ("Not a valid URI: " <> s) $ parseAbsoluteURI s
+  uri <- note "Not a valid URI" $ parseAbsoluteURI s
   note "Must begin memcached://" $ guard $ uriScheme uri == "memcached:"
 
   let mAuth = uriAuthority uri
