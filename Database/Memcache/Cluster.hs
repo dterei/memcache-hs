@@ -69,7 +69,7 @@ module Database.Memcache.Cluster (
 
         -- * Routing
         -- | Routers for 'optsGetServerForKey', and 'isAlive' for writing one.
-        ketamaServerForKey, isAlive,
+        ketamaServerForKey, isAlive, legacyServerForKey,
 
         -- * Operations
         Retries, keyedOp, keyedOpExpecting, keyedBatchOp, anyOp, anyOpExpecting,
@@ -90,6 +90,7 @@ import qualified Data.ByteString          as B
 import qualified Data.ByteString.Char8    as C
 import           Data.Default
 import           Data.Fixed               (Milli)
+import           Data.Hashable            (hash)
 import           Data.IORef
 import           Data.List                (find)
 import           Data.Maybe               (isJust)
@@ -329,6 +330,34 @@ withRing servers = (servers, Ketama.ring (map named (V.toList servers)))
   where
     named s = (Ketama.serverName (utf8 (serverHost s)) (utf8 (serverPort s)), 1)
     utf8 = T.encodeUtf8 . T.pack
+
+-- | The router of versions before 0.5, deprecated because it sends keys to
+-- no more than two servers at a time, whatever the number of servers. It is
+-- kept for one release, so that a fleet can switch to 'ketamaServerForKey' in
+-- stages (see the module description).
+--
+-- Like those versions, it sends a key to the live server with the lowest
+-- @sid@ if that @sid@ is below the key's @hashable@ hash, and otherwise to
+-- the live server with the highest @sid@. It gives the same server as 0.4
+-- only when built with the same @hashable@ version on the same platform, as
+-- @hashable@'s hashes can differ between them. 0.4 also kept the servers of
+-- 'newCluster' and of ElastiCache discovery sorted by @sid@, but searched
+-- servers given to 'setServers' in the order given, so for those 0.4 could
+-- choose a different server.
+legacyServerForKey :: Cluster -> Key -> IO (Maybe Server)
+legacyServerForKey c k = do
+    servers' <- aliveServers c
+    -- 0.4 kept the servers sorted by sid, and sent the key to the first one
+    -- whose sid is below its hash, or else to the last one: so to the first
+    -- server with the lowest sid, if that is below the hash, or else to the
+    -- last one with the highest. The servers are no longer sorted, so find
+    -- those two, in one pass each.
+    let lowest = V.foldl1' (\s s' -> if sid s' < sid s then s' else s) servers'
+        highest = V.foldl1' (\s s' -> if sid s' >= sid s then s' else s) servers'
+    return $ if V.null servers'
+        then Nothing
+        else Just $ if sid lowest < hash k then lowest else highest
+{-# DEPRECATED legacyServerForKey "It sends keys to no more than two servers at a time. Use ketamaServerForKey, the default; this will be removed in the next major version." #-}
 
 -- | Run a Memcached operation against a particular server, handling any
 -- failures that occur, retrying the specified number of times. The reply is

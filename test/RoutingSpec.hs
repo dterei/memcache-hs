@@ -1,24 +1,29 @@
 {-# LANGUAGE OverloadedStrings #-}
+-- The tests of legacyServerForKey use it, although it is deprecated.
+{-# OPTIONS_GHC -Wno-deprecations #-}
 
 -- | Key routing: the ketama ring checked against libmemcached's choices, and
--- the cluster's use of it, including servers marked failed.
+-- the cluster's use of it, including servers marked failed; and the router of
+-- 0.4, checked against a copy of its code.
 module RoutingSpec (routingSpec) where
 
 import           Control.Concurrent.MVar   (newMVar, swapMVar)
 import           Control.Monad             (void)
 import qualified Data.ByteString.Char8     as C
 import           Data.Foldable             (for_, toList)
+import qualified Data.Hashable             as Hashable
 import           Data.IORef                (readIORef, writeIORef)
-import           Data.List                 (group, nub, sort)
-import           Data.Maybe                (listToMaybe, maybeToList)
+import           Data.List                 (find, findIndex, group, nub, sort)
+import           Data.Maybe                (fromMaybe, listToMaybe, maybeToList)
 import           Data.Time.Clock.POSIX     (getPOSIXTime)
 import           Data.Word                 (Word32)
 import qualified Database.Memcache.Client  as Client
 import           Database.Memcache.Cluster (Cluster, Options (..), getServers, isAlive,
-                                            ketamaServerForKey, newCluster, setServers)
+                                            ketamaServerForKey, legacyServerForKey,
+                                            newCluster, setServers)
 import           Database.Memcache.Errors
 import qualified Database.Memcache.Ketama  as K
-import           Database.Memcache.Server  (Server, failed, serverHost, serverPort)
+import           Database.Memcache.Server  (Server, failed, serverHost, serverPort, sid)
 import           Database.Memcache.Types   (Authentication (NoAuth), Key, ServerSpec (..))
 import           KetamaVectors
 import           Test.Hspec
@@ -237,6 +242,33 @@ routingSpec = do
       length counts `shouldBe` 8
       map share counts `shouldSatisfy` all (\s -> s >= 0.09 && s <= 0.16)
 
+  -- 0.4 sorted the servers by sid when it made a cluster and when ElastiCache
+  -- discovery found them. Neither sorts them now, and legacyServerForKey must
+  -- still pick the server 0.4 did.
+  describe "legacyServerForKey" $ do
+    prop "routes keys as 0.4 did" $
+      forAll legacyServers $ \servers -> ioProperty $ do
+        cluster <- clusterOf [(host, port, 1) | ((host, port), _) <- servers]
+        configured <- toList <$> getServers cluster
+        sequence_ [markFailed server | (server, (_, True)) <- zip configured servers]
+        let live = [server | (server, (_, False)) <- zip configured servers]
+            -- Servers named twice are told apart by position.
+            position server = findIndex ((== failed server) . failed) configured
+            legacyKeys = take 1000 manyKeys
+        routed <- mapM (legacyServerForKey cluster) legacyKeys
+        return $ map (>>= position) routed
+          === [router04 live key >>= position | key <- legacyKeys]
+
+    it "sends every key to one of two servers" $ do
+      cluster <- clusterOf [(host, 11211, 1) | host <- equalHosts 8]
+      routed <- mapM (fmap (fmap serverLabel) . legacyServerForKey cluster) manyKeys
+      length (nub routed) `shouldSatisfy` (<= 2)
+
+    it "returns no server once every server is marked failed" $ do
+      cluster <- clusterOf (scenarioServers "host4")
+      mapM_ markFailed . toList =<< getServers cluster
+      legacyServerForKey cluster "key" `shouldReturn` Nothing
+
 -- | Look up a scenario's servers or expected routes by name.
 scenarioServers :: String -> [(String, Int, Int)]
 scenarioServers name = concat [servers | (n, servers, _) <- scenarios, n == name]
@@ -276,6 +308,28 @@ missingPoints host port = filter (`notElem` points)
 
 manyKeys :: [Key]
 manyKeys = [C.pack ("key:" <> show i) | i <- [1 .. 20000 :: Int]]
+
+-- | 0.4's router, getServerForKeyDefault, with lists for vectors: of the live
+-- servers, sorted by sid as 0.4 kept them, the first whose sid is below the
+-- key's hash, or else the last.
+router04 :: [Server] -> Key -> Maybe Server
+router04 live k =
+  let hashedKey = Hashable.hash k
+      searchF s = sid s < hashedKey
+      servers' = sort live
+  in if null servers'
+      then Nothing
+      else Just $ fromMaybe (last servers') (find searchF servers')
+
+-- | One to eight servers, each marked failed or not, from a few hosts and
+-- ports, so that some lists name a server twice.
+legacyServers :: Gen [((String, Int), Bool)]
+legacyServers = do
+  n <- choose (1, 8)
+  vectorOf n ((,) <$> server <*> frequency [(3, pure False), (1, pure True)])
+  where
+    server = (,) <$> elements ["cache" <> show i <> ".example" | i <- [1 .. 10 :: Int]]
+                 <*> elements [11211, 11212]
 
 -- | A cluster of servers given as (host, port, weight); weights are ignored.
 -- No connections are made until a request is sent.
