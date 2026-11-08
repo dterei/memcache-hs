@@ -1617,13 +1617,16 @@ main = hspec $ do
         requests <- (++) <$> mockRequests a <*> mockRequests b
         requests `shouldBe` ["version\r\n"]
 
+  -- These are pending unless localhost resolves to more than one address;
+  -- see withLocalhostAddresses. Each takes a free port at the first address,
+  -- and listens at the same port at the later one.
   describe "connecting" $ do
-    -- These are pending unless localhost resolves to more than one address;
-    -- see withLocalhostAddresses. Connecting to an address where no mock
-    -- listens is refused.
+    -- The socket bound at the first address refuses the connection, and
+    -- keeps other processes from listening there.
     it "tries the next address when one refuses the connection" $
-      withLocalhostAddresses $ \_ later ->
-      withMockServerAt later [MR "VA 3 f2 c7\r\nfoo\r\n"] $ \server -> do
+      withLocalhostAddresses $ \first later ->
+      withBoundSocket first $ \port ->
+      withMockServerAt (atPort port later) [MR "VA 3 f2 c7\r\nfoo\r\n"] $ \server -> do
         client <- Client.newClient [localhostSpec server Auth.NoAuth] patient
         Client.get client "key" `shouldReturn` Just ("foo", 2, 7)
 

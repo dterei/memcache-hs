@@ -2,12 +2,12 @@
 
 -- | Mock Memcached server - just enough for testing client.
 --
--- Each mock listens on its own ephemeral port, on 127.0.0.1 unless given
--- another address, so tests can run several at once and never clash with a
--- real memcached on the default port.
+-- Each mock listens on 127.0.0.1 unless given another address, and on an
+-- ephemeral port of its own unless given a port, so tests can run several at
+-- once and never clash with a real memcached on the default port.
 module MockServer (
         MockResponse(..), MockServer(..), withMockServer, withMockServerAt,
-        withConcurrentMockServer, canListenAt, mockServerSpec
+        withConcurrentMockServer, withBoundSocket, canListenAt, mockServerSpec
     ) where
 
 import           Control.Concurrent
@@ -116,7 +116,7 @@ withListener address serveClients action = do
         })
   where
     serve ready received closed = bracket
-      (N.socket (addressFamily address) N.Stream N.defaultProtocol)
+      (newSocket address)
       N.close
       $ \sock -> do
         N.setSocketOption sock N.ReuseAddr 1
@@ -133,12 +133,25 @@ loopback = N.SockAddrInet 0 (N.tupleToHostAddress (127, 0, 0, 1))
 -- an IPv6 address where IPv6 is disabled, for example.
 canListenAt :: N.SockAddr -> IO Bool
 canListenAt address = handle unavailable $ bracket
-  (N.socket (addressFamily address) N.Stream N.defaultProtocol)
+  (newSocket address)
   N.close
   (\sock -> N.bind sock address >> return True)
   where
     unavailable :: IOException -> IO Bool
     unavailable = const (return False)
+
+-- | Run an action with a socket bound to the given address but not
+-- listening, so that connection attempts there are refused, and nothing else
+-- can listen there in the meantime. The action is given the port, a free one
+-- if the address's port is 0.
+withBoundSocket :: N.SockAddr -> (N.PortNumber -> IO a) -> IO a
+withBoundSocket address action = bracket (newSocket address) N.close $ \sock -> do
+  N.bind sock address
+  N.socketPort sock >>= action
+
+-- | A TCP socket for the given address's family.
+newSocket :: N.SockAddr -> IO N.Socket
+newSocket address = N.socket (addressFamily address) N.Stream N.defaultProtocol
 
 addressFamily :: N.SockAddr -> N.Family
 addressFamily N.SockAddrInet6{} = N.AF_INET6
