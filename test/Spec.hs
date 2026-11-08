@@ -1628,16 +1628,22 @@ main = hspec $ do
         Client.get client "key" `shouldReturn` Just ("foo", 2, 7)
 
     -- A second mock, at the same port on the later address, records whether
-    -- the client tries there too once the credentials are rejected.
+    -- the client tries there too once the credentials are rejected. Once the
+    -- first mock's responses have run out, it stops listening, and the next
+    -- get moves on to the second mock, which shows that the client can reach
+    -- it. A get that connects before then has its connection reset, and its
+    -- retry moves on.
     it "does not try the next address once authentication fails" $
       withLocalhostAddresses $ \first later ->
       withMockServerAt first
         [MR "CLIENT_ERROR unauthenticated\r\n", MR "CLIENT_ERROR authentication failure\r\n"] $ \server ->
-      withMockServerAt (atPort (mockPort server) later) [CloseConnection] $ \other -> do
+      withMockServerAt (atPort (mockPort server) later)
+        [MR "CLIENT_ERROR unauthenticated\r\n", MR "STORED\r\n", MR "VA 3 f2 c7\r\nfoo\r\n"] $ \other -> do
         client <- Client.newClient [localhostSpec server (Auth.Auth "user" "pass")] Client.def
         Client.get client "key" `shouldThrow` (== OpError TextAuthFail)
         mockRequests server `shouldReturn` ["version\r\n", "set auth 0 0 9\r\nuser pass\r\n"]
         mockRequests other `shouldReturn` []
+        Client.get client "key" `shouldReturn` Just ("foo", 2, 7)
 
   describe "ElastiCache discovery" $ do
     it "rejects an endpoint that is not a configuration endpoint" $
