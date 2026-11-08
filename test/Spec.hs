@@ -732,11 +732,13 @@ main = hspec $ do
         result <- Client.stats client (Just "cachedump 1 1")
         map snd result `shouldBe` [[("ITEM", "key [3 b; 0 s]")]]
 
-    it "accepts stats conns from a server with 65,536 connections" $
-      withServerAndClientOpts (slowStats Client.def)
-        [MR (B.concat (replicate 65536 connStats) <> "END\r\n")] $ \_ client -> do
+    it "accepts stats conns from a server with 65,536 connections, but no entry more" $
+      withServerAndClientOpts (slowStats oneAttempt)
+        [ MR (B.concat (replicate 65536 connStats) <> "END\r\n")
+        , MR (B.concat (replicate 65536 connStats) <> "STAT pid 1\r\nEND\r\n") ] $ \_ client -> do
         result <- Client.stats client (Just "conns")
         map (length . snd) result `shouldBe` [262144]
+        Client.stats client (Just "conns") `shouldThrow` isBadLength
 
     it "rejects an endless stats reply, then uses a new connection" $
       withServerAndClientOpts (slowStats oneAttempt)
