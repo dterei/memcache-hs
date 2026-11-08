@@ -192,7 +192,7 @@ routingSpec = do
 
     it "routes by host when discovery returns new or reordered servers" $ do
       four <- clusterOf (scenarioServers "host4")
-      -- New Server values for the same hosts, as each discovery makes...
+      -- New Server values for the same hosts...
       fresh <- getServers =<< clusterOf (scenarioServers "host4")
       -- ...and the same hosts listed the other way round.
       reordered <- getServers =<< clusterOf (reverse (scenarioServers "host4"))

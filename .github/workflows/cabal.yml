@@ -6,6 +6,11 @@ name: Cabal
 #
 # Each job restores and saves the cabal store in separate steps, saving right
 # after the dependencies are built, so they are kept even if a later step fails.
+# The cache keys include the OS release, because the store holds code built
+# with the image's C toolchain and libraries.
+#
+# The jobs name a fixed runner image rather than ubuntu-latest, so that a new
+# image, which can change the C toolchain under GHC, arrives in a commit.
 
 on:
   pull_request:
@@ -33,7 +38,7 @@ concurrency:
 jobs:
   build:
     name: GHC ${{ matrix.ghc }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     strategy:
       fail-fast: false
       matrix:
@@ -55,16 +60,25 @@ jobs:
           sudo rm -f /etc/apt/sources.list.d/microsoft-prod.*
           sudo apt-get update
           sudo apt-get install -y memcached
+      # The hsc2hs wrapper in the GHC 9.2 and 9.4 binary distributions passes
+      # -fuse-ld=gold to gcc. Ubuntu 26.04's binutils no longer includes gold, so
+      # building a package with .hsc files, such as network, fails with
+      # "cannot find 'ld'".
+      - name: Install the gold linker
+        if: matrix.ghc == '9.2' || matrix.ghc == '9.4'
+        run: sudo apt-get install -y binutils-gold
       - name: Plan
         run: |
           cabal configure --enable-tests --enable-benchmarks
           cabal build all --dry-run
+      - id: os
+        run: . /etc/os-release && echo "release=$ID-$VERSION_ID" >> "$GITHUB_OUTPUT"
       - id: cache
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ steps.setup.outputs.cabal-store }}
-          key: cabal-${{ runner.os }}-ghc-${{ steps.setup.outputs.ghc-version }}-${{ hashFiles('dist-newstyle/cache/plan.json') }}
-          restore-keys: cabal-${{ runner.os }}-ghc-${{ steps.setup.outputs.ghc-version }}-
+          key: cabal-${{ steps.os.outputs.release }}-ghc-${{ steps.setup.outputs.ghc-version }}-${{ hashFiles('dist-newstyle/cache/plan.json') }}
+          restore-keys: cabal-${{ steps.os.outputs.release }}-ghc-${{ steps.setup.outputs.ghc-version }}-
       - run: cabal build all --only-dependencies
       - if: steps.cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -81,7 +95,7 @@ jobs:
   # oldest supported GHC, so the bounds stay honest.
   oldest:
     name: Oldest dependencies
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -91,16 +105,24 @@ jobs:
         with:
           ghc-version: "9.2"
           cabal-version: latest
+      # GHC 9.2 needs gold to build network; see the build job.
+      - name: Install the gold linker
+        run: |
+          sudo rm -f /etc/apt/sources.list.d/microsoft-prod.*
+          sudo apt-get update
+          sudo apt-get install -y binutils-gold
       - name: Plan
         run: |
           cabal configure --prefer-oldest
           cabal build lib:memcache --dry-run
+      - id: os
+        run: . /etc/os-release && echo "release=$ID-$VERSION_ID" >> "$GITHUB_OUTPUT"
       - id: cache
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ steps.setup.outputs.cabal-store }}
-          key: cabal-oldest-${{ runner.os }}-ghc-${{ steps.setup.outputs.ghc-version }}-${{ hashFiles('dist-newstyle/cache/plan.json') }}
-          restore-keys: cabal-oldest-${{ runner.os }}-ghc-${{ steps.setup.outputs.ghc-version }}-
+          key: cabal-oldest-${{ steps.os.outputs.release }}-ghc-${{ steps.setup.outputs.ghc-version }}-${{ hashFiles('dist-newstyle/cache/plan.json') }}
+          restore-keys: cabal-oldest-${{ steps.os.outputs.release }}-ghc-${{ steps.setup.outputs.ghc-version }}-
       - run: cabal build lib:memcache --only-dependencies
       - if: steps.cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -113,7 +135,7 @@ jobs:
   # uploaded to Hackage rather than the git checkout.
   sdist:
     name: Source distribution
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -142,12 +164,14 @@ jobs:
         run: |
           cabal configure --enable-tests --enable-benchmarks
           cabal build all --dry-run
+      - id: os
+        run: . /etc/os-release && echo "release=$ID-$VERSION_ID" >> "$GITHUB_OUTPUT"
       - id: cache
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ steps.setup.outputs.cabal-store }}
-          key: cabal-sdist-${{ runner.os }}-ghc-${{ steps.setup.outputs.ghc-version }}-${{ hashFiles('unpacked/dist-newstyle/cache/plan.json') }}
-          restore-keys: cabal-sdist-${{ runner.os }}-ghc-${{ steps.setup.outputs.ghc-version }}-
+          key: cabal-sdist-${{ steps.os.outputs.release }}-ghc-${{ steps.setup.outputs.ghc-version }}-${{ hashFiles('unpacked/dist-newstyle/cache/plan.json') }}
+          restore-keys: cabal-sdist-${{ steps.os.outputs.release }}-ghc-${{ steps.setup.outputs.ghc-version }}-
       - working-directory: unpacked
         run: cabal build all --only-dependencies
       - if: steps.cache.outputs.cache-hit != 'true'
