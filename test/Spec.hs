@@ -1504,9 +1504,10 @@ main = hspec $ do
 
   describe "server URIs" $ do
     let parses (uri, host, port, auth) =
-          it ("parses " <> uri) $ parseServerSpec uri `shouldBe` Right (ServerSpec host port auth)
+          it ("parses " <> uri) $
+            fmap specFields (parseServerSpec uri) `shouldBe` Right (specFields (ServerSpec host port auth))
         rejects (uri, message) =
-          it ("rejects " <> uri) $ parseServerSpec uri `shouldBe` Left message
+          it ("rejects " <> uri) $ fmap specFields (parseServerSpec uri) `shouldBe` Left message
 
     mapM_ parses
       [ ("memcached://cache.example:1234", "cache.example", "1234", Auth.NoAuth)
@@ -1553,8 +1554,8 @@ main = hspec $ do
 
     prop "percent-decodes any credentials validateCredentials accepts" $
       forAll ((,) <$> credentialGen ":" <*> credentialGen "") $ \(user, pass) ->
-        parseServerSpec ("memcached://" <> percentEncode user <> ":" <> percentEncode pass <> "@cache.example")
-          === Right (ServerSpec "cache.example" "11211" (Auth.Auth user pass))
+        let uri = "memcached://" <> percentEncode user <> ":" <> percentEncode pass <> "@cache.example"
+        in fmap specFields (parseServerSpec uri) === Right ("cache.example", "11211", Just (user, pass))
 
   describe "Database.Memcache.Client alone" $
     -- Every name is qualified by Client, so this stops compiling if the module
@@ -2105,6 +2106,14 @@ percentEncode = concatMap encode . C.unpack
       | c `elem` (['A' .. 'Z'] <> ['a' .. 'z'] <> ['0' .. '9'] <> "-._~") = [c]
       | otherwise = ['%', hex (fromEnum c `div` 16), hex (fromEnum c `mod` 16)]
     hex = C.index "0123456789ABCDEF"
+
+-- | A server spec's fields, with the password as bytes: 'show' hides it, so
+-- a failed comparison of specs wouldn't show the password that was parsed.
+specFields :: ServerSpec -> (String, String, Maybe (B.ByteString, B.ByteString))
+specFields (ServerSpec host port auth) = (host, port, credentials auth)
+  where
+    credentials (Auth.Auth user pass) = Just (user, pass)
+    credentials Auth.NoAuth = Nothing
 
 valueGen :: Gen B.ByteString
 valueGen = B.pack <$> do
