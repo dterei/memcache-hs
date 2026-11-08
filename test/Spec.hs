@@ -1624,7 +1624,7 @@ main = hspec $ do
     it "tries the next address when one refuses the connection" $
       withLocalhostAddresses $ \_ later ->
       withMockServerAt later [MR "VA 3 f2 c7\r\nfoo\r\n"] $ \server -> do
-        client <- Client.newClient [localhostSpec server Auth.NoAuth] Client.def
+        client <- Client.newClient [localhostSpec server Auth.NoAuth] patient
         Client.get client "key" `shouldReturn` Just ("foo", 2, 7)
 
     -- A second mock, at the same port on the later address, records whether
@@ -1639,7 +1639,7 @@ main = hspec $ do
         [MR "CLIENT_ERROR unauthenticated\r\n", MR "CLIENT_ERROR authentication failure\r\n"] $ \server ->
       withMockServerAt (atPort (mockPort server) later)
         [MR "CLIENT_ERROR unauthenticated\r\n", MR "STORED\r\n", MR "VA 3 f2 c7\r\nfoo\r\n"] $ \other -> do
-        client <- Client.newClient [localhostSpec server (Auth.Auth "user" "pass")] Client.def
+        client <- Client.newClient [localhostSpec server (Auth.Auth "user" "pass")] patient
         Client.get client "key" `shouldThrow` (== OpError TextAuthFail)
         mockRequests server `shouldReturn` ["version\r\n", "set auth 0 0 9\r\nuser pass\r\n"]
         mockRequests other `shouldReturn` []
@@ -1938,6 +1938,9 @@ main = hspec $ do
     oneAttempt = Client.def { Client.optsServerRetries = 0, Client.optsDeadRetryDelay = 0 }
     fst3 (value, _, _) = value
     localhostSpec server = ServerSpec "localhost" (show (mockPort server))
+    -- Each attempt has 10 s, so that even on a slow machine one is unlikely
+    -- to run out of time after using up a mock's reply.
+    patient = Client.def { Client.optsServerTimeout = 10000 }
     hour = 3600 * 1000000
     tenMs = 10 * 1000
     -- The endpoint check only looks for ".cfg" somewhere in the URI, so put it
