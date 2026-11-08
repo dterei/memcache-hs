@@ -17,13 +17,13 @@ module Database.Memcache.Types (
         -- * Fields & Values
         Key, Value, Initial, Delta, Expiration, Flags,
         Version, Status(..),
-        ServerSpec(..), parseServerSpec
+        ServerSpec(..), defaultServerSpec, parseServerSpec
     ) where
 
 import           Data.ByteString (ByteString)
 import           Data.Word
 import           Database.Memcache.Types.Authentication (Authentication(..), Username, Password)
-import           Database.Memcache.Types.ServerSpec (ServerSpec(..), parseServerSpec)
+import           Database.Memcache.Types.ServerSpec (ServerSpec(..), defaultServerSpec, parseServerSpec)
 
 -- | Memcached key bytes.
 type Key        = ByteString

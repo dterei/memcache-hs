@@ -14,6 +14,7 @@ credentials.
 -}
 module Database.Memcache.Types.ServerSpec
   ( ServerSpec (..),
+    defaultServerSpec,
     parseServerSpec,
   )
 where
@@ -30,6 +31,8 @@ import Network.URI (URI (..), URIAuth (..), parseAbsoluteURI)
 import Data.Bifunctor (second)
 
 -- | A Memcached server connection configuration.
+--
+-- 'show' hides the password; see 'Authentication'.
 data ServerSpec = ServerSpec
   { -- | Hostname of server to connect to. If it resolves to several
     -- addresses, each is tried in turn until one accepts the connection.
@@ -42,9 +45,11 @@ data ServerSpec = ServerSpec
   deriving (Eq, Show)
 
 -- | Parse a @memcached://@ URI into a @ServerSpec@.
+--
+-- Error messages never quote the URI, as it may contain a password.
 parseServerSpec :: String -> Either String ServerSpec
 parseServerSpec s = do
-  uri <- note ("Not a valid URI: " <> s) $ parseAbsoluteURI s
+  uri <- note "Not a valid URI" $ parseAbsoluteURI s
   note "Must begin memcached://" $ guard $ uriScheme uri == "memcached:"
 
   let mAuth = uriAuthority uri
@@ -53,7 +58,7 @@ parseServerSpec s = do
     . maybe id setHost mAuth
     . maybe id setPort mAuth
     . maybe id setAuth (readAuthentication . uriUserInfo =<< mAuth)
-    $ def
+    $ defaultServerSpec
 
 readAuthentication :: String -> Maybe Authentication
 readAuthentication = go . T.pack
@@ -86,5 +91,11 @@ setPort auth ss = fromMaybe ss $ do
 setAuth :: Authentication -> ServerSpec -> ServerSpec
 setAuth auth ss = ss {ssAuth = auth}
 
+-- | The default server: @127.0.0.1@ on memcached's default port, @11211@,
+-- without authentication ('NoAuth').
+defaultServerSpec :: ServerSpec
+defaultServerSpec = ServerSpec "127.0.0.1" "11211" NoAuth
+
+-- | 'def' is 'defaultServerSpec'.
 instance Default ServerSpec where
-  def = ServerSpec "127.0.0.1" "11211" NoAuth
+  def = defaultServerSpec

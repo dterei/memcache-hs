@@ -73,6 +73,22 @@ value, unless the expiration is `maxBound`. The
 documentation covers every operation, along with the timeouts, retries and
 failover configured through `Options`.
 
+Create one client when your program starts and share it: it is safe to use
+from many threads, and it keeps its connections to each server open between
+requests. A client created for each request opens a new connection to every
+server it uses (and authenticates, if credentials are set) every time.
+`M.withClient` closes a client's connections when an action ends, so use it
+around your whole program, a worker or a test, not around single requests.
+Each server's pool holds one connection by default, so concurrent requests to
+the same server wait for each other; see
+[Architecture Notes](#architecture-notes) to allow more. The wait counts
+towards each attempt's `optsServerTimeout`. An attempt that runs out of time
+while still waiting is retried like any failed attempt, but if it was the last
+attempt, the operation fails with `Timeout` and the server isn't marked dead.
+An attempt that runs out of time afterwards, while opening, authenticating or
+using its connection, counts as a server failure, however long it waited
+first.
+
 ### Servers and authentication
 
 `newClient` takes one `ServerSpec` per server, and routes each key to one of
@@ -135,9 +151,10 @@ memcached servers.
 ## Architecture Notes
 
 We're relying on `Data.Pool` for thread safety right now. Each server has its
-own pool, and grabbing a connection from it (`withResource`) blocks other
-requests using that connection until the operation completes. `getMany` is the
-exception: it pipelines quiet Meta Text requests over one pooled connection.
+own pool, and grabbing a connection from it (`Server.withSocket`) blocks other
+requests using that connection until the operation completes. `getMany`,
+`setMany` and `deleteMany` are the exception: they pipeline Meta Text requests
+to each server in batches, each batch over one pooled connection.
 
 By default each server's pool holds a single connection (`soNumResources = 1`),
 so concurrent operations against the same server wait for each other. Raising
@@ -159,7 +176,8 @@ other improvements.
 
 Please report bugs via the
 [github issue tracker](https://github.com/dterei/memcache-hs/issues), and
-security issues as described in [SECURITY.md](SECURITY.md).
+security issues as described in the
+[security policy](https://github.com/dterei/memcache-hs/security/policy).
 
 Master [git repository](https://github.com/dterei/memcache-hs):
 
@@ -193,9 +211,9 @@ There are two test suites:
   ordinary user.
 
 CI lints with [HLint](https://github.com/ndmitchell/hlint) 3.10, so please
-check that `hlint .` prints `No hints` before opening a pull request. Add a
-line to the `Unreleased` section of [CHANGELOG.md](CHANGELOG.md) for any
-user-visible change.
+check that `hlint .` prints `No hints` before opening a pull request. For any
+user-visible change, add a line to [CHANGELOG.md](CHANGELOG.md) under an
+`Unreleased` heading at the top, adding the heading if it isn't there.
 
 CI runs both build tools on every pull request. The `CI` workflow builds and
 tests with Stack against each `stack*.yaml` snapshot, and runs HLint and
