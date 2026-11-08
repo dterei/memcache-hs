@@ -1648,6 +1648,23 @@ main = hspec $ do
         mockRequests other `shouldReturn` []
         Client.get client "key" `shouldReturn` Just ("foo", 2, 7)
 
+    -- Connecting to the first address gets no answer, as its listener's
+    -- queue is full, so the only attempt runs out of time there. The mock at
+    -- the later address must get nothing. Once the listener has closed, the
+    -- first address refuses, and a new client gets the mock's reply, which
+    -- shows that the mock could be reached all along.
+    it "tries no later address once one that doesn't answer has used up the attempt's time" $
+      withLocalhostAddresses $ \first later ->
+      withFullListener first $ \port stopListening ->
+      withMockServerAt (atPort port later) [MR "VA 3 f2 c7\r\nfoo\r\n"] $ \server -> do
+        impatient <- Client.newClient [localhostSpec server Auth.NoAuth]
+          oneAttempt { Client.optsServerTimeout = 300 }
+        Client.get impatient "key" `shouldThrow` (== ClientError Timeout)
+        mockRequests server `shouldReturn` []
+        stopListening
+        client <- Client.newClient [localhostSpec server Auth.NoAuth] patient
+        Client.get client "key" `shouldReturn` Just ("foo", 2, 7)
+
   describe "ElastiCache discovery" $ do
     it "rejects an endpoint that is not a configuration endpoint" $
       isLeft (EC.parseConfigurationEndpoint "memcached://cache.example:11211") `shouldBe` True

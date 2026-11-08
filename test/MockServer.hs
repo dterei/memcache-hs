@@ -7,7 +7,8 @@
 -- once and never clash with a real memcached on the default port.
 module MockServer (
         MockResponse(..), MockServer(..), withMockServer, withMockServerAt,
-        withConcurrentMockServer, withBoundSocket, canListenAt, mockServerSpec
+        withConcurrentMockServer, withBoundSocket, withFullListener, canListenAt,
+        mockServerSpec
     ) where
 
 import           Control.Concurrent
@@ -15,9 +16,11 @@ import           Control.Monad
 import qualified Data.ByteString           as B
 import qualified Data.ByteString.Char8     as C
 import           Data.IORef
+import           Data.Maybe                (isJust)
 import           Database.Memcache.Types   (Authentication (NoAuth), ServerSpec (..))
 import qualified Network.Socket            as N
 import qualified Network.Socket.ByteString as N
+import           System.Timeout            (timeout)
 import           Text.Read                  (readMaybe)
 import           UnliftIO.Async             (concurrently_)
 import           UnliftIO.Exception         (IOException, SomeException, bracket, finally,
@@ -148,6 +151,33 @@ withBoundSocket :: N.SockAddr -> (N.PortNumber -> IO a) -> IO a
 withBoundSocket address action = bracket (newSocket address) N.close $ \sock -> do
   N.bind sock address
   N.socketPort sock >>= action
+
+-- | Run an action with a socket listening on the given address that never
+-- accepts a connection, and whose queue of connections waiting to be
+-- accepted is full, so that connection attempts there get no answer. The
+-- action is given the port, a free one if the address's port is 0, and an
+-- action that closes the socket, after which connection attempts are refused.
+-- Throws instead if a connection attempt gets an answer within 100 ms.
+withFullListener :: N.SockAddr -> (N.PortNumber -> IO () -> IO a) -> IO a
+withFullListener address action =
+  bracket (newSocket address) N.close $ \sock ->
+  bracket (newSocket address) N.close $ \first ->
+  bracket (newSocket address) N.close $ \second -> do
+    N.bind sock address
+    -- Linux queues one connection more than the backlog, so two waiting
+    -- connections fill a queue of backlog 1. Linux then ignores connection
+    -- attempts until the queue has room. Older kernels take a connection on
+    -- a queue of backlog 0 only with SYN cookies.
+    N.listen sock 1
+    listening <- N.getSocketName sock
+    mapM_ (`N.connect` listening) [first, second]
+    -- A system that queued more would answer this attempt. Fail then, rather
+    -- than let a test check something else.
+    answered <- bracket (newSocket address) N.close $ \probe ->
+      timeout (100 * 1000) (N.connect probe listening)
+    when (isJust answered) $ throwIO (userError "the listener's queue is not full")
+    port <- N.socketPort sock
+    action port (N.close sock)
 
 -- | A TCP socket for the given address's family.
 newSocket :: N.SockAddr -> IO N.Socket
