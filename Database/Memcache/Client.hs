@@ -493,8 +493,9 @@ stats c key = validateStatsArgs key >> allOp' c (runStats key)
           (size + B.length field + B.length value) (entry : values)
 
 -- | Most entries 'stats' accepts in one server's reply. Memcached sends four
--- lines for each open connection in @stats conns@, so this allows it on a
--- server with 65,536 connections. Most other groups are far shorter:
+-- lines for each open connection in @stats conns@, and three for each
+-- listening socket, so this allows it on a server with nearly 65,536
+-- connections. Most other groups are far shorter:
 -- @stats items@ has about 30 lines for each slab class, and @stats sizes@ one
 -- for each 32-byte size bucket in use (at most 32,768 with the default 1 MiB
 -- item size limit).
