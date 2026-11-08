@@ -1652,10 +1652,15 @@ main = hspec $ do
     it "rejects an endpoint that is not a configuration endpoint" $
       isLeft (EC.parseConfigurationEndpoint "memcached://cache.example:11211") `shouldBe` True
 
-    it "gives up on a config reply that never ends" $
-      withMockServer [MR "VERSION 1.6.12\r\n", Repeat (C.replicate 4096 'x')] $ \cfg ->
-        -- Discovery has no operation timeout, so bound the wait here.
-        timeout 5000000 (EC.newClient Client.def hour (endpoint cfg)) `shouldThrow` isBadLength
+    -- With this time limit, the reply reaches the length limit long before
+    -- discovery could run out of time.
+    forM_ [ ("whose first line never ends", C.replicate 4096 'x')
+          , ("whose END line never comes", "CONFIG cluster 0 9\r\n" <> C.replicate 4096 'x' <> "\r\n")
+          ] $ \(problem, bytes) ->
+      it ("gives up on a config reply " <> problem) $
+        withMockServer [MR "VERSION 1.6.12\r\n", Repeat bytes] $ \cfg ->
+          EC.newClient Client.def { Client.optsServerTimeout = 10000 } hour (endpoint cfg)
+            `shouldThrow` isBadLength
 
     it "discovers nodes with the config command" $
       withMockServer [MR "VA 3 f0 c1\r\nfoo\r\n"] $ \node -> do
@@ -1817,6 +1822,23 @@ main = hspec $ do
         Client.flush client Nothing
         mockRequests a `shouldReturn` ["flush_all\r\n"]
         mockRequests b `shouldReturn` ["flush_all\r\n"]
+
+    -- The time limit is longer than waitFor waits, so the reply's length
+    -- must end the refresh.
+    it "keeps the servers when a refresh gets a config reply that never ends" $
+      withMockServer [MR "OK\r\n"] $ \a ->
+      withMockServer (refreshTo [a]
+          ++ [MR "VERSION 1.6.12\r\n", Repeat ("CONFIG cluster 0 9\r\n" <> C.replicate 4096 'x' <> "\r\n")]
+          ++ noReplies) $ \cfg ->
+      withDiscovery Client.def { Client.optsServerTimeout = 10000 } $ \opts start _ -> do
+        client <- EC.newClient opts tenMs (endpoint cfg)
+        start
+        -- The refresh after the one whose reply never ends has sent its
+        -- request, so that one has ended, and it may not drop the server.
+        waitFor 5 (length <$> mockRequests cfg) `shouldReturn` 5
+        length <$> Cluster.getServers client `shouldReturn` 1
+        Client.flush client Nothing
+        mockRequests a `shouldReturn` ["flush_all\r\n"]
 
     it "keeps the connections of nodes still listed" $
       withMockServer [MR "OK\r\n", MR "OK\r\n"] $ \a ->
