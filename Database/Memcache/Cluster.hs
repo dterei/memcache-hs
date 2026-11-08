@@ -44,12 +44,6 @@ differently for the keys just below that point.
 'ketamaServerForKey' routes keys this way, and is the default
 'optsGetServerForKey'.
 
-This scheme is new in version 0.5. Earlier versions compared a @hashable@
-hash of the key with hashes of the servers, which sent nearly every key to one
-server and could differ between builds. Upgrading a cluster of /n/ servers
-therefore moves all but about one in /n/ keys to a different server, once,
-which shows up as a burst of cache misses. A single server is unaffected.
-
 = Failures
 
 On an error, we mark the server as failed and remove it temporarily from the
@@ -60,6 +54,54 @@ marked failed. This is where libmemcached's auto-eject sends the key too,
 except when the number of live servers changes how many points each server
 gets (from 26 servers to 25, say): libmemcached rebuilds the ring from the
 live servers, while we keep every server's points.
+
+= Upgrading from 0.4
+
+Versions before 0.5 compared a @hashable@ hash of the key with hashes of the
+servers. They sent keys to no more than two servers at a time, and the
+mapping could change with the @hashable@ version. That router is kept for
+one release, deprecated, as 'legacyServerForKey'.
+
+With /n/ servers, upgrading moves all but about one key in /n/ to a
+different server, once: about half the keys with 2 servers, 70% with 3 and
+88% with 8. Expect a burst of cache misses. A single server is unaffected.
+
+While old and new versions run side by side, as in a rolling deploy, they
+read and write a moved key on different servers. A change or delete made by
+one is not seen by the other, which can read a stale copy until the copy
+expires, even after the deploy.
+
+One way to switch is all at once, at a quiet time. Copies stored under the
+old mapping stay on their servers, where failover can still find them, so
+you may want to flush the cache afterwards.
+
+The other way avoids the stale reads of a rolling deploy by switching in
+stages. Deploy each step to every instance before starting the next:
+
+1. Upgrade with @optsGetServerForKey = legacyServerForKey@. Keys stay where
+   they are, as long as the build uses the same @hashable@ version and
+   platform as before, and the servers come from 'newCluster' or from
+   ElastiCache discovery (see 'legacyServerForKey'). GHC warns that it is
+   deprecated, so a build with @-Werror@ also needs @-Wno-deprecations@.
+
+2. Add a second client for the same servers that uses 'ketamaServerForKey'.
+   Whenever a key is changed or deleted, also delete it through the second
+   client, unless both clients send it to the same server: compare the
+   'serverHost' and 'serverPort' of the servers their routers return for
+   the key.
+
+3. If a server was marked failed less than your longest expiry time ago,
+   flush the cache first. Then swap the two clients' routers. Every change
+   still deletes the key under the other mapping, so neither version reads a
+   stale copy of a key the other has changed or deleted.
+
+4. Remove the second client.
+
+The flush in step 3 removes copies that a failover stored on a key's new
+server before step 2 was on every instance. Step 2's deletes remove such a
+copy only when the key next changes. Counters and locks kept in memcached
+can't be moved this way: while instances use different mappings, they
+update them on different servers.
 -}
 module Database.Memcache.Cluster (
         -- * Cluster

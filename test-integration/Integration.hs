@@ -292,7 +292,7 @@ clusterSpecs ports = beforeAll newClusterClient $ do
     -- are sent in.
     let ring = K.ring [(K.serverName "127.0.0.1" (B.pack (show port)), 1) | port <- ports]
         owner key = (ports !!) <$> K.owner ring (K.keyHash key)
-    -- Before 0.5 most keys went to one server and some servers got none (#46).
+    -- Before 0.5 only two servers got keys, so one of the three got none (#46).
     held `shouldSatisfy` (not . any null)
     held `shouldBe` [filter ((== Just port) . owner) keys | port <- ports]
 
