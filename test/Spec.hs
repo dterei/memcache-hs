@@ -21,13 +21,15 @@ import qualified Data.ByteString.Char8     as C
 import           Data.Char                 (isAscii, isPrint)
 import qualified Network.Socket            as N
 import qualified Network.Socket.ByteString as N
-import           Control.Concurrent        (forkIO, newEmptyMVar, putMVar, takeMVar,
-                                            threadDelay)
-import           Control.Exception         (bracket, displayException, try)
-import           Control.Monad             (forM_, void, (>=>))
+import           Control.Concurrent        (forkIO, killThread, myThreadId, newEmptyMVar,
+                                            putMVar, readMVar, takeMVar, threadDelay,
+                                            tryPutMVar)
+import           Control.Exception         (bracket, displayException, finally, try)
+import           Control.Monad             (forM_, void, when, (>=>))
 import           Data.Either               (isLeft)
 import           Data.Foldable             (toList)
-import           Data.IORef                (readIORef, writeIORef)
+import           Data.IORef                (atomicModifyIORef', newIORef, readIORef,
+                                            writeIORef)
 import           Data.List                 (find, nub)
 import           GHC.Clock                 (getMonotonicTime)
 import           GHC.Conc                  (ThreadStatus (..), threadStatus)
@@ -1621,7 +1623,7 @@ main = hspec $ do
 
     it "discovers nodes with the config command" $
       withMockServer [MR "VA 3 f0 c1\r\nfoo\r\n"] $ \node -> do
-        let config = "CONFIG cluster 0 " <> nodeList node <> "END\r\n"
+        let config = "CONFIG cluster 0 " <> nodeList [node] <> "END\r\n"
         withMockServer [MR "VERSION 1.6.12\r\n", MR config] $ \cfg -> do
           client <- EC.newClient Client.def hour (endpoint cfg)
           Client.get client "key" `shouldReturn` Just ("foo", 0, 1)
@@ -1630,7 +1632,7 @@ main = hspec $ do
 
     it "discovers nodes from the cluster key on engines before 1.4.14" $
       withMockServer [MR "VA 3 f0 c1\r\nfoo\r\n"] $ \node -> do
-        let value = "VALUE AmazonElastiCache:cluster 0 " <> nodeList node <> "END\r\n"
+        let value = "VALUE AmazonElastiCache:cluster 0 " <> nodeList [node] <> "END\r\n"
         withMockServer [MR "VERSION 1.4.5\r\n", MR value] $ \cfg -> do
           client <- EC.newClient Client.def hour (endpoint cfg)
           Client.get client "key" `shouldReturn` Just ("foo", 0, 1)
@@ -1681,6 +1683,195 @@ main = hspec $ do
           -- Nothing answers the last request, so wait for the mock to record it.
           waitForRequests cfg (length requests) `shouldReturn` requests
 
+    it "keeps discovering after a refresh fails" $
+      withMockServer [MR "OK\r\n"] $ \a ->
+      withMockServer [MR "OK\r\n"] $ \b ->
+      withMockServer (refreshTo [a]
+          -- The endpoint drops the connection and replies with garbage
+          -- before a refresh succeeds. Then it lists no nodes, and then it
+          -- stops answering.
+          ++ [CloseConnection]
+          ++ [MR "VERSION 1.6.12\r\n", MR "garbage\r\nEND\r\n"]
+          ++ refreshTo [a, b]
+          ++ refreshTo []
+          ++ noReplies) $ \cfg ->
+      -- With this time limit no refresh runs out of time on a slow machine,
+      -- which would shift the replies.
+      withDiscovery Client.def { Client.optsServerTimeout = 10000 } $ \opts start _ -> do
+        client <- EC.newClient opts tenMs (endpoint cfg)
+        start
+        waitFor 10 (length <$> mockRequests cfg) `shouldReturn` 10
+        mockRequests cfg `shouldReturn`
+          ["version\r\n", "config get cluster\r\n", "version\r\n"]
+          ++ concat (replicate 3 ["version\r\n", "config get cluster\r\n"])
+          ++ ["version\r\n"]
+        -- The refresh after the one listing no nodes has started, so that
+        -- one has been handled, and listing no nodes must not drop the
+        -- servers.
+        length <$> Cluster.getServers client `shouldReturn` 2
+        Client.flush client Nothing
+        mockRequests a `shouldReturn` ["flush_all\r\n"]
+        mockRequests b `shouldReturn` ["flush_all\r\n"]
+
+    -- A refresh that gets an error reply throws, as the first discovery
+    -- does. memcached keeps the connection open after one, as the mock does.
+    -- The time limit is longer than waitFor waits, so each error reply must
+    -- end its refresh at once, rather than leave it to run out of time.
+    it "keeps discovering after a refresh gets an error reply" $
+      withMockServer [MR "OK\r\n"] $ \a ->
+      withMockServer [MR "OK\r\n"] $ \b ->
+      withMockServer (refreshTo [a]
+          ++ [MR "VERSION 1.6.12\r\n", MR "ERROR\r\n"]
+          ++ refreshTo [a, b]
+          ++ [MR "VERSION 1.6.12\r\n", MR "SERVER_ERROR out of memory\r\n"]
+          ++ noReplies) $ \cfg ->
+      withDiscovery Client.def { Client.optsServerTimeout = 10000 } $ \opts start _ -> do
+        client <- EC.newClient opts tenMs (endpoint cfg)
+        start
+        waitFor 9 (length <$> mockRequests cfg) `shouldReturn` 9
+        mockRequests cfg `shouldReturn`
+          concat (replicate 4 ["version\r\n", "config get cluster\r\n"]) ++ ["version\r\n"]
+        -- The refresh after the second error reply has started, so that one
+        -- has been handled, and it may not drop the servers.
+        length <$> Cluster.getServers client `shouldReturn` 2
+        Client.flush client Nothing
+        mockRequests a `shouldReturn` ["flush_all\r\n"]
+        mockRequests b `shouldReturn` ["flush_all\r\n"]
+
+    -- Each connection to the endpoint gets its own replies. The first refresh
+    -- gets its reply only after the limit. Had the client waited for it, it
+    -- would have moved to b alone, and the next refresh, on the same
+    -- connection, would have got no reply at all.
+    it "abandons a refresh slower than optsServerTimeout and runs the next one" $
+      withMockServer [MR "OK\r\n"] $ \a ->
+      withMockServer [MR "OK\r\n"] $ \b ->
+      withConcurrentMockServer
+          ( refreshTo [a]
+          : ( MR "VERSION 1.6.12\r\n"
+            : DelayMS 2000 (MR ("CONFIG cluster 0 " <> nodeList [b] <> "END\r\n"))
+            : noReplies )
+          : refreshTo [a, b]
+          : repeat noReplies ) $ \cfg ->
+      withDiscovery Client.def { Client.optsServerTimeout = 1000 } $ \opts start _ -> do
+        client <- EC.newClient opts tenMs (endpoint cfg)
+        begin <- getMonotonicTime
+        start
+        waitFor 2 (length <$> Cluster.getServers client) `shouldReturn` 2
+        -- The limit is above the 750 ms default, so taking at least 1 s shows
+        -- that the refresh was given the caller's limit.
+        elapsed <- subtract begin <$> getMonotonicTime
+        elapsed `shouldSatisfy` (>= 1)
+        Client.flush client Nothing
+        mockRequests a `shouldReturn` ["flush_all\r\n"]
+        mockRequests b `shouldReturn` ["flush_all\r\n"]
+
+    it "keeps discovering after a refresh gets no reply" $
+      withMockServer [MR "OK\r\n"] $ \a ->
+      withMockServer [MR "OK\r\n"] $ \b ->
+      withMockServer (refreshTo [a] ++ [Noop] ++ refreshTo [a, b] ++ noReplies) $ \cfg ->
+      withDiscovery Client.def { Client.optsServerTimeout = 300 } $ \opts start _ -> do
+        client <- EC.newClient opts tenMs (endpoint cfg)
+        start
+        waitFor 2 (length <$> Cluster.getServers client) `shouldReturn` 2
+        -- The refresh after the one that found b gets no reply either. Once
+        -- the refresh after that has sent its request, that one has run out
+        -- of time, and it may not drop the servers.
+        waitFor True ((>= 7) . length <$> mockRequests cfg) `shouldReturn` True
+        length <$> Cluster.getServers client `shouldReturn` 2
+        Client.flush client Nothing
+        mockRequests a `shouldReturn` ["flush_all\r\n"]
+        mockRequests b `shouldReturn` ["flush_all\r\n"]
+
+    it "keeps the connections of nodes still listed" $
+      withMockServer [MR "OK\r\n", MR "OK\r\n"] $ \a ->
+      withMockServer [MR "OK\r\n"] $ \b ->
+      -- Listing b first checks that servers are matched by host and port.
+      withMockServer (refreshTo [a] ++ refreshTo [b, a] ++ noReplies) $ \cfg ->
+      withDiscovery Client.def $ \opts start _ -> do
+        client <- EC.newClient opts tenMs (endpoint cfg)
+        Client.flush client Nothing
+        start
+        waitFor 2 (length <$> Cluster.getServers client) `shouldReturn` 2
+        Client.flush client Nothing
+        mockRequests a `shouldReturn` ["flush_all\r\n", "flush_all\r\n"]
+        mockRequests b `shouldReturn` ["flush_all\r\n"]
+        -- a's mock serves one connection at a time, so with the first still
+        -- open, both flushes went over it.
+        mockClosed a `shouldReturn` 0
+
+    -- The first refresh adds b, the second fails, and the third lists a and b
+    -- again.
+    it "reuses the servers of known nodes after a refresh fails" $
+      withMockServer [MR "OK\r\n"] $ \a ->
+      withMockServer [MR "OK\r\n"] $ \b ->
+      withMockServer (refreshTo [a]
+          ++ refreshTo [a, b]
+          ++ [CloseConnection]
+          ++ refreshTo [a, b]
+          ++ noReplies) $ \cfg ->
+      -- With this time limit no refresh runs out of time on a slow machine,
+      -- which would shift the replies.
+      withDiscovery Client.def { Client.optsServerTimeout = 10000 } $ \opts start made -> do
+        client <- EC.newClient opts tenMs (endpoint cfg)
+        start
+        -- The refresh after the third has sent its request, so the third has
+        -- been handled.
+        waitFor 8 (length <$> mockRequests cfg) `shouldReturn` 8
+        -- Servers were made for a when the client was created and for b at
+        -- the first refresh, and never again: the failed refresh kept the
+        -- nodes the thread knew.
+        filter (/= [mockServerSpec cfg]) <$> made
+          `shouldReturn` [[mockServerSpec a], [mockServerSpec b]]
+        length <$> Cluster.getServers client `shouldReturn` 2
+        Client.flush client Nothing
+        mockRequests a `shouldReturn` ["flush_all\r\n"]
+        mockRequests b `shouldReturn` ["flush_all\r\n"]
+
+    it "closes the connections of nodes no longer listed" $
+      withMockServer [MR "OK\r\n", MR "OK\r\n"] $ \a ->
+      -- With a reply left, b's mock waits on its connection until it closes.
+      withMockServer [MR "OK\r\n", MR "OK\r\n"] $ \b ->
+      withMockServer (refreshTo [a, b] ++ refreshTo [a] ++ noReplies) $ \cfg ->
+      withDiscovery Client.def $ \opts start made -> do
+        client <- EC.newClient opts tenMs (endpoint cfg)
+        Client.flush client Nothing
+        initial <- Cluster.getServers client
+        start
+        waitFor 1 (length <$> Cluster.getServers client) `shouldReturn` 1
+        waitFor 1 (mockClosed b) `shouldReturn` 1
+        Client.flush client Nothing
+        mockRequests a `shouldReturn` ["flush_all\r\n", "flush_all\r\n"]
+        mockClosed a `shouldReturn` 0
+        -- The client made the servers of the two nodes it found one at a
+        -- time, and the refresh made none. The other calls are for the
+        -- endpoint.
+        filter (/= [mockServerSpec cfg]) <$> made
+          `shouldReturn` [[mockServerSpec a], [mockServerSpec b]]
+        -- Checked last so that b's old server stays reachable until now, and
+        -- the garbage collector cannot close its connection in place of the
+        -- client.
+        length initial `shouldBe` 2
+
+    -- b answers the flush late, so the refresh that drops b runs while the
+    -- flush is still using b's connection. With a reply left, b's mock then
+    -- waits on that connection until it closes.
+    it "closes a connection in use by a node no longer listed once its request finishes" $
+      withMockServer [MR "OK\r\n"] $ \a ->
+      withMockServer [DelayMS 300 (MR "OK\r\n"), MR "OK\r\n"] $ \b ->
+      withMockServer (refreshTo [a, b] ++ refreshTo [a] ++ noReplies) $ \cfg ->
+      withDiscovery Client.def $ \opts start _ -> do
+        client <- EC.newClient opts tenMs (endpoint cfg)
+        initial <- Cluster.getServers client
+        flushing <- async $ Client.flush client Nothing
+        waitForRequests b 1 `shouldReturn` ["flush_all\r\n"]
+        start
+        waitFor 1 (length <$> Cluster.getServers client) `shouldReturn` 1
+        -- The flush isn't interrupted: it gets b's reply.
+        wait flushing
+        waitFor 1 (mockClosed b) `shouldReturn` 1
+        -- Checked last, as in the test above.
+        length initial `shouldBe` 2
+
   where
     recvResponseFrom bytes =
       bracket
@@ -1719,14 +1910,28 @@ main = hspec $ do
     oneAttempt = Client.def { Client.optsServerRetries = 0, Client.optsDeadRetryDelay = 0 }
     fst3 (value, _, _) = value
     hour = 3600 * 1000000
+    tenMs = 10 * 1000
     -- The endpoint check only looks for ".cfg" somewhere in the URI, so put it
     -- in the path and keep the host a plain loopback address.
     endpoint cfg = either error id $
       EC.parseConfigurationEndpoint ("memcached://127.0.0.1:" <> show (mockPort cfg) <> "/x.cfg")
-    -- A config reply body listing one node, from its length line onwards.
-    nodeList node =
-      let body = "1\n127.0.0.1|127.0.0.1|" <> C.pack (show (mockPort node)) <> "\n"
+    -- A config reply body listing the given nodes, from its length line
+    -- onwards.
+    nodeList nodes =
+      let node n = "127.0.0.1|127.0.0.1|" <> C.pack (show (mockPort n))
+          body = "1\n" <> C.unwords (map node nodes) <> "\n"
       in C.pack (show (B.length body)) <> "\r\n" <> body <> "\r\n"
+    -- The config endpoint's replies to one discovery of the given nodes,
+    -- whether it creates a client or refreshes one.
+    refreshTo nodes =
+      [MR "VERSION 1.6.12\r\n", MR ("CONFIG cluster 0 " <> nodeList nodes <> "END\r\n")]
+    -- What the endpoint does once a test's script is done: it reads requests
+    -- and never answers. A mock that stopped listening instead would give
+    -- its port back while the refresh thread, which runs until the test
+    -- ends, still connects to it every interval. Another process running
+    -- the tests could then get that port for a mock of its own, and the
+    -- thread would take that mock's replies.
+    noReplies = repeat Noop
 
 -- | Run an action with a client connected to a fresh mock server.
 withClient :: [MockResponse] -> (Client.Client -> IO a) -> IO a
@@ -1781,6 +1986,52 @@ waitForRequests server n = do
     go = do
       requests <- mockRequests server
       if length requests >= n then return requests else threadDelay 1000 >> go
+
+-- | Poll an action until it returns the expected value, for up to five
+-- seconds, returning its last result.
+waitFor :: Eq a => a -> IO a -> IO a
+waitFor expected action = do
+  result <- timeout 5000000 go
+  maybe action return result
+  where
+    go = do
+      value <- action
+      if value == expected then return value else threadDelay 1000 >> go
+
+-- | Run an ElastiCache test with options whose server constructor holds the
+-- discovery thread back, when that thread starts and whenever it adds a node,
+-- until the test runs the action it is passed. The test is also passed an
+-- action that lists the specs given to each call of the constructor, oldest
+-- first. The thread is killed when the test ends, as nothing else stops it,
+-- and a test that passed then checks that the thread has ended.
+withDiscovery
+  :: Client.Options -> (Client.Options -> IO () -> IO [[ServerSpec]] -> IO a) -> IO a
+withDiscovery opts test = do
+  me <- myThreadId
+  started <- newEmptyMVar
+  threads <- newIORef []
+  calls <- newIORef []
+  let makeServers serverOptions specs = do
+        atomicModifyIORef' calls (\earlier -> (specs : earlier, ()))
+        thread <- myThreadId
+        when (thread /= me) $ do
+          atomicModifyIORef' threads (\ts -> (thread : ts, ()))
+          readMVar started
+        Client.optsServerSpecsToServers opts serverOptions specs
+      -- The thread is recorded at each call it makes, but killed only once.
+      discoveryThreads = nub <$> readIORef threads
+  result <- test opts { Client.optsServerSpecsToServers = makeServers }
+      (void (tryPutMVar started ())) (reverse <$> readIORef calls)
+    `finally` (discoveryThreads >>= mapM_ killThread)
+  -- A refresh lets asynchronous exceptions through, so the thread ends and
+  -- stops connecting to the endpoint's port.
+  killed <- discoveryThreads
+  forM_ killed $ \thread -> do
+    _ <- waitFor True (ended <$> threadStatus thread)
+    threadStatus thread >>= (`shouldSatisfy` ended)
+  return result
+  where
+    ended status = status == ThreadFinished || status == ThreadDied
 
 -- | Wait until the thread is blocked, as when it waits for the pool. A thread
 -- that ends instead fails the test rather than hanging it.

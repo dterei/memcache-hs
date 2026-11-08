@@ -20,7 +20,7 @@ import qualified Network.Socket.ByteString as N
 import           Text.Read                  (readMaybe)
 import           UnliftIO.Async             (concurrently_)
 import           UnliftIO.Exception         (SomeException, bracket, finally, handle,
-                                            throwIO)
+                                            onException, throwIO)
 
 -- | Actions the mock server can take to a request.
 data MockResponse
@@ -40,6 +40,9 @@ data MockServer = MockServer
       -- | Every request received so far, oldest first, including any data
       -- block that followed the command line.
     , mockRequests :: IO [B.ByteString]
+      -- | How many connections the client has closed while the mock was
+      -- waiting for its next request.
+    , mockClosed   :: IO Int
     }
 
 -- | A server specification for connecting to the mock without authentication.
@@ -51,19 +54,19 @@ mockServerSpec server = ServerSpec "127.0.0.1" (show (mockPort server)) NoAuth
 -- in order, one per request, across however many connections the client
 -- makes; once they run out it closes the connection and stops listening.
 withMockServer :: [MockResponse] -> (MockServer -> IO a) -> IO a
-withMockServer responses = withListener $ \sock received -> do
+withMockServer responses = withListener $ \sock received closed -> do
   remaining <- newIORef responses
   -- Once the responses run out the listening socket closes, so later
   -- connection attempts are refused straight away.
-  acceptLoop sock remaining received
+  acceptLoop sock remaining received closed
   where
     -- Serve one connection at a time.
-    acceptLoop sock remaining received = do
+    acceptLoop sock remaining received closed = do
       pending <- readIORef remaining
       unless (null pending) $ do
         (client, _) <- N.accept sock
-        serveConnection client remaining received
-        acceptLoop sock remaining received
+        serveConnection client remaining received closed
+        acceptLoop sock remaining received closed
 
 -- | Like 'withMockServer', but each connection gets its own responses: the
 -- n-th connection the server accepts gets the n-th list. The server answers
@@ -73,35 +76,39 @@ withMockServer responses = withListener $ \sock received -> do
 -- list has its connection. 'mockRequests' gives the requests of every
 -- connection, in the order they arrived.
 withConcurrentMockServer :: [[MockResponse]] -> (MockServer -> IO a) -> IO a
-withConcurrentMockServer scripts = withListener $ \sock received -> do
+withConcurrentMockServer scripts = withListener $ \sock received closed -> do
   -- Closing the listening socket here refuses later connection attempts
   -- straight away; closing it again on the way out does nothing.
   let serveFrom [] = N.close sock
       serveFrom (responses:rest) = do
         (client, _) <- N.accept sock
         remaining <- newIORef responses
-        concurrently_ (serveConnection client remaining received) (serveFrom rest)
+        concurrently_ (serveConnection client remaining received closed) (serveFrom rest)
   serveFrom scripts
 
 -- | Listen on an ephemeral port on 127.0.0.1 and serve it with the given
 -- function in the background, killing it once the action is done. The
--- function is given the listening socket and the IORef in which it
--- records each request it reads, newest first.
-withListener :: (N.Socket -> IORef [B.ByteString] -> IO ()) -> (MockServer -> IO a) -> IO a
+-- function is given the listening socket, the IORef in which it records each
+-- request it reads, newest first, and the IORef in which it counts the
+-- connections the client closed while it waited for a request.
+withListener
+  :: (N.Socket -> IORef [B.ByteString] -> IORef Int -> IO ()) -> (MockServer -> IO a) -> IO a
 withListener serveClients action = do
   ready <- newEmptyMVar
   received <- newIORef []
+  closed <- newIORef 0
   bracket
-    (forkIO (serve ready received))
+    (forkIO (serve ready received closed))
     killThread
     (const $ do
       port <- takeMVar ready
       action MockServer
         { mockPort = port
         , mockRequests = reverse <$> readIORef received
+        , mockClosed = readIORef closed
         })
   where
-    serve ready received = bracket
+    serve ready received closed = bracket
       (N.socket N.AF_INET N.Stream N.defaultProtocol)
       N.close
       $ \sock -> do
@@ -109,12 +116,13 @@ withListener serveClients action = do
         N.bind sock (N.SockAddrInet 0 (N.tupleToHostAddress (127, 0, 0, 1)))
         N.listen sock 10
         N.socketPort sock >>= putMVar ready
-        serveClients sock received
+        serveClients sock received closed
 
 -- | Answer requests on one connection until the responses run out or the
 -- script closes it, then close it.
-serveConnection :: N.Socket -> IORef [MockResponse] -> IORef [B.ByteString] -> IO ()
-serveConnection client remaining received =
+serveConnection
+  :: N.Socket -> IORef [MockResponse] -> IORef [B.ByteString] -> IORef Int -> IO ()
+serveConnection client remaining received closed =
   handle ignore clientHandler `finally` N.close client
   where
     ignore :: SomeException -> IO ()
@@ -125,8 +133,10 @@ serveConnection client remaining received =
       case pending of
         [] -> return ()
         (r:rest) -> do
+          -- withConcurrentMockServer records requests and closed connections
+          -- from several threads.
           request <- recvReq client
-          -- withConcurrentMockServer records requests from several threads.
+            `onException` atomicModifyIORef' closed (\n -> (n + 1, ()))
           atomicModifyIORef' received (\requests -> (request : requests, ()))
           writeIORef remaining rest
           continue <- respond r

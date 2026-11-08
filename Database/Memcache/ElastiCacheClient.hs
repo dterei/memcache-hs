@@ -20,7 +20,7 @@ where
 
 import Control.Concurrent (forkIO, threadDelay)
 import Control.Concurrent.MVar (MVar, modifyMVar_, newMVar)
-import Control.Monad (forever, guard, when, (<=<))
+import Control.Monad (guard, when, (<=<))
 import Data.Bifunctor (first)
 import Data.ByteString (ByteString)
 import qualified Data.ByteString.Char8 as C
@@ -36,13 +36,14 @@ import Database.Memcache.Client (Client, optsServerSpecsToServers, optsServerOpt
 import qualified Database.Memcache.Client as Client
 import Database.Memcache.Cluster (Options, getServers, setServers)
 import Database.Memcache.Errors (ClientError (Timeout), MemcacheError (ClientError))
-import Database.Memcache.Server (Server, withSocket)
+import Database.Memcache.Server (Server, closeAll, withSocket)
 import Database.Memcache.Socket (Connection, crlf, recvRawUntil, sendRaw, versionRequest)
-import Database.Memcache.Types.ServerSpec (ServerSpec, parseServerSpec)
+import Database.Memcache.Types.ServerSpec (ServerSpec (..), parseServerSpec)
 import Database.Memcache.Util (note)
+import Network.Socket (HostName, ServiceName)
 import System.Timeout (timeout)
 import Text.ParserCombinators.ReadP (readP_to_S)
-import UnliftIO.Exception (bracket, throwIO, throwString)
+import UnliftIO.Exception (bracket, throwIO, throwString, tryAny)
 
 -- | Parse an ElastiCache configuration endpoint.
 --
@@ -88,6 +89,16 @@ newtype ConfigurationEndpoint
 -- this throws a @StringException@ from "UnliftIO.Exception", as it does for a
 -- reply that can't be parsed.
 --
+-- Servers are made by calling 'optsServerSpecsToServers' with one node at a
+-- time. A refresh keeps the 'Server', and so the connections and failure
+-- state, of every node still listed with the same host and port, makes servers
+-- only for new nodes, and closes the connections of nodes no longer listed:
+-- idle ones at once, and one in use as soon as its request finishes. Each
+-- refresh has the same time limit as the first discovery. A refresh that
+-- fails, for example because it runs out of time or the reply is an error,
+-- can't be parsed or lists no nodes, leaves the servers as they are, and
+-- discovery tries again after the next interval.
+--
 -- N.B. The interval is in the same units as 'threadDelay'.
 newClient :: Options -> Int -> ConfigurationEndpoint -> IO Client
 newClient options interval cfgEndpoint = bracket acquireCfgClient releaseCfgClient resolveCluster'
@@ -96,25 +107,59 @@ newClient options interval cfgEndpoint = bracket acquireCfgClient releaseCfgClie
     releaseCfgClient = Client.quit
     resolveCluster' cfgClient = do
       serverSpecs <- resolveClusterWithin options cfgClient
-
-      -- Create client where cServers = Right <Vector Server>
-      client <- Client.newClient serverSpecs options
+      (nodes, _) <- reuseServers options [] serverSpecs
 
       -- Prepare MVar
-      serversMVar <- newMVar =<< getServers client
-      _ <- forkIO $ repeatAutoDiscover options interval cfgEndpoint serversMVar
+      serversMVar <- newMVar $ nodeServers nodes
+      _ <- forkIO $ repeatAutoDiscover options interval cfgEndpoint serversMVar nodes
 
-      -- Update client where cServers = Left <MVar <Vector Server>>
-      pure $ setServers client $ Left serversMVar
+      -- The configuration client was made with the same options, so it only
+      -- needs its servers replacing: cServers = Left <MVar <Vector Server>>
+      pure $ setServers cfgClient $ Left serversMVar
 
-repeatAutoDiscover :: Options -> Int -> ConfigurationEndpoint -> MVar (V.Vector Server) -> IO ()
-repeatAutoDiscover opts interval cfgEndpoint mVar = do
+repeatAutoDiscover :: Options -> Int -> ConfigurationEndpoint -> MVar (V.Vector Server) -> Nodes -> IO ()
+repeatAutoDiscover opts interval cfgEndpoint mVar initialNodes = do
   cfgClient <- Client.newClient [unConfigurationEndpoint cfgEndpoint] opts
-  forever $ do
-    threadDelay interval
-    serverSpecs <- resolveCluster cfgClient
-    servers <- optsServerSpecsToServers opts (optsServerOptions opts) serverSpecs
-    modifyMVar_ mVar $ \_curServers -> pure $ V.fromList $ sort servers
+  let refresh nodes = do
+        threadDelay interval
+        -- A refresh that fails or does not finish in time keeps the current
+        -- servers. 'tryAny' lets asynchronous exceptions, such as
+        -- 'killThread', through.
+        result <- tryAny $ do
+          serverSpecs <- resolveClusterWithin opts cfgClient
+          reuseServers opts nodes serverSpecs
+        case result of
+          Left _ -> refresh nodes
+          Right (nodes', gone) -> do
+            modifyMVar_ mVar $ \_curServers -> pure $ nodeServers nodes'
+            -- Close the connections of nodes that have gone. A request still
+            -- using one of them finishes normally, and its connection is
+            -- closed then instead of going back to the pool.
+            mapM_ closeAll gone
+            refresh nodes'
+  refresh initialNodes
+
+-- | The nodes found by discovery, by host and port, with the servers made for
+-- each.
+type Nodes = [((HostName, ServiceName), [Server])]
+
+-- | The servers of the given nodes, in the order 'Client.newClient' uses.
+nodeServers :: Nodes -> V.Vector Server
+nodeServers = V.fromList . sort . concatMap snd
+
+-- | Pair each discovered node with its servers from the given nodes, making
+-- servers only for nodes not among them. Also returns the servers of the given
+-- nodes that were not discovered again.
+reuseServers :: Options -> Nodes -> [ServerSpec] -> IO (Nodes, [Server])
+reuseServers _ old [] = pure ([], concatMap snd old)
+reuseServers opts old (spec : specs) = do
+  let node = (ssHost spec, ssPort spec)
+  (servers, rest) <- case break ((== node) . fst) old of
+    (before, (_, servers) : after) -> pure (servers, before ++ after)
+    (_, []) -> do
+      servers <- optsServerSpecsToServers opts (optsServerOptions opts) [spec]
+      pure (servers, old)
+  first ((node, servers) :) <$> reuseServers opts rest specs
 
 resolveCluster :: Client -> IO [ServerSpec]
 resolveCluster cfgClient = do
