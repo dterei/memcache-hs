@@ -218,6 +218,18 @@ routingSpec = do
       routes four `shouldReturn` map (Just . snd) (scenarioKeys "host4")
       routes discovered `shouldReturn` map (Just . snd) (scenarioKeys "host4_minus_cache3")
 
+    it "rebuilds its ring when only a port changes" $ do
+      -- Two servers on one host, then the second replaced by one on another
+      -- port.
+      let pair = [("localhost", 11211, 1), ("localhost", 11212, 1)]
+          replaced = [("localhost", 11211, 1), ("localhost", 11213, 1)]
+      original <- clusterOf pair
+      servers <- newMVar =<< getServers original
+      let discovered = setServers original (Left servers)
+      mapM (route discovered) manyKeys `shouldReturn` map (serverFor pair) manyKeys
+      void (swapMVar servers =<< getServers =<< clusterOf replaced)
+      mapM (route discovered) manyKeys `shouldReturn` map (serverFor replaced) manyKeys
+
     it "routes by host when discovery returns new or reordered servers" $ do
       four <- clusterOf (scenarioServers "host4")
       -- New Server values for the same hosts...
@@ -287,6 +299,13 @@ hostFor servers = \key -> (hosts !!) <$> K.owner ring (K.keyHash key)
   where
     ring = ringOf servers
     hosts = [host | (host, _, _) <- servers]
+
+-- | The server each key belongs to on a ring of these servers, as host:port.
+serverFor :: [(String, Int, Int)] -> Key -> Maybe String
+serverFor servers = \key -> (names !!) <$> K.owner ring (K.keyHash key)
+  where
+    ring = ringOf servers
+    names = [host <> ":" <> show port | (host, port, _) <- servers]
 
 -- | Hosts 10.0.1.1, 10.0.1.2, and so on.
 equalHosts :: Int -> [String]
