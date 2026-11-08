@@ -783,6 +783,7 @@ main = hspec $ do
     forM_ [ ("long names", "STAT " <> C.replicate 8000 'x' <> " 1\r\n")
           , ("long values", "STAT big " <> C.replicate 8000 'x' <> "\r\n")
           , ("padding between tokens", "STAT a" <> C.replicate 8100 ' ' <> "b\r\n")
+          , ("long keys in ITEM lines", "ITEM " <> C.replicate 8000 'x' <> " [1 b; 0 s]\r\n")
           ] $ \(shape, line) ->
       it ("rejects a stats reply of more than 16 MiB of lines with " <> shape) $
         withServerAndClientOpts (slowStats oneAttempt)
