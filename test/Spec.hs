@@ -1505,7 +1505,8 @@ main = hspec $ do
   describe "server URIs" $ do
     let parses (uri, host, port, auth) =
           it ("parses " <> uri) $ parseServerSpec uri `shouldBe` Right (ServerSpec host port auth)
-        rejects uri = it ("rejects " <> uri) $ parseServerSpec uri `shouldSatisfy` isLeft
+        rejects (uri, message) =
+          it ("rejects " <> uri) $ parseServerSpec uri `shouldBe` Left message
 
     mapM_ parses
       [ ("memcached://cache.example:1234", "cache.example", "1234", Auth.NoAuth)
@@ -1530,17 +1531,18 @@ main = hspec $ do
       ]
 
     mapM_ rejects
-      [ "http://cache.example"
-      , "not a uri"
+      [ ("http://cache.example", "Must begin memcached://")
+      , ("not a uri", "Not a valid URI")
       -- The URI parser rejects malformed escapes.
-      , "memcached://user:p%zzss@cache.example"
-      -- Decoded credentials must pass validateCredentials.
-      , "memcached://us%3Aer:secret@cache.example"
-      , "memcached://user:pa%20ss@cache.example"
-      , "memcached://user:pa%0Ass@cache.example"
-      , "memcached://user:pa%0Dss@cache.example"
-      , "memcached://us%00er:secret@cache.example"
-      , "memcached://user:pa%00ss@cache.example"
+      , ("memcached://user:p%zzss@cache.example", "Not a valid URI")
+      -- Decoded credentials must pass validateCredentials, whose message
+      -- doesn't quote the URI.
+      , ("memcached://us%3Aer:secret@cache.example", "username contains a forbidden delimiter")
+      , ("memcached://user:pa%20ss@cache.example", "password contains a forbidden delimiter")
+      , ("memcached://user:pa%0Ass@cache.example", "password contains a forbidden delimiter")
+      , ("memcached://user:pa%0Dss@cache.example", "password contains a forbidden delimiter")
+      , ("memcached://us%00er:secret@cache.example", "username contains a forbidden delimiter")
+      , ("memcached://user:pa%00ss@cache.example", "password contains a forbidden delimiter")
       ]
 
     it "gives getAddrInfo an IPv6 address it accepts" $ do
