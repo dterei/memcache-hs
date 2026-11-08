@@ -454,11 +454,23 @@ main = hspec $ do
             [ "mg one v f c q O0\r\n", "mg two v f c q O1\r\n", "mg three v f c q O2\r\n", "mn\r\n"
             , "mg other v f c\r\n" ]
 
+    -- Each bare EN answers a request, so here the second is a reply too many.
+    it "rejects bare EN replies without end, then uses a new connection" $
+      withServerAndClientOpts oneAttempt
+        [Repeat "EN\r\n", MR "VA 1 f0 c1 O0\r\ny\r\nMN\r\n"] $ \_ client -> do
+          Client.getMany client ["one"] `shouldThrow` isUnexpectedResponse
+          Client.getMany client ["one"] `shouldReturn` [("one", ("y", 0, 1))]
+
+    it "rejects a bare EN after the reply to the last request" $
+      withServerAndClientOpts oneAttempt [Noop, MR "VA 1 f0 c2 O1\r\nb\r\nEN\r\nMN\r\n"] $ \_ client ->
+        Client.getMany client ["one", "two"] `shouldThrow` isUnexpectedResponse
+
     forM_
       [ ("no opaque", "VA 1 f0 c1\r\na\r\n")
       , ("an unknown opaque", "VA 1 f0 c1 O2\r\na\r\n")
       , ("an opaque out of order", "VA 1 f0 c2 O1\r\nb\r\nVA 1 f0 c1 O0\r\na\r\n")
-      , ("a repeated opaque", "VA 1 f0 c1 O0\r\na\r\nVA 1 f0 c1 O0\r\na\r\n") ] $ \(problem, replies) ->
+      , ("a repeated opaque", "VA 1 f0 c1 O0\r\na\r\nVA 1 f0 c1 O0\r\na\r\n")
+      , ("the opaque of the request a bare EN answered", "EN\r\nVA 1 f0 c1 O0\r\na\r\n") ] $ \(problem, replies) ->
       it ("rejects a reply with " <> problem) $
         withServerAndClientOpts oneAttempt [Noop, Noop, MR (replies <> "MN\r\n")] $ \_ client ->
           Client.getMany client ["one", "two"] `shouldThrow` isUnexpectedResponse
