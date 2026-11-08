@@ -491,7 +491,8 @@ main = hspec $ do
       , ("an unknown opaque", "VA 1 f0 c1 O2\r\na\r\n")
       , ("an opaque out of order", "VA 1 f0 c2 O1\r\nb\r\nVA 1 f0 c1 O0\r\na\r\n")
       , ("a repeated opaque", "VA 1 f0 c1 O0\r\na\r\nVA 1 f0 c1 O0\r\na\r\n")
-      , ("the opaque of the request a bare EN answered", "EN\r\nVA 1 f0 c1 O0\r\na\r\n") ] $ \(problem, replies) ->
+      , ("the opaque of the request a bare EN was counted for", "EN\r\nVA 1 f0 c1 O0\r\na\r\n")
+      ] $ \(problem, replies) ->
       it ("rejects a reply with " <> problem) $
         withServerAndClientOpts oneAttempt [Noop, Noop, MR (replies <> "MN\r\n")] $ \_ client ->
           Client.getMany client ["one", "two"] `shouldThrow` isUnexpectedResponse
