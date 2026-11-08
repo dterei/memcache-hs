@@ -41,6 +41,9 @@ in libmemcached 1.1 and later. Earlier versions of libmemcached, and
 twemproxy, leave such a tie to their C library's sort, so they may choose
 differently for the keys just below that point.
 
+'ketamaServerForKey' routes keys this way, and is the default
+'optsGetServerForKey'.
+
 This scheme is new in version 0.5. Earlier versions compared a @hashable@
 hash of the key with hashes of the servers, which sent nearly every key to one
 server and could differ between builds. Upgrading a cluster of /n/ servers
@@ -63,6 +66,10 @@ module Database.Memcache.Cluster (
         -- | A collection of Memcached servers with retry and routing state.
         Cluster, ServerSpec(..), Options(..), defaultOptions, newCluster,
         getServers, setServers,
+
+        -- * Routing
+        -- | Routers for 'optsGetServerForKey', and 'isAlive' for writing one.
+        ketamaServerForKey, isAlive,
 
         -- * Operations
         Retries, keyedOp, keyedOpExpecting, keyedBatchOp, anyOp, anyOpExpecting,
@@ -140,9 +147,8 @@ data Options = Options {
         optsServerTimeout        :: Milli,
         -- | Figure out which server to talk to for a given key.
         --
-        -- The default routes keys by libmemcached-compatible ketama
-        -- consistent hashing, skipping servers marked failed; see
-        -- "Database.Memcache.Cluster".
+        -- Default is 'ketamaServerForKey'. A custom router can use 'isAlive'
+        -- to skip servers marked failed.
         optsGetServerForKey      :: Cluster -> Key -> IO (Maybe Server),
         -- | Convert server specifications into servers.
         --
@@ -159,9 +165,7 @@ data Options = Options {
 -- * 'optsFailRetryDelay': 200ms
 -- * 'optsDeadRetryDelay': 1500ms
 -- * 'optsServerTimeout': 750ms
--- * 'optsGetServerForKey': the built-in consistent-hashing router
---   (@getServerForKeyDefault@, not exported; reuse it as
---   @optsGetServerForKey defaultOptions@)
+-- * 'optsGetServerForKey': 'ketamaServerForKey'
 -- * 'optsServerSpecsToServers': 'newServerDefault' for each server
 -- * 'optsServerOptions': 'defaultServerOptions'
 --
@@ -173,7 +177,7 @@ defaultOptions = Options {
             optsFailRetryDelay = 200,
             optsDeadRetryDelay = 1500,
             optsServerTimeout  = 750,
-            optsGetServerForKey = getServerForKeyDefault,
+            optsGetServerForKey = ketamaServerForKey,
             optsServerSpecsToServers = mapM . newServerDefault,
             optsServerOptions = defaultServerOptions
         }
@@ -254,22 +258,31 @@ serverAlive deadDelay s = do
                     writeIORef (failed s) 0
                     return True
 
+-- | Whether a server can be used: it isn't marked failed, or it was marked
+-- failed at least 'optsDeadRetryDelay' ago, in which case this clears the
+-- mark. A custom 'optsGetServerForKey' can use it to skip servers marked
+-- failed, as 'ketamaServerForKey' does.
+isAlive :: Cluster -> Server -> IO Bool
+{-# INLINE isAlive #-}
+isAlive c = serverAlive (cDeadDelay c)
+
 -- | The servers not currently marked as failed.
 aliveServers :: Cluster -> IO (V.Vector Server)
 {-# INLINE aliveServers #-}
 aliveServers c = getServers c >>= V.filterM (serverAlive $ cDeadDelay c)
 
--- | Figure out which server to talk to for this key: its owner on the ketama
--- ring, or if that server is marked failed, the next live server walking
--- forward round the ring. 'Nothing' if every server is marked failed.
-getServerForKeyDefault :: Cluster -> Key -> IO (Maybe Server)
-{-# INLINE getServerForKeyDefault #-}
-getServerForKeyDefault c k = do
+-- | The default router: a key goes to its owner on the ketama ring, or if
+-- that server is marked failed, to the next live server walking forward round
+-- the ring (see the module description). 'Nothing' if the cluster has no
+-- servers or every server is marked failed.
+ketamaServerForKey :: Cluster -> Key -> IO (Maybe Server)
+{-# INLINE ketamaServerForKey #-}
+ketamaServerForKey c k = do
     (servers, ring) <- either (cachedRing c <=< readMVar) pure (cServers c)
     let firstAlive [] = return Nothing
         firstAlive (i:is) = do
             let s = servers V.! i
-            alive <- serverAlive (cDeadDelay c) s
+            alive <- isAlive c s
             if alive then return (Just s) else firstAlive is
     firstAlive $ Ketama.owners ring $ Ketama.keyHash k
 

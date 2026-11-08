@@ -8,14 +8,14 @@ import           Control.Concurrent.MVar   (newMVar, swapMVar)
 import           Control.Monad             (void)
 import qualified Data.ByteString.Char8     as C
 import           Data.Foldable             (for_, toList)
-import           Data.IORef                (writeIORef)
-import           Data.List                 (group, sort)
+import           Data.IORef                (readIORef, writeIORef)
+import           Data.List                 (group, nub, sort)
 import           Data.Maybe                (listToMaybe, maybeToList)
 import           Data.Time.Clock.POSIX     (getPOSIXTime)
 import           Data.Word                 (Word32)
 import qualified Database.Memcache.Client  as Client
-import           Database.Memcache.Cluster (Cluster, Options (..), getServers, newCluster,
-                                            setServers)
+import           Database.Memcache.Cluster (Cluster, Options (..), getServers, isAlive,
+                                            ketamaServerForKey, newCluster, setServers)
 import           Database.Memcache.Errors
 import qualified Database.Memcache.Ketama  as K
 import           Database.Memcache.Server  (Server, failed, serverHost, serverPort)
@@ -175,6 +175,29 @@ routingSpec = do
       mapM_ markFailed . toList =<< getServers cluster
       route cluster "key" `shouldReturn` Nothing
       Client.get cluster "key" `shouldThrow` (== ClientError NoServersReady)
+
+    it "routes with ketamaServerForKey by default" $ do
+      cluster <- clusterOf [(host, 11211, 1) | host <- equalHosts 8]
+      markFailed =<< serverNamed cluster "10.0.1.6:11211"
+      byName <- mapM (fmap (fmap serverLabel) . ketamaServerForKey cluster) manyKeys
+      mapM (route cluster) manyKeys `shouldReturn` byName
+      -- Every live server gets keys.
+      length (nub byName) `shouldBe` 7
+
+    it "isAlive counts a failed server as down until optsDeadRetryDelay has passed" $ do
+      -- The cluster's delay is an hour, and the default 1.5 s.
+      cluster <- clusterOf (scenarioServers "host4")
+      server <- serverNamed cluster "cache3.example.com:11211"
+      isAlive cluster server `shouldReturn` True
+      now <- getPOSIXTime
+      writeIORef (failed server) (now - 60)
+      isAlive cluster server `shouldReturn` False
+      readIORef (failed server) `shouldReturn` (now - 60)
+      -- Once the delay has passed, the server is live again and the mark is
+      -- cleared.
+      writeIORef (failed server) (now - 7200)
+      isAlive cluster server `shouldReturn` True
+      readIORef (failed server) `shouldReturn` 0
 
     it "rebuilds its ring when the server set changes" $ do
       four <- clusterOf (scenarioServers "host4")
