@@ -209,14 +209,14 @@ connectSocket ServerSpec{..} = do
 -- | Connect a socket to the first of the resolved addresses that accepts,
 -- trying them in order, so a host whose first address refuses the connection
 -- (such as ::1 when the server listens on 127.0.0.1 only) can still be reached
--- through the others. If none accepts, rethrows the error from the first
--- attempt: the resolver sorts addresses this host cannot use, such as IPv6
--- where it is disabled, last, so the later errors are often just about those.
+-- through the others. If none accepts, rethrows the first address's error:
+-- the resolver sorts addresses this host cannot use, such as IPv6 where it is
+-- disabled, last, so the later errors are often just about those.
 --
--- Only failing to create or connect a socket moves on to the next address.
--- Errors once connected, such as rejected credentials, are raised after this
--- returns: they come from the server, and trying another address would hide
--- them.
+-- Only an 'IOException' from creating or connecting a socket moves on to the
+-- next address, so the attempt's timeout ends the loop. Errors once
+-- connected, such as rejected credentials, are raised after this returns:
+-- they come from the server, and trying another address would hide them.
 connectFirst :: S.AddrInfo -> [S.AddrInfo] -> IO S.Socket
 connectFirst addr addrs = do
     result <- tryIO $ connectTo addr
