@@ -732,7 +732,17 @@ main = hspec $ do
         result <- Client.stats client (Just "cachedump 1 1")
         map snd result `shouldBe` [[("ITEM", "key [3 b; 0 s]")]]
 
-    it "accepts stats conns from a server with 65,536 connections, but no entry more" $
+    -- stats reads its reply a line at a time: a line that starts with VA is
+    -- an entry like any other, and each line is split as other replies are.
+    it "splits each stats line as other replies are, even one that starts with VA" $
+      withServerAndClientOpts oneAttempt
+        [MR "STAT  a\tb   c\v \r\nVA 1\r\nz\r\nEND\r\n", MR "STAT a 1\r\n\r\nEND\r\n"] $ \_ client -> do
+        map snd <$> Client.stats client Nothing `shouldReturn` [[("a\tb", "c\v"), ("VA", "1"), ("z", "")]]
+        Client.stats client Nothing `shouldThrow` isUnknownPkt
+
+    -- At 15 MiB, the first reply also checks that the byte limit leaves room
+    -- for the longest lines stats conns sends.
+    it "accepts a stats conns reply of 262,144 entries, but no entry more" $
       withServerAndClientOpts (slowStats oneAttempt)
         [ MR (B.concat (replicate 65536 connStats) <> "END\r\n")
         , MR (B.concat (replicate 65536 connStats) <> "STAT pid 1\r\nEND\r\n") ] $ \_ client -> do
@@ -746,10 +756,16 @@ main = hspec $ do
         Client.stats client Nothing `shouldThrow` isBadLength
         map snd <$> Client.stats client Nothing `shouldReturn` [[("pid", "2")]]
 
-    it "rejects a stats reply of more than 16 MiB" $
-      withServerAndClientOpts oneAttempt
-        [Repeat ("STAT big " <> C.replicate 8000 'x' <> "\r\n")] $ \_ client ->
-        Client.stats client Nothing `shouldThrow` isBadLength
+    -- Each line counts as sent, wherever its bytes are. 2,100 of these lines
+    -- come to just over 16 MiB.
+    forM_ [ ("long names", "STAT " <> C.replicate 8000 'x' <> " 1\r\n")
+          , ("long values", "STAT big " <> C.replicate 8000 'x' <> "\r\n")
+          , ("padding between tokens", "STAT a" <> C.replicate 8100 ' ' <> "b\r\n")
+          ] $ \(shape, line) ->
+      it ("rejects a stats reply of more than 16 MiB of lines with " <> shape) $
+        withServerAndClientOpts (slowStats oneAttempt)
+          [MR (B.concat (replicate 2100 line) <> "END\r\n")] $ \_ client ->
+          Client.stats client Nothing `shouldThrow` isBadLength
 
     it "returns Nothing when arithmetic cannot create the item" $
       withClient [MR "NS\r\n"] $ \client ->
@@ -1967,10 +1983,13 @@ main = hspec $ do
     -- One attempt per operation, and a server it marks dead is used again at once.
     oneAttempt = Client.def { Client.optsServerRetries = 0, Client.optsDeadRetryDelay = 0 }
     -- Long enough to read a stats reply of hundreds of thousands of lines.
-    slowStats opts = opts { Client.optsServerTimeout = 5000 }
-    -- What @stats conns@ reports for one client connection.
-    connStats = "STAT 27:addr tcp:127.0.0.1:36954\r\nSTAT 27:listen_addr tcp:127.0.0.1:11211\r\n"
-      <> "STAT 27:state conn_parse_cmd\r\nSTAT 27:secs_since_last_cmd 0\r\n"
+    slowStats opts = opts { Client.optsServerTimeout = 10000 }
+    -- What @stats conns@ reports for one client connection at its longest,
+    -- 240 bytes: a five-digit descriptor, a server listening on a Unix socket
+    -- at a 107-byte path (the longest memcached takes), the longest state name
+    -- and a ten-digit idle time. Over TCP the longest take 224 bytes.
+    connStats = "STAT 65535:addr ?:<AF 0>\r\nSTAT 65535:listen_addr unix:" <> C.replicate 107 'p'
+      <> "\r\nSTAT 65535:state conn_io_pending\r\nSTAT 65535:secs_since_last_cmd 2147483647\r\n"
     fst3 (value, _, _) = value
     hour = 3600 * 1000000
     tenMs = 10 * 1000
