@@ -36,7 +36,7 @@ import           GHC.Conc                  (ThreadStatus (..), threadStatus)
 import           System.Timeout            (timeout)
 import           UnliftIO.Async            (Async, async, asyncThreadId, cancel,
                                             mapConcurrently, wait)
-import           UnliftIO.Exception        (StringException (..))
+import           UnliftIO.Exception        (StringException (..), tryIO)
 
 main :: IO ()
 main = hspec $ do
@@ -2108,17 +2108,18 @@ recvExactly socket n = do
 -- different one, or mark it pending where there are no two such addresses that
 -- a mock server can listen on. There are where localhost resolves to both ::1
 -- and 127.0.0.1 and IPv6 is enabled, but not where it resolves to 127.0.0.1
--- alone.
+-- alone or doesn't resolve at all.
 withLocalhostAddresses :: (N.SockAddr -> N.SockAddr -> Expectation) -> Expectation
 withLocalhostAddresses test = do
-  addresses <- map N.addrAddress <$> N.getAddrInfo (Just hints) (Just "localhost") (Just "0")
-  case addresses of
-    first : rest | later : _ <- reverse (filter (/= first) rest) -> do
+  resolved <- tryIO $ N.getAddrInfo (Just hints) (Just "localhost") (Just "0")
+  case map N.addrAddress <$> resolved of
+    Left err -> pendingWith $ "cannot resolve localhost: " ++ displayException err
+    Right addresses@(first : rest) | later : _ <- reverse (filter (/= first) rest) -> do
       listenable <- and <$> mapM canListenAt [first, later]
       if listenable
         then test first later
         else pendingWith $ "cannot listen on the addresses of localhost: " ++ show addresses
-    _ -> pendingWith $ "localhost resolves to a single address: " ++ show addresses
+    Right addresses -> pendingWith $ "localhost resolves to a single address: " ++ show addresses
   where
     hints = N.defaultHints { N.addrSocketType = N.Stream }
 
