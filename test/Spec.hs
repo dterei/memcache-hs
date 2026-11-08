@@ -1800,6 +1800,32 @@ main = hspec $ do
         -- open, both flushes went over it.
         mockClosed a `shouldReturn` 0
 
+    -- The order breaks ties on the ketama ring. Discovery used to sort the
+    -- servers by sid, so both the first discovery and the refresh list the
+    -- node with the higher sid first.
+    it "keeps the servers in the order discovery lists them in" $
+      withMockServer [MR "OK\r\n"] $ \a ->
+      withMockServer [MR "OK\r\n"] $ \b ->
+      withMockServer [MR "OK\r\n"] $ \c -> do
+        -- Discovery makes its servers from the same specs, so with these
+        -- sids. Each is read from a cluster of its own, which can't sort it.
+        let sidOf m = map Server.sid . toList
+              <$> (Cluster.getServers =<< Cluster.newCluster [mockServerSpec m] Client.def)
+        [sidA] <- sidOf a
+        [sidB] <- sidOf b
+        let (hi, lo) = if sidA > sidB then (a, b) else (b, a)
+        withMockServer (refreshTo [hi, lo] ++ refreshTo [hi, lo, c] ++ noReplies) $ \cfg ->
+          -- With this time limit no refresh runs out of time on a slow
+          -- machine, which would shift the replies.
+          withDiscovery Client.def { Client.optsServerTimeout = 10000 } $ \opts start _ -> do
+            client <- EC.newClient opts tenMs (endpoint cfg)
+            let ports = map Server.serverPort . toList <$> Cluster.getServers client
+                portsOf = map (show . mockPort)
+            ports `shouldReturn` portsOf [hi, lo]
+            start
+            waitFor 3 (length <$> ports) `shouldReturn` 3
+            ports `shouldReturn` portsOf [hi, lo, c]
+
     -- The first refresh adds b, the second fails, and the third lists a and b
     -- again.
     it "reuses the servers of known nodes after a refresh fails" $
