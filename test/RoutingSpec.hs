@@ -231,6 +231,8 @@ routingSpec = do
       mapM (route discovered) manyKeys `shouldReturn` map (serverFor replaced) manyKeys
 
     it "routes by host when discovery returns new or reordered servers" $ do
+      -- This checks the host and port of each server chosen. The next test
+      -- checks that they are the Server values in the MVar.
       four <- clusterOf (scenarioServers "host4")
       -- New Server values for the same hosts...
       fresh <- getServers =<< clusterOf (scenarioServers "host4")
@@ -245,6 +247,34 @@ routingSpec = do
       routes `shouldReturn` expected
       void (swapMVar servers reordered)
       routes `shouldReturn` expected
+
+    it "routes to the servers in the MVar when new ones have the same hosts" $ do
+      four <- clusterOf (scenarioServers "host4")
+      servers <- newMVar =<< getServers four
+      let discovered = setServers four (Left servers)
+          routes = mapM (route discovered . C.pack . fst) (scenarioKeys "host4")
+      routes `shouldReturn` map (Just . snd) (scenarioKeys "host4")
+      -- The ring can be reused, but the router must check, and return, the
+      -- new Server values: once the new cache3 is marked failed, its keys
+      -- move.
+      fresh <- clusterOf (scenarioServers "host4")
+      void (swapMVar servers =<< getServers fresh)
+      markFailed =<< serverNamed fresh "cache3.example.com:11211"
+      routes `shouldReturn` map (Just . snd) (scenarioKeys "host4_minus_cache3")
+
+    it "rebuilds its ring when a server is added at the end" $ do
+      -- As when a refresh finds a new node listed after the others, and keeps
+      -- the Server values of the nodes it knows.
+      let four = scenarioServers "host4"
+          three = take 3 four
+      original <- clusterOf three
+      known <- getServers original
+      servers <- newMVar known
+      let discovered = setServers original (Left servers)
+      mapM (route discovered) manyKeys `shouldReturn` map (serverFor three) manyKeys
+      added <- getServers =<< clusterOf (drop 3 four)
+      void (swapMVar servers (known <> added))
+      mapM (route discovered) manyKeys `shouldReturn` map (serverFor four) manyKeys
 
     it "spreads keys evenly over eight equal servers" $ do
       cluster <- clusterOf [(host, 11211, 1) | host <- equalHosts 8]
