@@ -34,7 +34,8 @@ import Network.URI (URI (..), URIAuth (..), parseAbsoluteURI, unEscapeString)
 --
 -- 'show' hides the password; see 'Authentication'.
 data ServerSpec = ServerSpec
-  { -- | Hostname of server to connect to.
+  { -- | Hostname of server to connect to, or the path of a Unix socket if it
+    -- begins with @/@, in which case 'ssPort' is ignored.
     ssHost :: HostName,
     -- | Port number server is running on.
     ssPort :: ServiceName,
@@ -50,6 +51,10 @@ data ServerSpec = ServerSpec
 -- must pass 'validateCredentials'; one given without the other is ignored.
 -- An IPv6 address goes in brackets, as in @memcached:\/\/[::1]:11211@.
 --
+-- A path with no host is a Unix socket, as in
+-- @memcached:\/\/\/run\/memcached.sock@ or
+-- @memcached:\/\/user:secret\@\/run\/memcached.sock@.
+--
 -- Error messages never quote the URI, as it may contain a password.
 parseServerSpec :: String -> Either String ServerSpec
 parseServerSpec s = do
@@ -58,8 +63,12 @@ parseServerSpec s = do
 
   let mAuth = uriAuthority uri
   auth <- maybe (pure Nothing) (readAuthentication . uriUserInfo) mAuth
+  let setPath ss = case uriPath uri of
+        p@('/' : _) | maybe True (null . uriRegName) mAuth -> ss {ssHost = unEscapeString p}
+        _ -> ss
 
   pure
+    . setPath
     . maybe id setHost mAuth
     . maybe id setPort mAuth
     . maybe id setAuth auth

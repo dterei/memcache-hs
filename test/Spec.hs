@@ -1599,6 +1599,10 @@ main = hspec $ do
       , ("memcached://[2001:db8::1]", "2001:db8::1", "11211", Auth.NoAuth)
       , ("memcached://user:secret@[::1]:1234", "::1", "1234", Auth.Auth "user" "secret")
       , ("memcached://[fe80::1%25eth0]:1234", "fe80::1%eth0", "1234", Auth.NoAuth)
+      -- A path without a host is a Unix socket.
+      , ("memcached:///run/memcached.sock", "/run/memcached.sock", "11211", Auth.NoAuth)
+      , ("memcached://user:secret@/run/mc%20d.sock", "/run/mc d.sock", "11211", Auth.Auth "user" "secret")
+      , ("memcached://cache.example/ignored", "cache.example", "11211", Auth.NoAuth)
       ]
 
     mapM_ rejects

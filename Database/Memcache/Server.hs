@@ -191,17 +191,22 @@ connectTagged gen ss = do
 
 connectSocket :: ServerSpec -> IO Connection
 connectSocket ServerSpec{..} = do
-    let hints = S.defaultHints {
-      S.addrSocketType = S.Stream
-    }
-    addr:_ <- getAddrInfo (Just hints) (Just ssHost) (Just ssPort)
+    (family, address) <- case ssHost of
+        '/' : _ -> return (S.AF_UNIX, S.SockAddrUnix ssHost)
+        _ -> do
+            let hints = S.defaultHints {
+                  S.addrSocketType = S.Stream
+                }
+            addr:_ <- getAddrInfo (Just hints) (Just ssHost) (Just ssPort)
+            return (S.addrFamily addr, S.addrAddress addr)
     bracketOnError
-        (S.socket (S.addrFamily addr) (S.addrSocketType addr) (S.addrProtocol addr))
+        (S.socket family S.Stream S.defaultProtocol)
         S.close
         (\s -> do
-            S.connect s $ S.addrAddress addr
-            S.setSocketOption s S.KeepAlive 1
-            S.setSocketOption s S.NoDelay 1
+            S.connect s address
+            when (family /= S.AF_UNIX) $ do
+                S.setSocketOption s S.KeepAlive 1
+                S.setSocketOption s S.NoDelay 1
             buffered <- newConnection s
             authenticate buffered ssAuth
             return buffered
