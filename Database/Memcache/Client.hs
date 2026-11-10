@@ -11,8 +11,9 @@ Portability : GHC
 
 A Memcached client using the Meta (text) protocol. Memcached is an in-memory
 key-value store typically used as a distributed and shared cache. Clients can
-connect to a single Memcached server or a cluster of servers; clusters use
-consistent hashing to route requests to the appropriate server.
+connect to a single Memcached server or a cluster of servers; clusters route
+each key to a server by ketama consistent hashing, compatible with
+libmemcached (see "Database.Memcache.Cluster").
 
 This requires memcached 1.6.0 or newer, the first release with the meta
 commands; older servers reject every operation with @ERROR@.
@@ -44,7 +45,9 @@ We support the following logic for handling failure in operations:
 
 * __Failover__: when an operation against a server in a cluster fails all
                 retries, we mark that server as dead and use the remaining
-                servers in the cluster to handle all operations. That doesn't
+                servers in the cluster to handle all operations: with the
+                default router, its keys go to the next live server on the
+                hash ring, and other keys stay where they are. That doesn't
                 happen when the last attempt only ran out of time waiting for
                 a free connection, as it never reached the server. After a
                 configurable period of time has passed, we consider the server

@@ -18,7 +18,8 @@ server's 'failed' timestamp is used by cluster retry handling.
 -}
 module Database.Memcache.Server (
       -- * Server
-        Server(sid, failed), newServerDefault, withSocket, close, closeAll,
+        Server(sid, failed), serverHost, serverPort, newServerDefault,
+        withSocket, close, closeAll,
 
       -- * ServerOptions
         ServerOptions(..), defaultServerOptions
@@ -37,12 +38,21 @@ import           Data.Pool (Pool)
 import           Database.Memcache.Types  (ServerSpec (..))
 import           UnliftIO.Exception
 
-import           Network.Socket           (getAddrInfo)
+import           Network.Socket           (HostName, ServiceName, getAddrInfo)
 import qualified Network.Socket           as S
 #if MIN_VERSION_resource_pool(0,4,0)
 #else
 import           Data.Time.Clock          (NominalDiffTime)
 #endif
+
+-- | The host the server was configured with, as given in its 'ServerSpec'.
+serverHost :: Server -> HostName
+serverHost = addr
+
+-- | The port or service name the server was configured with, as given in its
+-- 'ServerSpec'.
+serverPort :: Server -> ServiceName
+serverPort = port
 
 -- | Configurable options when creating a @Server@.
 --

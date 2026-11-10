@@ -3,10 +3,9 @@
 module Main where
 
 import           Control.Concurrent       (threadDelay)
-import           Control.Exception        (SomeException, bracket, try)
-import           Control.Monad            (forM_, void)
+import           Control.Exception        (bracket, onException)
+import           Control.Monad            (filterM, forM, forM_, void)
 import qualified Data.ByteString.Char8    as B
-import           Data.Either              (isRight)
 import           Data.Foldable            (toList)
 import           Data.IORef               (readIORef)
 import           Data.Maybe               (isJust)
@@ -14,18 +13,19 @@ import           Data.Time.Clock.POSIX    (getPOSIXTime)
 import qualified Database.Memcache.Client as M
 import qualified Database.Memcache.Cluster as Cluster
 import qualified Database.Memcache.ElastiCacheClient as EC
+import qualified Database.Memcache.Ketama as K
 import qualified Database.Memcache.Server as Server
 import           Database.Memcache.Types  (ServerSpec (..))
 import           Network.Socket           (Family (AF_INET), SocketOption (ReuseAddr),
-                                           SocketType (Stream), addrAddress, addrFamily,
-                                           addrSocketType, bind, close, connect,
-                                           defaultHints, defaultProtocol, getAddrInfo,
+                                           SocketType (Stream), bind, close, defaultProtocol,
                                            setSocketOption, socket, socketPort,
                                            tupleToHostAddress)
 import qualified Network.Socket           as N
-import           System.Directory         (findExecutable, getTemporaryDirectory, removeFile)
+import           System.Directory         (doesFileExist, findExecutable, getTemporaryDirectory,
+                                           removeFile, removePathForcibly)
+import           System.Exit              (ExitCode)
 import           System.IO                (hClose, hPutStr, openTempFileWithDefaultPermissions)
-import           System.Process           (ProcessHandle, createProcess, proc,
+import           System.Process           (ProcessHandle, createProcess, getCurrentPid, proc,
                                            getProcessExitCode, terminateProcess,
                                            waitForProcess)
 import           System.Timeout           (timeout)
@@ -277,13 +277,28 @@ authSpecs port = do
   isBadCommand (M.ProtocolError (M.BadCommand _)) = True
   isBadCommand _ = False
 
--- | Tests against several servers. Key routing currently leaves at least one
--- server without keys (#46), so these don't assume keys reach every server.
+-- | Tests against several servers.
 clusterSpecs :: [Int] -> Spec
 clusterSpecs ports = beforeAll newClusterClient $ do
   it "stores and reads back keys" $ \client -> do
     storeKeys client
     forM_ keys $ \key -> fmap first <$> M.get client key `shouldReturn` Just key
+
+  it "stores each key on the server the ketama ring assigns it" $ \client -> do
+    storeKeys client
+    -- Ask each server on its own which keys it holds.
+    held <- forM ports $ \port -> do
+      single <- M.newClient [ServerSpec "127.0.0.1" (show port) M.NoAuth] M.def
+      found <- filterM (fmap isJust . M.get single) keys
+      M.quit single
+      return found
+    -- Keys are hashed as given, not in the base64 form that keys with spaces
+    -- are sent in.
+    let ring = K.ring [(K.serverName "127.0.0.1" (B.pack (show port)), 1) | port <- ports]
+        owner key = (ports !!) <$> K.owner ring (K.keyHash key)
+    -- Before 0.5 only two servers got keys, so one of the three got none (#46).
+    held `shouldSatisfy` (not . any null)
+    held `shouldBe` [filter ((== Just port) . owner) keys | port <- ports]
 
   it "gets many keys" $ \client -> do
     storeKeys client
@@ -309,7 +324,10 @@ clusterSpecs ports = beforeAll newClusterClient $ do
     flushCounts client `shouldReturn` map (+ 1) counts
     M.getMany client keys `shouldReturn` []
  where
-  keys = [B.pack ("integration-cluster-" <> show n) | n <- [1 .. 300 :: Int]]
+  -- Keys with spaces are sent in base64.
+  keys =
+    [B.pack ("integration-cluster-" <> show n) | n <- [1 .. 300 :: Int]]
+      <> [B.pack ("integration cluster " <> show n) | n <- [1 .. 60 :: Int]]
   storeKeys client = forM_ keys $ \key -> M.set client key key 0 0
   -- How many times each server has run flush_all, in server order.
   flushCounts client = do
@@ -382,9 +400,20 @@ withMemcached
   -> [String]
   -> (Int -> IO a)
   -> IO a
-withMemcached executable args action = do
-  port <- freePort
-  withMemcachedOn executable args port (action port)
+withMemcached executable args action =
+  bracket (start (5 :: Int)) (stopMemcached . snd) (action . fst)
+ where
+  -- Another process can take the port before memcached listens on it, as
+  -- when several runs of these tests share a machine. memcached then exits,
+  -- so try another port.
+  start attempts = do
+    port <- freePort
+    started <- startMemcached executable args port
+    case started of
+      Right process -> return (port, process)
+      Left status
+        | attempts > 1 -> start (attempts - 1)
+        | otherwise -> fail $ "memcached exited before becoming ready: " <> show status
 
 -- | Run an action against a memcached started with the given extra
 -- arguments on the given port, and stop it once the action is done.
@@ -394,16 +423,10 @@ withMemcachedOn
   -> Int
   -> IO a
   -> IO a
-withMemcachedOn executable args port action = bracket acquire release (const action)
+withMemcachedOn executable args port action = bracket acquire stopMemcached (const action)
  where
-  acquire = do
-    (_, _, _, process) <-
-      createProcess (proc executable (["-l", "127.0.0.1", "-p", show port, "-U", "0"] ++ args))
-    waitForPort port process
-    return process
-  release process = do
-    terminateProcess process
-    void (waitForProcess process)
+  acquire = startMemcached executable args port
+    >>= either (\status -> fail $ "memcached exited before becoming ready: " <> show status) return
 
 -- | Run an action against @n@ memcached servers.
 withMemcacheds :: FilePath -> Int -> ([Int] -> IO a) -> IO a
@@ -430,39 +453,43 @@ freePort = bracket (socket AF_INET Stream defaultProtocol) close $ \sock -> do
   bind sock (N.SockAddrInet 0 (tupleToHostAddress (127, 0, 0, 1)))
   fromIntegral <$> socketPort sock
 
-waitForPort
-  :: Int
-  -> ProcessHandle
-  -> IO ()
-waitForPort port process = go 50
- where
-  go :: Int -> IO ()
-  go 0 = do
-    -- Still running but never listening: stop it rather than waiting on it.
-    terminateProcess process
-    void (waitForProcess process)
-    fail $ "memcached did not start listening on port " <> show port
-  go attempts = do
-    ready <- tryConnect port
-    if ready
-      then return ()
-      else do
-        exited <- getProcessExitCode process
-        case exited of
-          Just status -> fail $ "memcached exited before becoming ready: " <> show status
-          Nothing -> threadDelay 100000 >> go (attempts - 1)
+-- | Start memcached with the given extra arguments on the given port, and
+-- wait until it listens there. If it exits first, as it does when another
+-- process listens on the port, return how it exited.
+startMemcached
+  :: FilePath
+  -> [String]
+  -> Int
+  -> IO (Either ExitCode ProcessHandle)
+startMemcached executable args port = do
+  -- memcached writes its pid file once it listens on the port. A connection
+  -- to the port would show that something listens there, but not that it is
+  -- this memcached. The file's name has this run's pid, so no other run uses
+  -- it, but a run that was killed can leave it behind.
+  tmp <- getTemporaryDirectory
+  pid <- getCurrentPid
+  let pidFile = tmp <> "/memcached-" <> show pid <> "-" <> show port <> ".pid"
+  removePathForcibly pidFile
+  (_, _, _, process) <- createProcess $
+    proc executable (["-l", "127.0.0.1", "-p", show port, "-U", "0", "-P", pidFile] ++ args)
+  let wait :: Int -> IO (Either ExitCode ProcessHandle)
+      wait 0 = fail $ "memcached did not write its pid file " <> pidFile
+        <> " within 5 s of starting on port " <> show port
+      wait attempts = do
+        listening <- doesFileExist pidFile
+        if listening
+          then removeFile pidFile >> return (Right process)
+          else do
+            exited <- getProcessExitCode process
+            case exited of
+              Just status -> return (Left status)
+              Nothing -> threadDelay 100000 >> wait (attempts - 1)
+  -- If it is still running but never wrote the file, or anything else goes
+  -- wrong, stop it rather than leave it running.
+  wait 50 `onException` stopMemcached process
 
-tryConnect
-  :: Int
-  -> IO Bool
-tryConnect port = do
-  result <- try $ do
-    addr : _ <-
-      getAddrInfo
-        (Just defaultHints{addrSocketType = Stream})
-        (Just "127.0.0.1")
-        (Just (show port))
-    sock <- socket (addrFamily addr) Stream defaultProtocol
-    connect sock (addrAddress addr)
-    close sock
-  return (isRight @SomeException @() result)
+-- | Stop a memcached and wait for it to exit.
+stopMemcached :: ProcessHandle -> IO ()
+stopMemcached process = do
+  terminateProcess process
+  void (waitForProcess process)
