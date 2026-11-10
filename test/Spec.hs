@@ -33,10 +33,11 @@ import           Data.IORef                (atomicModifyIORef', newIORef, readIO
 import           Data.List                 (find, nub)
 import           GHC.Clock                 (getMonotonicTime)
 import           GHC.Conc                  (ThreadStatus (..), threadStatus)
+import           System.IO.Error           (isDoesNotExistError)
 import           System.Timeout            (timeout)
 import           UnliftIO.Async            (Async, async, asyncThreadId, cancel,
                                             mapConcurrently, wait)
-import           UnliftIO.Exception        (StringException (..))
+import           UnliftIO.Exception        (StringException (..), tryIO)
 
 main :: IO ()
 main = hspec $ do
@@ -1719,6 +1720,70 @@ main = hspec $ do
         requests <- (++) <$> mockRequests a <*> mockRequests b
         requests `shouldBe` ["version\r\n"]
 
+  -- These are pending unless localhost resolves to more than one address;
+  -- see withLocalhostAddresses. Each takes a free port at the first address,
+  -- and listens at the same port at the later one.
+  describe "connecting" $ do
+    -- The socket bound at the first address refuses the connection, and
+    -- keeps other processes from listening there.
+    it "tries the next address when one refuses the connection" $
+      withLocalhostAddresses $ \first later ->
+      withBoundSocket first $ \port ->
+      withMockServerAt (atPort port later) [MR "VA 3 f2 c7\r\nfoo\r\n"] $ \server -> do
+        client <- Client.newClient [localhostSpec server Auth.NoAuth] patient
+        Client.get client "key" `shouldReturn` Just ("foo", 2, 7)
+
+    -- Sockets bound at both addresses refuse the connection, so the get fails
+    -- with a connection error, as it does where a host has one address. The
+    -- socket at the later address sets SO_REUSEADDR, as connections to an
+    -- earlier mock at that port can still be in TIME_WAIT there. Once a mock
+    -- listens at the later address, a new client's get reaches it.
+    it "fails with the connection error when every address refuses the connection" $
+      withLocalhostAddresses $ \first later ->
+      withBoundSocket first $ \port -> do
+        let spec = ServerSpec "localhost" (show port) Auth.NoAuth
+        refused <- Client.newClient [spec] oneAttempt { Client.optsServerTimeout = 10000 }
+        withBoundSocketReuseAddr (atPort port later) $ \_ ->
+          Client.get refused "key" `shouldThrow` isDoesNotExistError
+        withMockServerAt (atPort port later) [MR "VA 3 f2 c7\r\nfoo\r\n"] $ \_ -> do
+          client <- Client.newClient [spec] patient
+          Client.get client "key" `shouldReturn` Just ("foo", 2, 7)
+
+    -- A second mock, at the same port on the later address, records whether
+    -- the client tries there too once the credentials are rejected. Once the
+    -- first mock's responses have run out, it stops listening, and the next
+    -- get moves on to the second mock, which shows that the client can reach
+    -- it. A get that connects before then has its connection reset, and its
+    -- retry moves on.
+    it "does not try the next address once authentication fails" $
+      withLocalhostAddresses $ \first later ->
+      withMockServerAt first
+        [MR "CLIENT_ERROR unauthenticated\r\n", MR "CLIENT_ERROR authentication failure\r\n"] $ \server ->
+      withMockServerAt (atPort (mockPort server) later)
+        [MR "CLIENT_ERROR unauthenticated\r\n", MR "STORED\r\n", MR "VA 3 f2 c7\r\nfoo\r\n"] $ \other -> do
+        client <- Client.newClient [localhostSpec server (Auth.Auth "user" "pass")] patient
+        Client.get client "key" `shouldThrow` (== OpError TextAuthFail)
+        mockRequests server `shouldReturn` ["version\r\n", "set auth 0 0 9\r\nuser pass\r\n"]
+        mockRequests other `shouldReturn` []
+        Client.get client "key" `shouldReturn` Just ("foo", 2, 7)
+
+    -- Connecting to the first address gets no answer, as its listener's
+    -- queue is full, so the only attempt runs out of time there. The mock at
+    -- the later address must get nothing. Once the listener has closed, the
+    -- first address refuses, and a new client gets the mock's reply, which
+    -- shows that the mock could be reached all along.
+    it "tries no later address once one that doesn't answer has used up the attempt's time" $
+      withLocalhostAddresses $ \first later ->
+      withFullListener first $ \port stopListening ->
+      withMockServerAt (atPort port later) [MR "VA 3 f2 c7\r\nfoo\r\n"] $ \server -> do
+        impatient <- Client.newClient [localhostSpec server Auth.NoAuth]
+          oneAttempt { Client.optsServerTimeout = 300 }
+        Client.get impatient "key" `shouldThrow` (== ClientError Timeout)
+        mockRequests server `shouldReturn` []
+        stopListening
+        client <- Client.newClient [localhostSpec server Auth.NoAuth] patient
+        Client.get client "key" `shouldReturn` Just ("foo", 2, 7)
+
   describe "ElastiCache discovery" $ do
     it "rejects an endpoint that is not a configuration endpoint" $
       isLeft (EC.parseConfigurationEndpoint "memcached://cache.example:11211") `shouldBe` True
@@ -2046,6 +2111,10 @@ main = hspec $ do
     connStats = "STAT 65535:addr ?:<AF 0>\r\nSTAT 65535:listen_addr unix:" <> C.replicate 107 'p'
       <> "\r\nSTAT 65535:state conn_io_pending\r\nSTAT 65535:secs_since_last_cmd 2147483647\r\n"
     fst3 (value, _, _) = value
+    localhostSpec server = ServerSpec "localhost" (show (mockPort server))
+    -- Each attempt has 10 s, so that even on a slow machine one is unlikely
+    -- to run out of time after using up a mock's reply.
+    patient = Client.def { Client.optsServerTimeout = 10000 }
     hour = 3600 * 1000000
     tenMs = 10 * 1000
     -- The endpoint check only looks for ".cfg" somewhere in the URI, so put it
@@ -2188,6 +2257,31 @@ recvExactly socket n = do
   if B.null chunk
     then return B.empty
     else (chunk <>) <$> recvExactly socket (n - B.length chunk)
+
+-- | Run a test with the first address localhost resolves to and a later,
+-- different one, or mark it pending where there are no two such addresses that
+-- a mock server can listen on. There are where localhost resolves to both ::1
+-- and 127.0.0.1 and IPv6 is enabled, but not where it resolves to 127.0.0.1
+-- alone or doesn't resolve at all.
+withLocalhostAddresses :: (N.SockAddr -> N.SockAddr -> Expectation) -> Expectation
+withLocalhostAddresses test = do
+  resolved <- tryIO $ N.getAddrInfo (Just hints) (Just "localhost") (Just "0")
+  case map N.addrAddress <$> resolved of
+    Left err -> pendingWith $ "cannot resolve localhost: " ++ displayException err
+    Right addresses@(first : rest) | later : _ <- reverse (filter (/= first) rest) -> do
+      listenable <- and <$> mapM canListenAt [first, later]
+      if listenable
+        then test first later
+        else pendingWith $ "cannot listen on the addresses of localhost: " ++ show addresses
+    Right addresses -> pendingWith $ "localhost resolves to a single address: " ++ show addresses
+  where
+    hints = N.defaultHints { N.addrSocketType = N.Stream }
+
+-- | The given address with its port replaced.
+atPort :: N.PortNumber -> N.SockAddr -> N.SockAddr
+atPort port (N.SockAddrInet _ host) = N.SockAddrInet port host
+atPort port (N.SockAddrInet6 _ flow host scope) = N.SockAddrInet6 port flow host scope
+atPort _ address = address
 
 -- | Keys of up to 260 arbitrary bytes, biased towards safe ones.
 keyGen :: Gen B.ByteString
