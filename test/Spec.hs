@@ -533,7 +533,7 @@ main = hspec $ do
 
     -- The unknown reply answers the batch's mn, so the mock has recorded both
     -- requests of each attempt before the client sees it.
-    it "marks the server dead once a batch's retries all get an unknown code" $
+    it "marks the server dead once every attempt at a batch gets an unknown code" $
       withServerAndClientOpts fastFailover
         [Noop, MR "XX O0\r\nMN\r\n", Noop, MR "XX O0\r\nMN\r\n"] $ \server client -> do
           Client.getMany client ["one"] `shouldThrow` (== ProtocolError (UnknownStatus "XX"))
@@ -929,6 +929,11 @@ main = hspec $ do
           }
         -- A server marked dead stays dead for the rest of the test.
         fastStaysDead = fast { Client.optsDeadRetryDelay = 60000 }
+        -- Options for the attempts helper below. Each attempt fails as soon
+        -- as the mock drops its connection; its 5 s are only so that a slow
+        -- machine can't turn the drop into a timeout.
+        dropping = fastStaysDead { Client.optsServerTimeout = 5000 }
+        withRetries n = dropping { Client.optsServerRetries = n }
         -- Up to three connections to the server, rather than one.
         threeConnections opts = opts
           { Client.optsServerOptions = Client.defaultServerOptions { Client.soNumResources = 3 } }
@@ -963,9 +968,25 @@ main = hspec $ do
       withServerAndClientOpts fast [DelayMS 350 Noop, MR "VA 3 f2 c7\r\nfoo\r\n"] $ \_ client ->
         Client.get client "key" `shouldReturn` Just ("foo", 2, 7)
 
+    -- Counting the retries down from minBound must not wrap round to
+    -- maxBound.
+    it "tries an operation once when retries are zero or negative" $
+      mapM (\n -> (n,) <$> attempts (withRetries n)) [0, -1, minBound]
+        `shouldReturn` [(0, 1), (-1, 1), (minBound, 1)]
+
+    it "tries an operation twice with one retry" $
+      attempts (withRetries 1) `shouldReturn` 2
+
+    it "tries an operation three times with two retries" $
+      attempts (withRetries 2) `shouldReturn` 3
+
+    it "retries an operation once by default, so tries it twice" $ do
+      Client.optsServerRetries Client.def `shouldBe` 1
+      attempts dropping `shouldReturn` 2
+
     it "marks a server dead once its retries run out, then revives it" $
       withServerAndClientOpts fast [CloseConnection, CloseConnection, MR "VA 3 f2 c7\r\nfoo\r\n"] $ \server client -> do
-        -- The default of two retries means two attempts in total.
+        -- The default of one retry means two attempts in total.
         Client.get client "key" `shouldThrow` isUnexpectedEOF
         length <$> mockRequests server `shouldReturn` 2
         Client.get client "key" `shouldThrow` (== ClientError NoServersReady)
@@ -1041,7 +1062,7 @@ main = hspec $ do
     -- reads. The mock serves one connection at a time: it answers that
     -- thread once it has sent the late reply, 250 ms after the get gives up.
     it "doesn't hand the connection of a request that timed out to a waiting thread" $
-      withServerAndClientOpts fastStaysDead { Client.optsServerRetries = 1, Client.optsServerTimeout = 500 }
+      withServerAndClientOpts fastStaysDead { Client.optsServerRetries = 0, Client.optsServerTimeout = 500 }
         [DelayMS 750 (MR "VA 3 f9 c9\r\nold\r\n"), MR "VA 3 f2 c7\r\nfoo\r\n"] $ \server client -> do
           [s] <- toList <$> Cluster.getServers client
           timingOut <- async $ Client.get client "key"
@@ -1170,7 +1191,7 @@ main = hspec $ do
     -- against the server although it waited first: its only attempt marks
     -- the server dead.
     it "marks a server dead when a request that waited for its connection times out using it" $
-      withServerAndClientOpts fastStaysDead { Client.optsServerRetries = 1 } [Noop, Noop] $ \server client -> do
+      withServerAndClientOpts fastStaysDead { Client.optsServerRetries = 0 } [Noop, Noop] $ \server client -> do
         [s] <- toList <$> Cluster.getServers client
         held <- newEmptyMVar
         release <- newEmptyMVar
@@ -1190,7 +1211,7 @@ main = hspec $ do
     -- the connection, and its only attempt marks the server dead. With a new
     -- 1 s once it had the connection, it would get the reply.
     it "counts the wait for the connection towards the attempt's timeout" $
-      withServerAndClientOpts fastStaysDead { Client.optsServerRetries = 1, Client.optsServerTimeout = 1000 }
+      withServerAndClientOpts fastStaysDead { Client.optsServerRetries = 0, Client.optsServerTimeout = 1000 }
         [DelayMS 800 (MR "HD\r\n")] $ \server client -> do
           [s] <- toList <$> Cluster.getServers client
           held <- newEmptyMVar
@@ -1272,7 +1293,7 @@ main = hspec $ do
         , MR "VA 3 f0 c1\r\nfoo\r\n" ] $ \server -> do
           let spec = (mockServerSpec server) { ssAuth = Auth.Auth "user" "pass" }
           client <- Client.newClient [spec]
-            Client.def { Client.optsServerRetries = 1, Client.optsServerTimeout = 3000 }
+            Client.def { Client.optsServerRetries = 0, Client.optsServerTimeout = 3000 }
           first <- async $ Client.get client "key"
           waitForRequests server 1 `shouldReturn` ["version\r\n"]
           second <- async $ Client.get client "key"
@@ -1291,7 +1312,7 @@ main = hspec $ do
         , MR "VA 3 f0 c1\r\nfoo\r\n" ] $ \server -> do
           let spec = (mockServerSpec server) { ssAuth = Auth.Auth "user" "pass" }
           client <- Client.newClient [spec]
-            Client.def { Client.optsServerRetries = 1, Client.optsServerTimeout = 3000 }
+            Client.def { Client.optsServerRetries = 0, Client.optsServerTimeout = 3000 }
           first <- async $ Client.get client "key"
           waitForRequests server 1 `shouldReturn` ["version\r\n"]
           second <- async $ Client.get client "key"
@@ -1316,7 +1337,7 @@ main = hspec $ do
         , [MR "CLIENT_ERROR unauthenticated\r\n", MR "STORED\r\n", MR "VA 3 f0 c1\r\nfoo\r\n"] ] $ \server -> do
           let spec = (mockServerSpec server) { ssAuth = Auth.Auth "user" "pass" }
           client <- Client.newClient [spec] Client.def
-            { Client.optsServerRetries = 1, Client.optsServerTimeout = 3000
+            { Client.optsServerRetries = 0, Client.optsServerTimeout = 3000
             , Client.optsServerOptions = Client.defaultServerOptions { Client.soNumResources = 2 } }
           [s] <- toList <$> Cluster.getServers client
           held <- newEmptyMVar
@@ -1344,7 +1365,7 @@ main = hspec $ do
         , MR "CLIENT_ERROR unauthenticated\r\n", MR "CLIENT_ERROR authentication failure\r\n" ] $ \server -> do
           let spec = (mockServerSpec server) { ssAuth = Auth.Auth "user" "pass" }
           client <- Client.newClient [spec]
-            Client.def { Client.optsServerRetries = 1, Client.optsServerTimeout = 3000 }
+            Client.def { Client.optsServerRetries = 0, Client.optsServerTimeout = 3000 }
           first <- async $ Client.get client "key"
           waitForRequests server 1 `shouldReturn` ["version\r\n"]
           second <- async $ Client.get client "key"
@@ -1661,7 +1682,7 @@ main = hspec $ do
     it "have the documented values" $ do
       Client.defaultServerSpec `shouldBe` Client.ServerSpec "127.0.0.1" "11211" Client.NoAuth
       serverFields Client.defaultServerOptions `shouldBe` (1, 1, 300)
-      optionFields Client.defaultOptions `shouldBe` (2, 200, 1500, 750, (1, 1, 300))
+      optionFields Client.defaultOptions `shouldBe` (1, 200, 1500, 750, (1, 1, 300))
 
     it "are the values def gives" $ do
       Client.defaultServerSpec `shouldBe` Client.def
@@ -2125,6 +2146,17 @@ main = hspec $ do
     isUnexpectedResponse (ProtocolError (UnexpectedResponse _)) = True
     isUnexpectedResponse _ = False
     closePair (left, right) = N.close left >> N.close right
+    -- How many times a get is tried against a server that drops every
+    -- connection. The server must then be marked dead. A get still retrying
+    -- after 5 s fails the test, naming the retries, rather than hanging it.
+    attempts opts = withServerAndClientOpts opts (replicate 5 CloseConnection) $ \server client -> do
+      ended <- timeout 5000000 (Client.get client "key" `shouldThrow` isUnexpectedEOF)
+      case ended of
+        Just () -> pure ()
+        Nothing -> expectationFailure $ "still retrying after 5 s, with optsServerRetries = "
+          <> show (Client.optsServerRetries opts)
+      Client.get client "key" `shouldThrow` (== ClientError NoServersReady)
+      length <$> mockRequests server
     allStats [(_, [ ("curr_items", "2"), ("rusage_user", "0.1 0.2") ])] = True
     allStats _ = False
     expectedAuthRequests = "version\r\nset auth 0 0 9\r\nuser pass\r\n"

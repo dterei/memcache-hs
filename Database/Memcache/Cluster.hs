@@ -46,10 +46,12 @@ differently for the keys just below that point.
 
 = Failures
 
-On an error, we mark the server as failed and remove it temporarily from the
-set of servers available. A key whose server is marked failed goes to the next
-live server found walking forward round the ring, so keys on live servers stay
-where they are, and 'NoServersReady' is thrown only when every server is
+When every attempt at an operation against a server fails, we mark the
+server as failed and remove it temporarily from the set of servers available,
+unless the last attempt only ran out of time waiting for a free connection to
+it (see 'optsServerRetries'). A key whose server is marked failed goes to the
+next live server found walking forward round the ring, so keys on live servers
+stay where they are, and 'NoServersReady' is thrown only when every server is
 marked failed. This is where libmemcached's auto-eject sends the key too,
 except when the number of live servers changes how many points each server
 gets (from 26 servers to 25, say): libmemcached rebuilds the ring from the
@@ -107,6 +109,12 @@ server before step 2 was on every instance. Step 2's deletes remove such a
 copy only when the key next changes. Counters and locks kept in memcached
 can't be moved this way: while instances use different mappings, they
 update them on different servers.
+
+'optsServerRetries' changed too. It now counts the retries after an
+operation's first attempt, where 0.4 counted the attempts, so a value of 1
+or more that you set yourself makes one more attempt than in 0.4, after one
+more 'optsFailRetryDelay'. Set it one lower to keep the old number of
+attempts. The default went from 2 to 1, which still means two attempts.
 -}
 module Database.Memcache.Cluster (
         -- * Cluster
@@ -150,20 +158,25 @@ import           System.Timeout
 import           UnliftIO.Exception       (Exception, SomeException, fromException, handle, throwIO)
 import           Database.Memcache.Socket (Response(..), WireKey, encodeKey, noOpRequest, recvResponse, responseStatus, sendRaw)
 
--- | Number of times to retry an operation before considering it failed.
+-- | Number of times to retry an operation against a server after its first
+-- attempt fails, before giving up (see 'optsServerRetries').
 type Retries = Int
 
 -- | Options specifies how a Memcached cluster should be configured.
 data Options = Options {
-        -- | Number of times to retry an operation on failure. If consecutive
-        -- failures exceed this value for a server, we mark it as down and
-        -- failover to a different server for the next operation. An attempt
-        -- that only ran out of time waiting for a free connection to the
-        -- server counts towards this like any failure, but the last attempt
-        -- decides: if it was such an attempt, the server isn't marked down,
-        -- whatever the earlier attempts did (see 'optsServerTimeout').
+        -- | Number of times to retry an operation against a server after it
+        -- fails, so each operation is tried at most @1 + optsServerRetries@
+        -- times. Zero or a negative value means it is tried once. If every
+        -- attempt fails, we mark the server as down and failover to a
+        -- different server for the next operation. An attempt that only ran
+        -- out of time waiting for a free connection to the server uses up a
+        -- retry like any failed attempt, but the last attempt decides: if it
+        -- was such an attempt, the server isn't marked down, whatever the
+        -- earlier attempts did (see 'optsServerTimeout').
         --
-        -- Default is 2.
+        -- Default is 1, so an operation is tried at most twice. Before
+        -- version 0.5 this was the number of attempts, not retries, and
+        -- defaulted to 2, which also meant two attempts.
         optsServerRetries        :: Retries,
         -- | After an operation has failed, how long to wait before retrying it
         -- while still within the 'optsServerRetries' count?
@@ -209,7 +222,7 @@ data Options = Options {
 
 -- | The default cluster options:
 --
--- * 'optsServerRetries': 2
+-- * 'optsServerRetries': 1 (one retry, so an operation is tried at most twice)
 -- * 'optsFailRetryDelay': 200ms
 -- * 'optsDeadRetryDelay': 1500ms
 -- * 'optsServerTimeout': 750ms
@@ -221,7 +234,7 @@ data Options = Options {
 -- @defaultOptions { optsServerTimeout = 250 }@.
 defaultOptions :: Options
 defaultOptions = Options {
-            optsServerRetries  = 2,
+            optsServerRetries  = 1,
             optsFailRetryDelay = 200,
             optsDeadRetryDelay = 1500,
             optsServerTimeout  = 750,
@@ -648,14 +661,14 @@ forAliveServers c f = do
             res <- V.mapM f servers'
             return $ V.toList $ V.zip servers' res
 
--- | Run an IO operation multiple times if an exception is thrown, marking the
--- server as dead if it fails more than the allowed number of retries. Each
--- attempt is given the server with a new @slotTaken@, which 'withSocket' sets
--- once it holds a slot in the server's pool. An attempt that runs out of time
--- before that never reached the server. It is retried like any failure, but
--- if it is the last attempt, it throws v'Timeout' without marking the server
--- dead: the last attempt alone decides, whatever the earlier ones did. Every
--- other failure but a client fault first closes the server's idle
+-- | Run an IO operation, retrying it up to the allowed number of retries if an
+-- exception is thrown, and marking the server as dead if every attempt fails.
+-- Each attempt is given the server with a new @slotTaken@, which 'withSocket'
+-- sets once it holds a slot in the server's pool. An attempt that runs out of
+-- time before that never reached the server. It is retried like any failure,
+-- but if it is the last attempt, it throws v'Timeout' without marking the
+-- server dead: the last attempt alone decides, whatever the earlier ones did.
+-- Every other failure but a client fault first closes the server's idle
 -- connections, before the operation is retried or the server marked dead.
 retryOp :: forall a. Cluster -> Server -> (Server -> IO a) -> IO a
 {-# INLINE retryOp #-}
@@ -663,7 +676,7 @@ retryOp Cluster{..} s op = go cRetries
   where
     go :: Int -> IO a
     {-# INLINE go #-}
-    go !n = handle (handleErrs $ n - 1) $ do
+    go !n = handle (handleErrs n) $ do
         taken <- newIORef False
         mr <- timeout cTimeout (op s { slotTaken = Just taken })
         case mr of
@@ -692,12 +705,12 @@ retryOp Cluster{..} s op = go cRetries
                     writeIORef (failed s) =<< getPOSIXTime
                     throwIO err
 
-    -- Retry the operation if it has attempts left, or else give up.
+    -- Retry the operation if it has retries left, or else give up.
     retryOr :: Int -> IO a -> IO a
     {-# INLINE retryOr #-}
     retryOr n giveUp
         | n <= 0 = giveUp
-        | otherwise = threadDelay cFailDelay >> go n
+        | otherwise = threadDelay cFailDelay >> go (n - 1)
 
 -- | Thrown by an attempt that runs out of time while it waits for a slot in
 -- the server's pool. @retryOp@ retries it like a failure, but without closing

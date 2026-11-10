@@ -33,8 +33,8 @@ We support the following logic for handling failure in operations:
                 free connection to the server, and consider it failed.
 
 * __Retry__: on operation failure (timeout, network error) we close the
-             connection, if any, and retry the operation, doing this up to a
-             configurable maximum. Unless the attempt only ran out of time
+             connection, if any, and retry the operation, doing this up to
+             'optsServerRetries' times. Unless the attempt only ran out of time
              waiting for a free connection, we also close the server's idle
              connections, as what made it fail, such as a restart of the
              server, may have broken them too. A reply to an operation's
@@ -43,8 +43,8 @@ We support the following logic for handling failure in operations:
              close the idle connections too; other operations throw at once,
              as the server may have carried out the request.
 
-* __Failover__: when an operation against a server in a cluster fails all
-                retries, we mark that server as dead and use the remaining
+* __Failover__: when an operation against a server in a cluster fails on every
+                attempt, we mark that server as dead and use the remaining
                 servers in the cluster to handle all operations: with the
                 default router, its keys go to the next live server on the
                 hash ring, and other keys stay where they are. That doesn't
