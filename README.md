@@ -159,7 +159,9 @@ every instance before starting the next:
    unless both clients send it to the same server.
 3. If a server was marked failed less than your longest expiry time ago,
    flush the cache first. Then swap the two clients' routers.
-4. Remove the second client.
+4. Once your longest expiry time has passed since step 3 was on every
+   instance, remove the second client. If some keys never expire, flush the
+   cache instead of waiting, and then remove the second client.
 
 The
 [`Database.Memcache.Cluster`](https://hackage.haskell.org/package/memcache/docs/Database-Memcache-Cluster.html)

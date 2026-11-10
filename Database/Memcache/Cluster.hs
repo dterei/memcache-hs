@@ -95,7 +95,12 @@ stages. Deploy each step to every instance before starting the next:
    still deletes the key under the other mapping, so neither version reads a
    stale copy of a key the other has changed or deleted.
 
-4. Remove the second client.
+4. Once your longest expiry time has passed since step 3 was on every
+   instance, remove the second client. Until then, copies stored under the
+   old mapping can still be on a key's old server, where failover can find
+   them, and the second client's deletes keep them from going stale. If
+   some keys never expire, flush the cache instead of waiting, and then
+   remove the second client.
 
 The flush in step 3 removes copies that a failover stored on a key's new
 server before step 2 was on every instance. Step 2's deletes remove such a
