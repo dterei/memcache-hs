@@ -11,8 +11,9 @@ Portability : GHC
 
 A Memcached client using the Meta (text) protocol. Memcached is an in-memory
 key-value store typically used as a distributed and shared cache. Clients can
-connect to a single Memcached server or a cluster of servers; clusters use
-consistent hashing to route requests to the appropriate server.
+connect to a single Memcached server or a cluster of servers; clusters route
+each key to a server by ketama consistent hashing, compatible with
+libmemcached (see "Database.Memcache.Cluster").
 
 This requires memcached 1.6.0 or newer, the first release with the meta
 commands; older servers reject every operation with @ERROR@.
@@ -27,16 +28,28 @@ while unexpected errors are thrown as exceptions. Exceptions are either of type
 
 We support the following logic for handling failure in operations:
 
-* __Timeouts__: we timeout any operation that takes too long and consider it
-                failed.
+* __Timeouts__: we time out any attempt at an operation that takes longer
+                than 'optsServerTimeout', including time spent waiting for a
+                free connection to the server, and consider it failed.
 
 * __Retry__: on operation failure (timeout, network error) we close the
-             connection and retry the operation, doing this up to a
-             configurable maximum.
+             connection, if any, and retry the operation, doing this up to a
+             configurable maximum. Unless the attempt only ran out of time
+             waiting for a free connection, we also close the server's idle
+             connections, as what made it fail, such as a restart of the
+             server, may have broken them too. A reply to an operation's
+             request that shows the connection is out of step also closes
+             it. Only 'getMany', 'setMany' and 'deleteMany' retry then, and
+             close the idle connections too; other operations throw at once,
+             as the server may have carried out the request.
 
 * __Failover__: when an operation against a server in a cluster fails all
                 retries, we mark that server as dead and use the remaining
-                servers in the cluster to handle all operations. After a
+                servers in the cluster to handle all operations: with the
+                default router, its keys go to the next live server on the
+                hash ring, and other keys stay where they are. That doesn't
+                happen when the last attempt only ran out of time waiting for
+                a free connection, as it never reached the server. After a
                 configurable period of time has passed, we consider the server
                 alive again and try to use it. This can lead to consistency
                 issues (stale data), but is usually fine for caching purposes
@@ -95,7 +108,7 @@ module Database.Memcache.Client (
         -- 'defaultServerSpec', 'defaultOptions' and 'defaultServerOptions',
         -- picked by the type it is used at.
         def,
-        quit,
+        quit, withClient,
 
         -- ** Configuration types
         Retries, ServerOptions(..), defaultServerOptions, Server,
@@ -109,13 +122,13 @@ module Database.Memcache.Client (
         get, getMany, gat, touch,
 
         -- ** Set operations
-        set, cas, add, replace,
+        set, setMany, cas, add, replace,
 
         -- ** Modify operations
         increment, decrement, append, prepend,
 
         -- ** Delete operations
-        delete, flush,
+        delete, deleteMany, flush,
 
         -- ** Information operations
         StatResults, stats, version,
@@ -130,14 +143,14 @@ import           Database.Memcache.Server
 import           Database.Memcache.Socket
 import           Database.Memcache.Types
 
-import           Control.Monad             (foldM, forM_, void, when)
+import           Control.Monad             (foldM, forM_, when)
 import           Data.ByteString           (ByteString)
-import qualified Data.ByteString           as B (any, empty, length, null)
-import qualified Data.ByteString.Char8     as C (unwords)
+import qualified Data.ByteString           as B (any, empty, length, null, stripSuffix)
+import qualified Data.ByteString.Char8     as C (split, unwords)
 import           Data.Default
 import           Data.Maybe                (fromMaybe, listToMaybe)
 import           Data.Word
-import           UnliftIO.Exception        (SomeException, handle, throwIO)
+import           UnliftIO.Exception        (bracket, throwIO)
 
 -- | A Memcached cluster client.
 type Client = Cluster
@@ -146,22 +159,62 @@ type StatResults = [(ByteString, ByteString)]
 
 -- | Create a client for the supplied servers. An empty list uses
 -- 'defaultServerSpec'.
+--
+-- Create one client and share it for the life of your program. It is safe to
+-- use from many threads, and it keeps a pool of connections to each server,
+-- opened on first use and reused across requests. A client created for each
+-- request instead opens (and, with credentials, authenticates) a new
+-- connection to every server it uses, every time. Each pool holds up to
+-- 'soNumResources' connections, one by default, so concurrent requests to a
+-- server beyond that wait for a free connection. The wait counts towards each
+-- attempt's 'optsServerTimeout'. If the last attempt runs out of time while
+-- still waiting, the server isn't marked down; running out of time afterwards
+-- is a server failure, however long the wait was.
 newClient :: [ServerSpec] -> Options -> IO Client
 newClient scs = newCluster $ if null scs then [defaultServerSpec] else scs
 
--- | Close all client connections, ignoring individual shutdown failures.
+-- | Close the client's connections to every server, including servers marked
+-- dead. Idle connections are closed straight away. A connection that another
+-- thread is using at the time is closed as soon as the request using it
+-- finishes, instead of going back to the pool; 'quit' doesn't wait for those
+-- requests or interrupt them. Requests that start after 'quit', including
+-- later requests of an operation that was already running, never use those
+-- connections: they open new ones, which stay open as usual.
+--
+-- This doesn't send Memcached's @quit@ command: closing the connection has the
+-- same effect, while sending the command would mean first connecting to any
+-- server the client has no connection to. So 'quit' never connects to a
+-- server, returns promptly and doesn't throw, even when a server is down.
 quit :: Client -> IO ()
-quit c = void $ allOp' c $ \server -> handle ignore $ do
-  withSocket server $ \socket -> sendRaw socket quitRequest
-  close server
-  where ignore :: SomeException -> IO ()
-        ignore = const (pure ())
+quit c = getServers c >>= mapM_ closeAll
+
+-- | Create a client with 'newClient', run an action with it, and close the
+-- client's connections with 'quit' when the action returns or throws.
+--
+-- Use it to scope one long-lived client to your program, a worker or a test,
+-- and share that client between threads. Don't wrap individual requests in
+-- it: every new client opens (and, with credentials, authenticates) its own
+-- connection to each server it uses, so a client per request pays that cost
+-- on every request.
+--
+-- 'newClient' doesn't connect to any server (connections are opened on first
+-- use), so if it throws there is nothing to close. 'quit' doesn't throw, so
+-- 'withClient' returns the action's result, or rethrows its exception,
+-- unchanged.
+--
+-- Don't use the client after 'withClient' returns, or from threads that
+-- outlive the action. A request such a thread is making when the action ends
+-- completes, and its connection is then closed; requests it starts afterwards
+-- open new connections, which stay open until they have been idle for
+-- 'soKeepAlive'.
+withClient :: [ServerSpec] -> Options -> (Client -> IO a) -> IO a
+withClient specs opts = bracket (newClient specs opts) quit
 
 -- | Retrieve the value for the given key from Memcached, along with its
 -- flags and CAS version. Returns 'Nothing' on a miss.
 get :: Client -> Key -> IO (Maybe (Value, Flags, Version))
 get c k = do
-  response <- keyedOp c k getRequest
+  response <- keyedOpExpecting c "GET" getReplies k getRequest
   status <- responseStatus response
   case (responseCode response, status) of
     ("VA", NoError) -> return $ Just (valueResult response)
@@ -187,7 +240,7 @@ getMany c keys = do
 -- expiration value of @0@ to store forever.
 gat :: Client -> Key -> Expiration -> IO (Maybe (Value, Flags, Version))
 gat c k e = do
-  response <- keyedOp c k (`gatRequest` e)
+  response <- keyedOpExpecting c "GAT" getReplies k (`gatRequest` e)
   status <- responseStatus response
   case (responseCode response, status) of
     ("VA", NoError) -> return $ Just (valueResult response)
@@ -199,7 +252,7 @@ gat c k e = do
 -- Use an expiration value of @0@ to store forever.
 touch :: Client -> Key -> Expiration -> IO (Maybe Version)
 touch c k e = do
-  response <- keyedOp c k (`touchRequest` e)
+  response <- keyedOpExpecting c "TOUCH" touchReplies k (`touchRequest` e)
   status <- responseStatus response
   case status of
     NoError | responseCode response == "HD" -> return $ Just (responseCas response)
@@ -211,6 +264,31 @@ touch c k e = do
 set :: Client -> Key -> Value -> Flags -> Expiration -> IO Version
 set c k v f e = store c k v f e 0 Set "SET"
 
+-- | Store many key-value pairs, as 'set' does, returning the new @Version@ of
+-- each. Like 'getMany', the requests to each server are pipelined, and the
+-- results are grouped by server rather than in the order given; within a
+-- server they keep the input order. A key given more than once is stored
+-- once per occurrence, in order, so its last entry in the result is the
+-- version now stored. Use an expiration value of @0@ to store forever.
+--
+-- Every key is checked before anything is sent, so an invalid key stores
+-- nothing. Each server's pairs are sent in batches of up to 256 that close
+-- early once their requests reach 1 MiB (a larger request goes alone), and
+-- each batch, like a 'set', must finish within 'optsServerTimeout'. When a
+-- server fails part-way through, the requests it was handling are sent again,
+-- storing the same values; the versions returned are from the retry. If this
+-- throws, some of the pairs may have been stored.
+setMany :: Client -> [(Key, Value, Flags, Expiration)] -> IO [(Key, Version)]
+setMany c items = do
+  replies <- keyedBatchOp c [(k, \wire -> setManyRequest wire v f e) | (k, v, f, e) <- items]
+  mapM stored replies
+  where
+    stored (key, response) = do
+      status <- responseStatus response
+      case status of
+        NoError -> return (key, responseCas response)
+        _ -> failResponse response "SETMANY"
+
 -- | Store a key-value pair, but only if the version specified by the client
 -- matches the @Version@ of the key-value pair at the server. The version
 -- identifier of the stored key-value pair is returned, or if the key doesn't
@@ -221,7 +299,7 @@ set c k v f e = store c k v f e 0 Set "SET"
 -- with 'set'.
 cas :: Client -> Key -> Value -> Flags -> Expiration -> Version -> IO (Maybe Version)
 cas c k v f e ver = do
-  response <- keyedOp c k (\wire -> storeRequest Set wire v f e ver)
+  response <- keyedOpExpecting c "SET" storeReplies k (\wire -> storeRequest Set wire v f e ver)
   status <- responseStatus response
   case status of
     NoError -> return $ Just (responseCas response)
@@ -234,7 +312,7 @@ cas c k v f e ver = do
 -- expiration value of @0@ to store forever.
 add :: Client -> Key -> Value -> Flags -> Expiration -> IO (Maybe Version)
 add c k v f e = do
-  response <- keyedOp c k (\wire -> storeRequest Add wire v f e 0)
+  response <- keyedOpExpecting c "ADD" storeReplies k (\wire -> storeRequest Add wire v f e 0)
   status <- responseStatus response
   case status of
     NoError -> return $ Just (responseCas response)
@@ -249,7 +327,7 @@ add c k v f e = do
 -- server, otherwise 'Nothing' is returned. A version of @0@ skips the check.
 replace :: Client -> Key -> Value -> Flags -> Expiration -> Version -> IO (Maybe Version)
 replace c k v f e ver = do
-  response <- keyedOp c k (\wire -> storeRequest Replace wire v f e ver)
+  response <- keyedOpExpecting c "REPLACE" storeReplies k (\wire -> storeRequest Replace wire v f e ver)
   status <- responseStatus response
   case status of
     NoError -> return $ Just (responseCas response)
@@ -260,7 +338,7 @@ replace c k v f e ver = do
 
 store :: Cluster -> Key -> Value -> Flags -> Expiration -> Version -> StoreMode -> String -> IO Version
 store c k v f e ver mode operation = do
-  response <- keyedOp c k (\wire -> storeRequest mode wire v f e ver)
+  response <- keyedOpExpecting c operation storeReplies k (\wire -> storeRequest mode wire v f e ver)
   status <- responseStatus response
   case status of
     NoError -> return $ responseCas response
@@ -294,7 +372,7 @@ decrement c k i d e ver = arithmetic c k i d e ver Decr "DECREMENT"
 
 arithmetic :: Cluster -> Key -> Initial -> Delta -> Expiration -> Version -> ArithMode -> String -> IO (Maybe (Word64, Version))
 arithmetic c k i d e ver mode operation = do
-  response <- keyedOp c k (\wire -> arithmeticRequest mode wire i d e ver)
+  response <- keyedOpExpecting c operation arithmeticReplies k (\wire -> arithmeticRequest mode wire i d e ver)
   status <- responseStatus response
   case status of
     NoError -> return $ Just (responseNumber response, responseCas response)
@@ -325,7 +403,7 @@ prepend c k v ver = modify c k v ver Prepend "PREPEND"
 
 modify :: Cluster -> Key -> Value -> Version -> StoreMode -> String -> IO (Maybe Version)
 modify c k v ver mode operation = do
-  response <- keyedOp c k (\wire -> modifyRequest mode wire v ver)
+  response <- keyedOpExpecting c operation storeReplies k (\wire -> modifyRequest mode wire v ver)
   status <- responseStatus response
   case status of
     NoError -> return $ Just (responseCas response)
@@ -340,7 +418,7 @@ modify c k v ver mode operation = do
 -- of @0@ deletes the key unconditionally.
 delete :: Client -> Key -> Version -> IO Bool
 delete c k ver = do
-  response <- keyedOp c k (`deleteRequest` ver)
+  response <- keyedOpExpecting c "DELETE" deleteReplies k (`deleteRequest` ver)
   status <- responseStatus response
   case status of
     NoError -> return True
@@ -348,12 +426,35 @@ delete c k ver = do
     ErrKeyExists -> return False
     _ -> failResponse response "DELETE"
 
+-- | Delete many keys, pipelining the requests to each server as 'getMany'
+-- does. The deletes are unconditional, like 'delete' with a version of @0@.
+--
+-- This returns once each key has been deleted or found missing, without
+-- saying which: when a server fails part-way through, the requests it was
+-- handling are sent again, and the retry finds the keys the first attempt
+-- deleted missing, so a per-key answer would be wrong for them. Use 'delete'
+-- to learn whether a key was present.
+--
+-- Every key is checked before anything is sent, so an invalid key deletes
+-- nothing. If this throws, some of the keys may have been deleted.
+deleteMany :: Client -> [Key] -> IO ()
+deleteMany c keys = do
+  replies <- keyedBatchOp c [(key, deleteManyRequest) | key <- keys]
+  forM_ replies $ \(_, response) -> do
+    status <- responseStatus response
+    case status of
+      NoError -> return ()
+      ErrKeyNotFound -> return ()
+      _ -> failResponse response "DELETEMANY"
+
 -- | Remove (delete) all currently stored key-value pairs from the cluster. The
 -- expiration value can be used to cause this flush to occur in the future
--- rather than immediately.
+-- rather than immediately. The servers are flushed in turn, and one that
+-- fails, or gives a reply other than @OK@, throws and leaves the servers
+-- after it unflushed.
 flush :: Client -> Maybe Expiration -> IO ()
 flush c e = do
-  results <- allOp c (flushRequest e)
+  results <- allOpExpecting c "FLUSH" ["OK"] (flushRequest e)
   forM_ results $ \(_, response) -> do
     status <- responseStatus response
     when (status /= NoError) $ failResponse response "FLUSH"
@@ -361,13 +462,15 @@ flush c e = do
 -- | Return statistics on the stored key-value pairs at every available server
 -- in the cluster. The optional key can be used to select a different set of
 -- statistics from the server than the default. Most Memcached servers support
--- @"items"@, @"slabs"@ or @"settings"@.
+-- @"items"@, @"slabs"@ or @"settings"@. A server's reply of more than 262,144
+-- entries, or of more than 16 MiB counting each entry's line as it was sent,
+-- fails with 'BadLength'.
 stats :: Client -> Maybe Key -> IO [(Server, StatResults)]
 stats c key = validateStatsArgs key >> allOp' c (runStats key)
   where
     runStats statsArgs server = withSocket server $ \socket -> do
       sendRaw socket (statsRequest statsArgs)
-      collect socket []
+      collect socket 0 0 []
 
     -- Arguments may contain spaces (@stats cachedump 1 100@), but control
     -- bytes would let a caller inject a second command line.
@@ -379,24 +482,67 @@ stats c key = validateStatsArgs key >> allOp' c (runStats key)
           throwIO $ ClientError (KeyTooLong "invalid stats argument")
       | otherwise = return ()
 
-    collect socket values = do
-      response <- recvResponse socket
+    -- Each line counts as sent, line end included. The entries kept are
+    -- slices of their lines, so the spaces between tokens take memory too.
+    collect socket count size values = do
+      when (count > maxStatsEntries || size > maxStatsBytes) $
+        throwIO $ ProtocolError BadLength { protocolError = "stats reply too long" }
+      line <- recvLine socket
+      response <- statsResponse line
+      let keep entry = collect socket (count + 1) (size + B.length line + 1) (entry : values)
       case (responseCode response, responseTokens response) of
         (code, _) | code `elem` ["ERROR", "CLIENT_ERROR", "SERVER_ERROR"] ->
           responseStatus response >> failResponse response "STATS"
         (code, _) | code `elem` ["END", "RESET", "OK"] -> return (reverse values)
-        ("STAT", field:value) -> collect socket ((field, C.unwords value) : values)
-        (code, tokens) -> collect socket ((code, C.unwords tokens) : values)
+        ("STAT", field:value) -> keep (field, C.unwords value)
+        (code, tokens) -> keep (code, C.unwords tokens)
+
+    -- Split the line as 'recvResponse' does: on spaces alone, after removing
+    -- the CR that 'recvLine' leaves on it.
+    statsResponse line =
+      case filter (not . B.null) (C.split ' ' (fromMaybe line (B.stripSuffix "\r" line))) of
+        [] -> throwIO $ ProtocolError UnknownPkt { protocolError = "" }
+        code:tokens -> return (Response code tokens B.empty)
+
+-- | Most entries 'stats' accepts in one server's reply. Memcached sends four
+-- lines for each open connection in @stats conns@, and three for each
+-- listening socket, so this allows it on a server with nearly 65,536
+-- connections. Most other groups are far shorter:
+-- @stats items@ has about 30 lines for each slab class, and @stats sizes@ one
+-- for each 32-byte size bucket in use (at most 32,768 with the default 1 MiB
+-- item size limit).
+maxStatsEntries :: Int
+maxStatsEntries = 256 * 1024
+
+-- | Most bytes of entries 'stats' accepts in one server's reply, counting each
+-- line as it was sent. Replies to @stats conns@ and @stats cachedump@ are
+-- smaller: 262,144 entries of @stats conns@ come to 15 MiB even with
+-- five-digit descriptors, the longest Unix socket path and state name, and
+-- ten-digit idle times, and memcached stops @stats cachedump@ at 2 MiB.
+maxStatsBytes :: Int
+maxStatsBytes = 16 * 1024 * 1024
 
 -- | Return the version string of the Memcached cluster. Only queries
 -- one server and assumes all servers in the cluster run the same version.
 version :: Client -> IO ByteString
 version c = do
-  response <- anyOp c versionRequest
+  response <- anyOpExpecting c "VERSION" ["VERSION"] versionRequest
   status <- responseStatus response
   if responseCode response == "VERSION" && status == NoError
     then return $ fromMaybe B.empty (listToMaybe (responseTokens response))
     else failResponse response "VERSION"
+
+-- | The codes of the replies, besides error replies, that memcached 1.6.13
+-- and later send to each request; a reply with any other code closes the
+-- connection, as 'keyedOpExpecting' describes. Up to 1.6.17, memcached run
+-- with @-o meta_response_old@ sends @OK@ in place of @HD@. Stores and deletes
+-- take it as success; 'touch' doesn't.
+getReplies, touchReplies, storeReplies, arithmeticReplies, deleteReplies :: [ByteString]
+getReplies = ["VA", "EN"]
+touchReplies = ["HD", "EN"]
+storeReplies = ["HD", "OK", "NS", "EX", "NF"]
+arithmeticReplies = ["VA", "NF", "NS", "EX"]
+deleteReplies = ["HD", "OK", "NF", "EX"]
 
 -- | The value, flags and CAS version carried by a @VA@ response.
 valueResult :: Response -> (Value, Flags, Version)

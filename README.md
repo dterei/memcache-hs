@@ -12,8 +12,11 @@ It supports the Meta Text memcached protocol and username/password
 authentication. Keys containing whitespace or control bytes are sent using its
 base64 binary-key mode. The encoded key must still fit within 250 bytes. It
 supports connecting to a single, or a cluster of memcached servers. When
-connecting to a cluster, consistent hashing is used for routing requests to
-the appropriate server.
+connecting to a cluster, keys are routed by ketama consistent hashing,
+compatible with libmemcached's weighted ketama distribution, so a key goes to
+the same server as from libmemcached-based clients given the same server list.
+Version 0.5 changed the routing, so upgrading moves keys to different servers,
+once; see [Upgrading from 0.4](#upgrading-from-04).
 
 **This library requires memcached 1.6.0 or newer**, the first release with the
 meta commands. Against older servers every operation is rejected with `ERROR`.
@@ -73,6 +76,22 @@ value, unless the expiration is `maxBound`. The
 documentation covers every operation, along with the timeouts, retries and
 failover configured through `Options`.
 
+Create one client when your program starts and share it: it is safe to use
+from many threads, and it keeps its connections to each server open between
+requests. A client created for each request opens a new connection to every
+server it uses (and authenticates, if credentials are set) every time.
+`M.withClient` closes a client's connections when an action ends, so use it
+around your whole program, a worker or a test, not around single requests.
+Each server's pool holds one connection by default, so concurrent requests to
+the same server wait for each other; see
+[Architecture Notes](#architecture-notes) to allow more. The wait counts
+towards each attempt's `optsServerTimeout`. An attempt that runs out of time
+while still waiting is retried like any failed attempt, but if it was the last
+attempt, the operation fails with `Timeout` and the server isn't marked dead.
+An attempt that runs out of time afterwards, while opening, authenticating or
+using its connection, counts as a server failure, however long it waited
+first.
+
 ### Servers and authentication
 
 `newClient` takes one `ServerSpec` per server, and routes each key to one of
@@ -117,6 +136,37 @@ import qualified Database.Memcache.ElastiCacheClient as EC
   mc <- EC.newClient M.def (60 * 1000000) endpoint
 ```
 
+### Upgrading from 0.4
+
+Version 0.5 routes keys with ketama consistent hashing, where 0.4 sent keys to
+no more than two servers at a time. With n servers, upgrading moves all but
+about one key in n to a different server, once: about half the keys with 2
+servers, 70% with 3 and 88% with 8. Expect a burst of cache misses.
+
+While old and new versions run side by side, as in a rolling deploy, they read
+and write a moved key on different servers. One can then read a stale copy of
+a key that the other has changed or deleted, until the copy expires. To avoid
+that, either switch every instance at once, at a quiet time, optionally
+flushing the cache afterwards, or switch in stages, deploying each step to
+every instance before starting the next:
+
+1. Upgrade with `optsGetServerForKey = legacyServerForKey`, 0.4's router,
+   now deprecated, from `Database.Memcache.Cluster`. Keys stay where they
+   are, as long as the build uses the same `hashable` version and platform
+   as before. With `-Werror`, also pass `-Wno-deprecations`.
+2. Add a second client for the same servers that uses `ketamaServerForKey`.
+   Whenever a key is changed or deleted, also delete it through that client,
+   unless both clients send it to the same server.
+3. If a server was marked failed less than your longest expiry time ago,
+   flush the cache first. Then swap the two clients' routers.
+4. Once your longest expiry time has passed since step 3 was on every
+   instance, remove the second client. If some keys never expire, flush the
+   cache instead of waiting, and then remove the second client.
+
+The
+[`Database.Memcache.Cluster`](https://hackage.haskell.org/package/memcache/docs/Database-Memcache-Cluster.html)
+documentation has the details.
+
 ## Licensing
 
 This library is BSD-licensed.
@@ -135,9 +185,10 @@ memcached servers.
 ## Architecture Notes
 
 We're relying on `Data.Pool` for thread safety right now. Each server has its
-own pool, and grabbing a connection from it (`withResource`) blocks other
-requests using that connection until the operation completes. `getMany` is the
-exception: it pipelines quiet Meta Text requests over one pooled connection.
+own pool, and grabbing a connection from it (`Server.withSocket`) blocks other
+requests using that connection until the operation completes. `getMany`,
+`setMany` and `deleteMany` are the exception: they pipeline Meta Text requests
+to each server in batches, each batch over one pooled connection.
 
 By default each server's pool holds a single connection (`soNumResources = 1`),
 so concurrent operations against the same server wait for each other. Raising
