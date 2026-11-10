@@ -341,6 +341,11 @@ touchRequest key expiry = render (B.length (wireKey key)) $
   <> bytes " c" <> bytes crlf
 
 -- | Encode a storage request.
+--
+-- Don't send a value longer than 1 GiB, the largest item memcached can store:
+-- memcached mishandles a data length over 2147483645 bytes, and then runs the
+-- rest of the value's bytes as commands. The operations in
+-- "Database.Memcache.Client" refuse such a value; this encoder doesn't.
 storeRequest :: StoreMode -> WireKey -> Value -> Flags -> Expiration -> Version -> ByteString
 storeRequest mode key value flags expiry version = render (B.length (wireKey key) + B.length value) $
   bytes cmdMetaSet <> bytes " " <> bytes (wireKey key) <> bytes " " <> intDec (B.length value)
@@ -361,6 +366,11 @@ arithmeticRequest mode key initial delta expiry version = render (B.length (wire
   <> bytes crlf
 
 -- | Encode an append or prepend request.
+--
+-- Don't send a value longer than 1 GiB, the largest item memcached can store:
+-- memcached mishandles a data length over 2147483645 bytes, and then runs the
+-- rest of the value's bytes as commands. The operations in
+-- "Database.Memcache.Client" refuse such a value; this encoder doesn't.
 modifyRequest :: StoreMode -> WireKey -> Value -> Version -> ByteString
 modifyRequest mode key value version = render (B.length (wireKey key) + B.length value) $
   bytes cmdMetaSet <> bytes " " <> bytes (wireKey key) <> bytes " " <> intDec (B.length value)

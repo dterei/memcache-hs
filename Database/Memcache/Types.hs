@@ -49,7 +49,9 @@ data Status
     | ErrKeyNotFound
     -- | The key already exists.
     | ErrKeyExists
-    -- | The value exceeds the server limit.
+    -- | The value exceeds the server limit. The client also throws this,
+    -- without sending anything, for a value larger than 1 GiB, the largest
+    -- item memcached can store.
     | ErrValueTooLarge
     -- | The item was not stored.
     | ErrItemNotStored

@@ -198,6 +198,11 @@ touch c k e = do
 
 -- | Store a new (or overwrite existing) key-value pair, returning its @Version@
 -- identifier. Use an expiration value of @0@ to store forever.
+--
+-- A value larger than 1 GiB, the largest item memcached can store, is
+-- rejected with 'OpError' 'ErrValueTooLarge' before anything is sent, as it
+-- is by every operation that sends a value. memcached itself rejects a value
+-- too large for its item size limit (its @-I@ option) with the same status.
 set :: Cluster -> Key -> Value -> Flags -> Expiration -> IO Version
 set c k v f e = store c k v f e 0 Set "SET"
 
@@ -211,6 +216,7 @@ set c k v f e = store c k v f e 0 Set "SET"
 -- with 'set'.
 cas :: Cluster -> Key -> Value -> Flags -> Expiration -> Version -> IO (Maybe Version)
 cas c k v f e ver = do
+  checkValue v
   response <- keyedOp c k (\wire -> storeRequest Set wire v f e ver)
   status <- responseStatus response
   case status of
@@ -224,6 +230,7 @@ cas c k v f e ver = do
 -- expiration value of @0@ to store forever.
 add :: Cluster -> Key -> Value -> Flags -> Expiration -> IO (Maybe Version)
 add c k v f e = do
+  checkValue v
   response <- keyedOp c k (\wire -> storeRequest Add wire v f e 0)
   status <- responseStatus response
   case status of
@@ -239,6 +246,7 @@ add c k v f e = do
 -- server, otherwise 'Nothing' is returned. A version of @0@ skips the check.
 replace :: Cluster -> Key -> Value -> Flags -> Expiration -> Version -> IO (Maybe Version)
 replace c k v f e ver = do
+  checkValue v
   response <- keyedOp c k (\wire -> storeRequest Replace wire v f e ver)
   status <- responseStatus response
   case status of
@@ -250,11 +258,26 @@ replace c k v f e ver = do
 
 store :: Cluster -> Key -> Value -> Flags -> Expiration -> Version -> StoreMode -> String -> IO Version
 store c k v f e ver mode operation = do
+  checkValue v
   response <- keyedOp c k (\wire -> storeRequest mode wire v f e ver)
   status <- responseStatus response
   case status of
     NoError -> return $ responseCas response
     _ -> failResponse response operation
+
+-- | The largest value memcached can store: 1 GiB, its
+-- @ITEM_SIZE_MAX_UPPER_LIMIT@, which caps its @-I@ item size option.
+maxValueLength :: Int
+maxValueLength = 1073741824
+
+-- | Throw 'OpError' 'ErrValueTooLarge', the status memcached returns for a
+-- value too large to store, if the value is longer than @maxValueLength@.
+-- Every operation that sends a value calls this first, so that nothing is
+-- sent: memcached mishandles a data length over 2147483645 bytes and then
+-- runs the rest of the value's bytes as commands. This evaluates the value
+-- before a connection is taken.
+checkValue :: Value -> IO ()
+checkValue v = when (B.length v > maxValueLength) $ throwStatus ErrValueTooLarge
 
 -- | Increment a numeric value stored against a key, returning the incremented
 -- value and the @Version@ identifier of the key-value pair. Throws
@@ -315,6 +338,7 @@ prepend c k v ver = modify c k v ver Prepend "PREPEND"
 
 modify :: Cluster -> Key -> Value -> Version -> StoreMode -> String -> IO (Maybe Version)
 modify c k v ver mode operation = do
+  checkValue v
   response <- keyedOp c k (\wire -> modifyRequest mode wire v ver)
   status <- responseStatus response
   case status of
