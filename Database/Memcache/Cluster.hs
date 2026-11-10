@@ -46,10 +46,12 @@ differently for the keys just below that point.
 
 = Failures
 
-On an error, we mark the server as failed and remove it temporarily from the
-set of servers available. A key whose server is marked failed goes to the next
-live server found walking forward round the ring, so keys on live servers stay
-where they are, and 'NoServersReady' is thrown only when every server is
+When every attempt at an operation against a server fails, we mark the
+server as failed and remove it temporarily from the set of servers available,
+unless the last attempt only ran out of time waiting for a free connection to
+it (see 'optsServerRetries'). A key whose server is marked failed goes to the
+next live server found walking forward round the ring, so keys on live servers
+stay where they are, and 'NoServersReady' is thrown only when every server is
 marked failed. This is where libmemcached's auto-eject sends the key too,
 except when the number of live servers changes how many points each server
 gets (from 26 servers to 25, say): libmemcached rebuilds the ring from the
@@ -107,6 +109,12 @@ server before step 2 was on every instance. Step 2's deletes remove such a
 copy only when the key next changes. Counters and locks kept in memcached
 can't be moved this way: while instances use different mappings, they
 update them on different servers.
+
+'optsServerRetries' changed too. It now counts the retries after an
+operation's first attempt, where 0.4 counted the attempts, so a value of 1
+or more that you set yourself makes one more attempt than in 0.4, after one
+more 'optsFailRetryDelay'. Set it one lower to keep the old number of
+attempts. The default went from 2 to 1, which still means two attempts.
 -}
 module Database.Memcache.Cluster (
         -- * Cluster
@@ -150,7 +158,8 @@ import           System.Timeout
 import           UnliftIO.Exception       (Exception, SomeException, fromException, handle, throwIO)
 import           Database.Memcache.Socket (Response(..), WireKey, encodeKey, noOpRequest, recvResponse, responseStatus, sendRaw)
 
--- | Number of times to retry an operation before considering it failed.
+-- | Number of times to retry an operation against a server after its first
+-- attempt fails, before giving up (see 'optsServerRetries').
 type Retries = Int
 
 -- | Options specifies how a Memcached cluster should be configured.

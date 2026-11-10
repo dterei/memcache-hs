@@ -167,6 +167,12 @@ The
 [`Database.Memcache.Cluster`](https://hackage.haskell.org/package/memcache/docs/Database-Memcache-Cluster.html)
 documentation has the details.
 
+`optsServerRetries` changed too. It now counts the retries after an
+operation's first attempt, where 0.4 counted the attempts, so a value of 1 or
+more that you set yourself makes one more attempt than in 0.4. Set it one
+lower to keep the old number of attempts. The default went from 2 to 1, which
+still means two attempts.
+
 ## Licensing
 
 This library is BSD-licensed.

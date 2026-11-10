@@ -533,7 +533,7 @@ main = hspec $ do
 
     -- The unknown reply answers the batch's mn, so the mock has recorded both
     -- requests of each attempt before the client sees it.
-    it "marks the server dead once a batch's retries all get an unknown code" $
+    it "marks the server dead once every attempt at a batch gets an unknown code" $
       withServerAndClientOpts fastFailover
         [Noop, MR "XX O0\r\nMN\r\n", Noop, MR "XX O0\r\nMN\r\n"] $ \server client -> do
           Client.getMany client ["one"] `shouldThrow` (== ProtocolError (UnknownStatus "XX"))
