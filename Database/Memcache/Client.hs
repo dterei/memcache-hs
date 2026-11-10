@@ -145,8 +145,8 @@ import           Database.Memcache.Types
 
 import           Control.Monad             (foldM, forM_, when)
 import           Data.ByteString           (ByteString)
-import qualified Data.ByteString           as B (any, empty, length, null)
-import qualified Data.ByteString.Char8     as C (unwords)
+import qualified Data.ByteString           as B (any, empty, length, null, stripSuffix)
+import qualified Data.ByteString.Char8     as C (split, unwords)
 import           Data.Default
 import           Data.Maybe                (fromMaybe, listToMaybe)
 import           Data.Word
@@ -462,13 +462,15 @@ flush c e = do
 -- | Return statistics on the stored key-value pairs at every available server
 -- in the cluster. The optional key can be used to select a different set of
 -- statistics from the server than the default. Most Memcached servers support
--- @"items"@, @"slabs"@ or @"settings"@.
+-- @"items"@, @"slabs"@ or @"settings"@. A server's reply of more than 262,144
+-- entries, or of more than 16 MiB counting each entry's line as it was sent,
+-- fails with 'BadLength'.
 stats :: Client -> Maybe Key -> IO [(Server, StatResults)]
 stats c key = validateStatsArgs key >> allOp' c (runStats key)
   where
     runStats statsArgs server = withSocket server $ \socket -> do
       sendRaw socket (statsRequest statsArgs)
-      collect socket []
+      collect socket 0 0 []
 
     -- Arguments may contain spaces (@stats cachedump 1 100@), but control
     -- bytes would let a caller inject a second command line.
@@ -480,14 +482,45 @@ stats c key = validateStatsArgs key >> allOp' c (runStats key)
           throwIO $ ClientError (KeyTooLong "invalid stats argument")
       | otherwise = return ()
 
-    collect socket values = do
-      response <- recvResponse socket
+    -- Each line counts as sent, line end included. The entries kept are
+    -- slices of their lines, so the spaces between tokens take memory too.
+    collect socket count size values = do
+      when (count > maxStatsEntries || size > maxStatsBytes) $
+        throwIO $ ProtocolError BadLength { protocolError = "stats reply too long" }
+      line <- recvLine socket
+      response <- statsResponse line
+      let keep entry = collect socket (count + 1) (size + B.length line + 1) (entry : values)
       case (responseCode response, responseTokens response) of
         (code, _) | code `elem` ["ERROR", "CLIENT_ERROR", "SERVER_ERROR"] ->
           responseStatus response >> failResponse response "STATS"
         (code, _) | code `elem` ["END", "RESET", "OK"] -> return (reverse values)
-        ("STAT", field:value) -> collect socket ((field, C.unwords value) : values)
-        (code, tokens) -> collect socket ((code, C.unwords tokens) : values)
+        ("STAT", field:value) -> keep (field, C.unwords value)
+        (code, tokens) -> keep (code, C.unwords tokens)
+
+    -- Split the line as 'recvResponse' does: on spaces alone, after removing
+    -- the CR that 'recvLine' leaves on it.
+    statsResponse line =
+      case filter (not . B.null) (C.split ' ' (fromMaybe line (B.stripSuffix "\r" line))) of
+        [] -> throwIO $ ProtocolError UnknownPkt { protocolError = "" }
+        code:tokens -> return (Response code tokens B.empty)
+
+-- | Most entries 'stats' accepts in one server's reply. Memcached sends four
+-- lines for each open connection in @stats conns@, and three for each
+-- listening socket, so this allows it on a server with nearly 65,536
+-- connections. Most other groups are far shorter:
+-- @stats items@ has about 30 lines for each slab class, and @stats sizes@ one
+-- for each 32-byte size bucket in use (at most 32,768 with the default 1 MiB
+-- item size limit).
+maxStatsEntries :: Int
+maxStatsEntries = 256 * 1024
+
+-- | Most bytes of entries 'stats' accepts in one server's reply, counting each
+-- line as it was sent. Replies to @stats conns@ and @stats cachedump@ are
+-- smaller: 262,144 entries of @stats conns@ come to 15 MiB even with
+-- five-digit descriptors, the longest Unix socket path and state name, and
+-- ten-digit idle times, and memcached stops @stats cachedump@ at 2 MiB.
+maxStatsBytes :: Int
+maxStatsBytes = 16 * 1024 * 1024
 
 -- | Return the version string of the Memcached cluster. Only queries
 -- one server and assumes all servers in the cluster run the same version.

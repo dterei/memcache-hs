@@ -489,13 +489,16 @@ keyedOpWith c check k makeReq = do
 -- A miss reply (@EN@) with no opaque is skipped, as there is nothing to
 -- return for it. memcached sends one when a read from extstore misses (for
 -- quiet gets too, from 1.6.40) and, before 1.6.18, for any get miss that is
--- not quiet. Error replies (@ERROR@, @CLIENT_ERROR@ and @SERVER_ERROR@) throw
--- as they do for 'keyedOp'. A reply with an unknown code throws
--- 'UnknownStatus', as its length can't be known. Any other reply with no
--- opaque, with the opaque of no request in its batch, or out of order throws
--- 'UnexpectedResponse'. Either way the connection is closed rather than
--- reused. Like any server failure, the batch is then sent again on a new
--- connection, and the failure counts towards marking the server dead.
+-- not quiet. As memcached answers in order, it counts as the reply to the
+-- next request, after the one the previous reply answered. Error replies
+-- (@ERROR@, @CLIENT_ERROR@ and @SERVER_ERROR@) throw as they do for
+-- 'keyedOp'. A reply with an unknown code throws 'UnknownStatus', as its
+-- length can't be known. Any other reply with no opaque, with the opaque of
+-- no request in its batch, or out of order throws 'UnexpectedResponse', as
+-- does a bare @EN@ after the reply to the batch's last request. Either way
+-- the connection is closed rather than reused. Like any server failure, the
+-- batch is then sent again on a new connection, and the failure counts
+-- towards marking the server dead.
 keyedBatchOp :: Cluster -> [(Key, WireKey -> Int -> ByteString)] -> IO [(Key, Response)]
 keyedBatchOp c requests = do
     groups <- foldM add [] (zip [0..] requests)
@@ -528,10 +531,13 @@ keyedBatchOp c requests = do
     -- request after the one the previous reply answered; the requests in
     -- between got no reply. A bare EN is a miss whose opaque memcached
     -- dropped: we can't tell which request it answers, but it is one line
-    -- with nothing to return, so skip it. Anything else means the replies
-    -- are out of step with the requests, as may a reply with an unknown
-    -- code, whose length we can't know. So throw while the connection is
-    -- held, and it is closed rather than returned to the pool. Echoed keys
+    -- with nothing to return, so skip it. Later replies answer later
+    -- requests, so count it as the next request's reply. With no request
+    -- left it is one reply too many, and a server sending bare ENs without
+    -- end would otherwise keep the batch reading. Anything else means the
+    -- replies are out of step with the requests, as may a reply with an
+    -- unknown code, whose length we can't know. So throw while the connection
+    -- is held, and it is closed rather than returned to the pool. Echoed keys
     -- can't be matched instead: memcached echoes a key raw or as base64
     -- according to how its item was stored, not how the request sent it, and
     -- a raw key can contain a newline.
@@ -540,7 +546,7 @@ keyedBatchOp c requests = do
       void (responseStatus response)
       case (responseCode response, find (B.isPrefixOf "O") (responseTokens response)) of
         ("MN", _) -> return (reverse acc)
-        ("EN", Nothing) -> recvUntilMN connection pending acc
+        ("EN", Nothing) | _ : rest <- pending -> recvUntilMN connection rest acc
         (_, opaque) -> case dropWhile (\(_, opaque', _) -> Just opaque' /= opaque) pending of
           (key, _, _) : rest -> recvUntilMN connection rest ((key, response) : acc)
           [] -> throwIO $ ProtocolError UnexpectedResponse
