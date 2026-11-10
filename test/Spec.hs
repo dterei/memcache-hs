@@ -33,6 +33,7 @@ import           Data.IORef                (atomicModifyIORef', newIORef, readIO
 import           Data.List                 (find, nub)
 import           GHC.Clock                 (getMonotonicTime)
 import           GHC.Conc                  (ThreadStatus (..), threadStatus)
+import           System.IO.Error           (isDoesNotExistError)
 import           System.Timeout            (timeout)
 import           UnliftIO.Async            (Async, async, asyncThreadId, cancel,
                                             mapConcurrently, wait)
@@ -1629,6 +1630,22 @@ main = hspec $ do
       withMockServerAt (atPort port later) [MR "VA 3 f2 c7\r\nfoo\r\n"] $ \server -> do
         client <- Client.newClient [localhostSpec server Auth.NoAuth] patient
         Client.get client "key" `shouldReturn` Just ("foo", 2, 7)
+
+    -- Sockets bound at both addresses refuse the connection, so the get fails
+    -- with a connection error, as it does where a host has one address. The
+    -- socket at the later address sets SO_REUSEADDR, as connections to an
+    -- earlier mock at that port can still be in TIME_WAIT there. Once a mock
+    -- listens at the later address, a new client's get reaches it.
+    it "fails with the connection error when every address refuses the connection" $
+      withLocalhostAddresses $ \first later ->
+      withBoundSocket first $ \port -> do
+        let spec = ServerSpec "localhost" (show port) Auth.NoAuth
+        refused <- Client.newClient [spec] oneAttempt { Client.optsServerTimeout = 10000 }
+        withBoundSocketReuseAddr (atPort port later) $ \_ ->
+          Client.get refused "key" `shouldThrow` isDoesNotExistError
+        withMockServerAt (atPort port later) [MR "VA 3 f2 c7\r\nfoo\r\n"] $ \_ -> do
+          client <- Client.newClient [spec] patient
+          Client.get client "key" `shouldReturn` Just ("foo", 2, 7)
 
     -- A second mock, at the same port on the later address, records whether
     -- the client tries there too once the credentials are rejected. Once the

@@ -7,8 +7,8 @@
 -- once and never clash with a real memcached on the default port.
 module MockServer (
         MockResponse(..), MockServer(..), withMockServer, withMockServerAt,
-        withConcurrentMockServer, withBoundSocket, withFullListener, canListenAt,
-        mockServerSpec
+        withConcurrentMockServer, withBoundSocket, withBoundSocketReuseAddr,
+        withFullListener, canListenAt, mockServerSpec
     ) where
 
 import           Control.Concurrent
@@ -148,7 +148,20 @@ canListenAt address = handle unavailable $ bracket
 -- can listen there in the meantime. The action is given the port, a free one
 -- if the address's port is 0.
 withBoundSocket :: N.SockAddr -> (N.PortNumber -> IO a) -> IO a
-withBoundSocket address action = bracket (newSocket address) N.close $ \sock -> do
+withBoundSocket = bindNotListening False
+
+-- | Like 'withBoundSocket', but the socket sets SO_REUSEADDR before it binds.
+-- Then the bind succeeds where an earlier mock's connections at that address
+-- and port are still in TIME_WAIT, but another socket that sets SO_REUSEADDR,
+-- as the mocks do, can listen there in the meantime.
+withBoundSocketReuseAddr :: N.SockAddr -> (N.PortNumber -> IO a) -> IO a
+withBoundSocketReuseAddr = bindNotListening True
+
+-- | Bind a socket to the given address without listening, setting
+-- SO_REUSEADDR first if asked, and run the action with its port.
+bindNotListening :: Bool -> N.SockAddr -> (N.PortNumber -> IO a) -> IO a
+bindNotListening reuse address action = bracket (newSocket address) N.close $ \sock -> do
+  when reuse $ N.setSocketOption sock N.ReuseAddr 1
   N.bind sock address
   N.socketPort sock >>= action
 
