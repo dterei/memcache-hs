@@ -2,11 +2,13 @@
 
 -- | Mock Memcached server - just enough for testing client.
 --
--- Each mock listens on its own ephemeral port on 127.0.0.1, so tests can run
--- several at once and never clash with a real memcached on the default port.
+-- Each mock listens on 127.0.0.1 unless given another address, and on an
+-- ephemeral port of its own unless given a port, so tests can run several at
+-- once and never clash with a real memcached on the default port.
 module MockServer (
-        MockResponse(..), MockServer(..), withMockServer, withConcurrentMockServer,
-        mockServerSpec
+        MockResponse(..), MockServer(..), withMockServer, withMockServerAt,
+        withConcurrentMockServer, withBoundSocket, withBoundSocketReuseAddr,
+        withFullListener, canListenAt, mockServerSpec
     ) where
 
 import           Control.Concurrent
@@ -14,13 +16,15 @@ import           Control.Monad
 import qualified Data.ByteString           as B
 import qualified Data.ByteString.Char8     as C
 import           Data.IORef
+import           Data.Maybe                (isJust)
 import           Database.Memcache.Types   (Authentication (NoAuth), ServerSpec (..))
 import qualified Network.Socket            as N
 import qualified Network.Socket.ByteString as N
+import           System.Timeout            (timeout)
 import           Text.Read                  (readMaybe)
 import           UnliftIO.Async             (concurrently_)
-import           UnliftIO.Exception         (SomeException, bracket, finally, handle,
-                                            onException, throwIO)
+import           UnliftIO.Exception         (IOException, SomeException, bracket, finally,
+                                            handle, onException, throwIO)
 
 -- | Actions the mock server can take to a request.
 data MockResponse
@@ -57,7 +61,12 @@ mockServerSpec server = ServerSpec "127.0.0.1" (show (mockPort server)) NoAuth
 -- in order, one per request, across however many connections the client
 -- makes; once they run out it closes the connection and stops listening.
 withMockServer :: [MockResponse] -> (MockServer -> IO a) -> IO a
-withMockServer responses = withListener $ \sock received closed -> do
+withMockServer = withMockServerAt loopback
+
+-- | Like 'withMockServer', but listening on the given address instead of
+-- 127.0.0.1. A port of 0 picks a free one.
+withMockServerAt :: N.SockAddr -> [MockResponse] -> (MockServer -> IO a) -> IO a
+withMockServerAt address responses = withListener address $ \sock received closed -> do
   remaining <- newIORef responses
   -- Once the responses run out the listening socket closes, so later
   -- connection attempts are refused straight away.
@@ -79,7 +88,7 @@ withMockServer responses = withListener $ \sock received closed -> do
 -- list has its connection. 'mockRequests' gives the requests of every
 -- connection, in the order they arrived.
 withConcurrentMockServer :: [[MockResponse]] -> (MockServer -> IO a) -> IO a
-withConcurrentMockServer scripts = withListener $ \sock received closed -> do
+withConcurrentMockServer scripts = withListener loopback $ \sock received closed -> do
   -- Closing the listening socket here refuses later connection attempts
   -- straight away; closing it again on the way out does nothing.
   let serveFrom [] = N.close sock
@@ -89,14 +98,15 @@ withConcurrentMockServer scripts = withListener $ \sock received closed -> do
         concurrently_ (serveConnection client remaining received closed) (serveFrom rest)
   serveFrom scripts
 
--- | Listen on an ephemeral port on 127.0.0.1 and serve it with the given
--- function in the background, killing it once the action is done. The
--- function is given the listening socket, the IORef in which it records each
--- request it reads, newest first, and the IORef in which it counts the
--- connections the client closed while it waited for a request.
+-- | Listen on the given address and serve it with the given function in the
+-- background, killing it once the action is done. The function is given the
+-- listening socket, the IORef in which it records each request it reads,
+-- newest first, and the IORef in which it counts the connections the client
+-- closed while it waited for a request.
 withListener
-  :: (N.Socket -> IORef [B.ByteString] -> IORef Int -> IO ()) -> (MockServer -> IO a) -> IO a
-withListener serveClients action = do
+  :: N.SockAddr -> (N.Socket -> IORef [B.ByteString] -> IORef Int -> IO ())
+  -> (MockServer -> IO a) -> IO a
+withListener address serveClients action = do
   ready <- newEmptyMVar
   received <- newIORef []
   closed <- newIORef 0
@@ -112,14 +122,86 @@ withListener serveClients action = do
         })
   where
     serve ready received closed = bracket
-      (N.socket N.AF_INET N.Stream N.defaultProtocol)
+      (newSocket address)
       N.close
       $ \sock -> do
         N.setSocketOption sock N.ReuseAddr 1
-        N.bind sock (N.SockAddrInet 0 (N.tupleToHostAddress (127, 0, 0, 1)))
+        N.bind sock address
         N.listen sock 10
         N.socketPort sock >>= putMVar ready
         serveClients sock received closed
+
+-- | An ephemeral port on 127.0.0.1.
+loopback :: N.SockAddr
+loopback = N.SockAddrInet 0 (N.tupleToHostAddress (127, 0, 0, 1))
+
+-- | Whether 'withMockServerAt' can listen on the given address. It cannot on
+-- an IPv6 address where IPv6 is disabled, for example.
+canListenAt :: N.SockAddr -> IO Bool
+canListenAt address = handle unavailable $ bracket
+  (newSocket address)
+  N.close
+  (\sock -> N.bind sock address >> return True)
+  where
+    unavailable :: IOException -> IO Bool
+    unavailable = const (return False)
+
+-- | Run an action with a socket bound to the given address but not
+-- listening, so that connection attempts there are refused, and nothing else
+-- can listen there in the meantime. The action is given the port, a free one
+-- if the address's port is 0.
+withBoundSocket :: N.SockAddr -> (N.PortNumber -> IO a) -> IO a
+withBoundSocket = bindNotListening False
+
+-- | Like 'withBoundSocket', but the socket sets SO_REUSEADDR before it binds.
+-- Then the bind succeeds where an earlier mock's connections at that address
+-- and port are still in TIME_WAIT, but another socket that sets SO_REUSEADDR,
+-- as the mocks do, can listen there in the meantime.
+withBoundSocketReuseAddr :: N.SockAddr -> (N.PortNumber -> IO a) -> IO a
+withBoundSocketReuseAddr = bindNotListening True
+
+-- | Bind a socket to the given address without listening, setting
+-- SO_REUSEADDR first if asked, and run the action with its port.
+bindNotListening :: Bool -> N.SockAddr -> (N.PortNumber -> IO a) -> IO a
+bindNotListening reuse address action = bracket (newSocket address) N.close $ \sock -> do
+  when reuse $ N.setSocketOption sock N.ReuseAddr 1
+  N.bind sock address
+  N.socketPort sock >>= action
+
+-- | Run an action with a socket listening on the given address that never
+-- accepts a connection, and whose queue of connections waiting to be
+-- accepted is full, so that connection attempts there get no answer. The
+-- action is given the port, a free one if the address's port is 0, and an
+-- action that closes the socket, after which connection attempts are refused.
+-- Throws instead if a connection attempt gets an answer within 100 ms.
+withFullListener :: N.SockAddr -> (N.PortNumber -> IO () -> IO a) -> IO a
+withFullListener address action =
+  bracket (newSocket address) N.close $ \sock ->
+  bracket (newSocket address) N.close $ \first ->
+  bracket (newSocket address) N.close $ \second -> do
+    N.bind sock address
+    -- Linux queues one connection more than the backlog, so two waiting
+    -- connections fill a queue of backlog 1. Linux then ignores connection
+    -- attempts until the queue has room. Older kernels take a connection on
+    -- a queue of backlog 0 only with SYN cookies.
+    N.listen sock 1
+    listening <- N.getSocketName sock
+    mapM_ (`N.connect` listening) [first, second]
+    -- A system that queued more would answer this attempt. Fail then, rather
+    -- than let a test check something else.
+    answered <- bracket (newSocket address) N.close $ \probe ->
+      timeout (100 * 1000) (N.connect probe listening)
+    when (isJust answered) $ throwIO (userError "the listener's queue is not full")
+    port <- N.socketPort sock
+    action port (N.close sock)
+
+-- | A TCP socket for the given address's family.
+newSocket :: N.SockAddr -> IO N.Socket
+newSocket address = N.socket (addressFamily address) N.Stream N.defaultProtocol
+
+addressFamily :: N.SockAddr -> N.Family
+addressFamily N.SockAddrInet6{} = N.AF_INET6
+addressFamily _                 = N.AF_INET
 
 -- | Answer requests on one connection until the responses run out or the
 -- script closes it, then close it.
