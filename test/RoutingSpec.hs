@@ -149,6 +149,17 @@ routingSpec = do
       mapM (route h8First) keys `shouldReturn` map (const (Just "h8.example:11211")) keys
       mapM (route h256First) keys `shouldReturn` map (const (Just "h256.example:11211")) keys
 
+    it "names a server on the ring by its host in UTF-8" $ do
+      -- Hosts with U+00E9 and U+20AC in them, and the UTF-8 bytes of their
+      -- names written out.
+      let servers = [ ("cach\233.example", "cach\195\169.example")
+                    , ("cache\8364.example", "cache\226\130\172.example")
+                    , ("10.0.1.3", "10.0.1.3") ]
+          ring = K.ring [(C.pack utf8, 1) | (_, utf8) <- servers]
+          expected key = (\i -> fst (servers !! i) <> ":11211") <$> K.owner ring (K.keyHash key)
+      cluster <- clusterOf [(host, 11211, 1) | (host, _) <- servers]
+      mapM (route cluster) manyKeys `shouldReturn` map expected manyKeys
+
     it "sends a failed server's keys to the next live server, and keeps the rest" $ do
       cluster <- clusterOf (scenarioServers "host4")
       cache3 <- serverNamed cluster "cache3.example.com:11211"
@@ -217,6 +228,14 @@ routingSpec = do
       -- The original cluster keeps its own servers and ring.
       routes four `shouldReturn` map (Just . snd) (scenarioKeys "host4")
       routes discovered `shouldReturn` map (Just . snd) (scenarioKeys "host4_minus_cache3")
+
+    it "routes by the fixed servers that setServers gives it" $ do
+      four <- clusterOf (scenarioServers "host4")
+      three <- getServers =<< clusterOf (scenarioServers "host4_minus_cache3")
+      let routes cluster = mapM (route cluster . C.pack . fst) (scenarioKeys "host4")
+      routes (setServers four (Right three))
+        `shouldReturn` map (Just . snd) (scenarioKeys "host4_minus_cache3")
+      routes four `shouldReturn` map (Just . snd) (scenarioKeys "host4")
 
     it "rebuilds its ring when only a port changes" $ do
       -- Two servers on one host, then the second replaced by one on another
