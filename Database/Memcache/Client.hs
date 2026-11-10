@@ -45,15 +45,15 @@ We support the following logic for handling failure in operations:
 
 * __Failover__: when an operation against a server in a cluster fails all
                 retries, we mark that server as dead and use the remaining
-                servers in the cluster to handle all operations: its keys go
-                to the next live server on the hash ring, and other keys stay
-                where they are. That doesn't happen when the last attempt only
-                ran out of time waiting for a free connection, as it never
-                reached the server. After a configurable period of time has
-                passed, we consider the server alive again and try to use it.
-                This can lead to consistency issues (stale data), but is
-                usually fine for caching purposes and is the common approach
-                in Memcached clients.
+                servers in the cluster to handle all operations: with the
+                default router, its keys go to the next live server on the
+                hash ring, and other keys stay where they are. That doesn't
+                happen when the last attempt only ran out of time waiting for
+                a free connection, as it never reached the server. After a
+                configurable period of time has passed, we consider the server
+                alive again and try to use it. This can lead to consistency
+                issues (stale data), but is usually fine for caching purposes
+                and is the common approach in Memcached clients.
 
 Some of this behavior can be configured through the 'Options' data type. We
 also have the following concepts exposed by Memcached:

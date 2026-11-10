@@ -378,10 +378,9 @@ withRing servers = (servers, Ketama.ring (map named (V.toList servers)))
     named s = (Ketama.serverName (utf8 (serverHost s)) (utf8 (serverPort s)), 1)
     utf8 = T.encodeUtf8 . T.pack
 
--- | The router of versions before 0.5, deprecated because it sends keys to
--- no more than two servers at a time, whatever the number of servers. It is
--- kept for one release, so that a fleet can switch to 'ketamaServerForKey' in
--- stages (see the module description).
+-- | The router of versions before 0.5. It is kept for one release, so that
+-- a fleet can switch to 'ketamaServerForKey' in stages (see the module
+-- description).
 --
 -- Like those versions, it sends a key to the live server with the lowest
 -- @sid@ if that @sid@ is below the key's @hashable@ hash, and otherwise to
@@ -389,8 +388,8 @@ withRing servers = (servers, Ketama.ring (map named (V.toList servers)))
 -- only when built with the same @hashable@ version on the same platform, as
 -- @hashable@'s hashes can differ between them. 0.4 also kept the servers of
 -- 'newCluster' and of ElastiCache discovery sorted by @sid@, but searched
--- servers given to 'setServers' in the order given, so for those 0.4 could
--- choose a different server.
+-- servers given to 'setServers' in the order given, so for those this
+-- router can choose a different server than 0.4 did.
 legacyServerForKey :: Cluster -> Key -> IO (Maybe Server)
 legacyServerForKey c k = do
     servers' <- aliveServers c
@@ -404,7 +403,9 @@ legacyServerForKey c k = do
     return $ if V.null servers'
         then Nothing
         else Just $ if sid lowest < hash k then lowest else highest
-{-# DEPRECATED legacyServerForKey "It sends keys to no more than two servers at a time. Use ketamaServerForKey, the default; this will be removed in the next major version." #-}
+{-# DEPRECATED legacyServerForKey "It sends keys to no more than two servers \
+    \at a time. Use ketamaServerForKey, the default; this will be removed in \
+    \the next major version." #-}
 
 -- | Run a Memcached operation against a particular server, handling any
 -- failures that occur, retrying the specified number of times. The reply is
