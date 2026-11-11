@@ -1587,23 +1587,6 @@ main = hspec $ do
         EC.newClient Client.def hour (endpoint cfg) `shouldThrow`
           \(StringException message _) -> message == "Not a valid URI: memcached://bad{host:11211"
 
-    -- Discovery makes memcached://<host>:<port> of each node line, so hosts
-    -- such as these, whose "?" puts the port in the query, would make the
-    -- node a Unix socket on this machine, of the endpoint's choosing. The
-    -- third gives its URI an empty port, which a socket can't have.
-    forM_
-      [ ("/var/run/docker.sock?", "Node names a Unix socket: memcached:///var/run/docker.sock?:11211")
-      , ("u:p@/x.sock?", "Node names a Unix socket: memcached://u:p@/x.sock?:11211")
-      , (":/x.sock?", "A Unix socket path takes no port: memcached://:/x.sock?:11211")
-      ] $ \(host, expected) ->
-      it ("won't take the ElastiCache node " <> C.unpack host <> " for a Unix socket") $ do
-        let body = "1\n" <> host <> "|127.0.0.1|11211\n"
-            config = "CONFIG cluster 0 " <> C.pack (show (B.length body)) <> "\r\n"
-              <> body <> "\r\nEND\r\n"
-        withMockServer [MR "VERSION 1.6.12\r\n", MR config, Noop] $ \cfg ->
-          EC.newClient Client.def hour (endpoint cfg) `shouldThrow`
-            \(StringException message _) -> message == expected
-
     prop "never echoes the password of an invalid URI" $
       forAll keyGen $ \pass ->
         -- The space makes the URI invalid whatever the password is.
@@ -1909,6 +1892,23 @@ main = hspec $ do
           Client.get client "key" `shouldReturn` Just ("foo", 0, 1)
           waitForRequests cfg 2 `shouldReturn`
             ["version\r\n", "get AmazonElastiCache:cluster\r\n"]
+
+    -- Discovery makes memcached://<host>:<port> of each node line, so hosts
+    -- such as these, whose "?" puts the port in the query, would make the
+    -- node a Unix socket on this machine, of the endpoint's choosing. The
+    -- third gives its URI an empty port, which a socket can't have.
+    forM_
+      [ ("/var/run/docker.sock?", "Node names a Unix socket: memcached:///var/run/docker.sock?:11211")
+      , ("u:p@/x.sock?", "Node names a Unix socket: memcached://u:p@/x.sock?:11211")
+      , (":/x.sock?", "A Unix socket path takes no port: memcached://:/x.sock?:11211")
+      ] $ \(host, expected) ->
+      it ("won't take the node " <> C.unpack host <> " for a Unix socket") $ do
+        let body = "1\n" <> host <> "|127.0.0.1|11211\n"
+            config = "CONFIG cluster 0 " <> C.pack (show (B.length body)) <> "\r\n"
+              <> body <> "\r\nEND\r\n"
+        withMockServer [MR "VERSION 1.6.12\r\n", MR config, Noop] $ \cfg ->
+          EC.newClient Client.def hour (endpoint cfg) `shouldThrow`
+            \(StringException message _) -> message == expected
 
     -- An error reply is one line with no END line after it, and memcached
     -- keeps the connection open, as the Noop does: discovery must not wait
