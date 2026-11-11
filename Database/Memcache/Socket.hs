@@ -1,3 +1,5 @@
+{-# LANGUAGE CApiFFI           #-}
+{-# LANGUAGE CPP               #-}
 {-# LANGUAGE OverloadedStrings #-}
 
 {-|
@@ -18,7 +20,7 @@ module Database.Memcache.Socket (
         crlf,
 
         -- * Operations
-        newConnection, closeConnection,
+        newConnection, closeConnection, checkIdle,
         sendRaw,
         recvExact, recvLine, recvRawUntil, recvResponse,
 
@@ -53,6 +55,14 @@ import qualified Network.Socket            as N
 import qualified Network.Socket.ByteString as N
 import           Text.Read                 (readMaybe)
 import           UnliftIO.Exception        (throwIO)
+#if !defined(mingw32_HOST_OS)
+import           Data.Bits                 ((.|.))
+import           Foreign.C.Error           (eAGAIN, eINTR, eWOULDBLOCK, errnoToIOError, getErrno)
+import           Foreign.C.Types           (CChar, CInt (..), CSize (..))
+import           Foreign.Marshal.Alloc     (allocaBytes)
+import           Foreign.Ptr               (Ptr)
+import           System.Posix.Types        (CSsize (..))
+#endif
 
 -- | A connected Memcached socket and its receive buffer.
 data Connection = Connection N.Socket (IORef ByteString)
@@ -76,6 +86,57 @@ newConnection s = Connection s <$> newIORef B.empty
 -- | Close the underlying socket.
 closeConnection :: Connection -> IO ()
 closeConnection (Connection s _) = N.close s
+
+-- | Check, without waiting, that the connection is as a finished exchange
+-- leaves it: everything the server sent has been read, and the server hasn't
+-- closed the connection. Throws as reading from it would, if the server has
+-- closed it ('UnexpectedEOF') or reset it (an 'IOException'), and throws
+-- 'UnexpectedResponse' if bytes are waiting to be read, which would be taken
+-- as the reply to the next request.
+--
+-- Use it on a connection taken from a pool before sending a request that
+-- mustn't be sent twice. memcached closes idle connections when it restarts
+-- or after @-o idle_timeout@, and a request sent on one of those never
+-- reaches it but fails as if it might have, with 'UnexpectedEOF'. It costs a
+-- system call, and it can't see a connection that the network dropped
+-- without telling either end, or one the server closes after the check.
+-- On Windows it only checks the bytes already read from the socket.
+checkIdle :: Connection -> IO ()
+checkIdle (Connection s ref) = do
+  buffered <- readIORef ref
+  waiting <- if B.null buffered then peekSocket s else return (Just (B.length buffered))
+  case waiting of
+    Nothing -> return ()
+    Just 0 -> throwIO eofError
+    Just _ -> throwIO $ ProtocolError UnexpectedResponse
+      { protocolError = "Expected no data on an idle connection" }
+
+-- | Look, without waiting or taking anything, at what the socket has received:
+-- 'Nothing' if nothing, @Just 0@ if the peer has closed the connection, and
+-- otherwise how many bytes are waiting (here at most 1). Throws the error of a
+-- connection that was reset.
+peekSocket :: N.Socket -> IO (Maybe Int)
+#if defined(mingw32_HOST_OS)
+-- Windows has no MSG_DONTWAIT, so there is no look that can't wait.
+peekSocket _ = return Nothing
+#else
+peekSocket s = N.withFdSocket s $ \fd -> allocaBytes 1 $ \buffer -> peekInto fd buffer
+  where
+    peekInto fd buffer = do
+      n <- c_recv fd buffer 1 (msgPeek .|. msgDontWait)
+      if n >= 0 then return (Just (fromIntegral n)) else getErrno >>= failed fd buffer
+    failed fd buffer errno
+      | errno == eINTR = peekInto fd buffer
+      | errno == eAGAIN || errno == eWOULDBLOCK = return Nothing
+      | otherwise = throwIO (errnoToIOError "recv" errno Nothing Nothing)
+
+foreign import ccall unsafe "recv"
+  c_recv :: CInt -> Ptr CChar -> CSize -> CInt -> IO CSsize
+
+foreign import capi "sys/socket.h value MSG_PEEK" msgPeek :: CInt
+
+foreign import capi "sys/socket.h value MSG_DONTWAIT" msgDontWait :: CInt
+#endif
 
 -- | Send raw bytes on the underlying socket.
 sendRaw :: Connection -> ByteString -> IO ()

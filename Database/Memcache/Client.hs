@@ -43,6 +43,24 @@ We support the following logic for handling failure in operations:
              close the idle connections too; other operations throw at once,
              as the server may have carried out the request.
 
+             A request that mustn't be sent twice is retried only after a
+             failure before any of it was sent, such as a refused
+             connection or a timeout while waiting for a free connection.
+             That is 'increment', 'decrement', 'append', 'prepend', 'add',
+             'delete', and 'cas' and 'replace' with a version other than
+             @0@. Once such a request may have reached the server, a
+             failure is thrown, and the server is marked dead as if every
+             attempt had failed: the server may have carried out the
+             request, and a retry could apply it twice, or report failure
+             because the first one succeeded. Before sending one on a
+             connection from the pool, we check that the server hasn't
+             closed it, as memcached does to idle connections when it
+             restarts or after @-o idle_timeout@; if it has, the request is
+             retried on a new connection. Other operations are retried after
+             any server failure, so the server may carry out their request
+             twice (see 'optsServerRetries'). Set 'optsServerRetries' to @0@
+             for no retries.
+
 * __Failover__: when an operation against a server in a cluster fails on every
                 attempt, we mark that server as dead and use the remaining
                 servers in the cluster to handle all operations: with the
@@ -299,7 +317,7 @@ setMany c items = do
 -- with 'set'.
 cas :: Client -> Key -> Value -> Flags -> Expiration -> Version -> IO (Maybe Version)
 cas c k v f e ver = do
-  response <- keyedOpExpecting c "SET" storeReplies k (\wire -> storeRequest Set wire v f e ver)
+  response <- versioned ver c "SET" storeReplies k (\wire -> storeRequest Set wire v f e ver)
   status <- responseStatus response
   case status of
     NoError -> return $ Just (responseCas response)
@@ -312,7 +330,7 @@ cas c k v f e ver = do
 -- expiration value of @0@ to store forever.
 add :: Client -> Key -> Value -> Flags -> Expiration -> IO (Maybe Version)
 add c k v f e = do
-  response <- keyedOpExpecting c "ADD" storeReplies k (\wire -> storeRequest Add wire v f e 0)
+  response <- keyedOpExpectingOnce c "ADD" storeReplies k (\wire -> storeRequest Add wire v f e 0)
   status <- responseStatus response
   case status of
     NoError -> return $ Just (responseCas response)
@@ -327,7 +345,7 @@ add c k v f e = do
 -- server, otherwise 'Nothing' is returned. A version of @0@ skips the check.
 replace :: Client -> Key -> Value -> Flags -> Expiration -> Version -> IO (Maybe Version)
 replace c k v f e ver = do
-  response <- keyedOpExpecting c "REPLACE" storeReplies k (\wire -> storeRequest Replace wire v f e ver)
+  response <- versioned ver c "REPLACE" storeReplies k (\wire -> storeRequest Replace wire v f e ver)
   status <- responseStatus response
   case status of
     NoError -> return $ Just (responseCas response)
@@ -372,7 +390,7 @@ decrement c k i d e ver = arithmetic c k i d e ver Decr "DECREMENT"
 
 arithmetic :: Cluster -> Key -> Initial -> Delta -> Expiration -> Version -> ArithMode -> String -> IO (Maybe (Word64, Version))
 arithmetic c k i d e ver mode operation = do
-  response <- keyedOpExpecting c operation arithmeticReplies k (\wire -> arithmeticRequest mode wire i d e ver)
+  response <- keyedOpExpectingOnce c operation arithmeticReplies k (\wire -> arithmeticRequest mode wire i d e ver)
   status <- responseStatus response
   case status of
     NoError -> return $ Just (responseNumber response, responseCas response)
@@ -403,7 +421,7 @@ prepend c k v ver = modify c k v ver Prepend "PREPEND"
 
 modify :: Cluster -> Key -> Value -> Version -> StoreMode -> String -> IO (Maybe Version)
 modify c k v ver mode operation = do
-  response <- keyedOpExpecting c operation storeReplies k (\wire -> modifyRequest mode wire v ver)
+  response <- keyedOpExpectingOnce c operation storeReplies k (\wire -> modifyRequest mode wire v ver)
   status <- responseStatus response
   case status of
     NoError -> return $ Just (responseCas response)
@@ -418,7 +436,7 @@ modify c k v ver mode operation = do
 -- of @0@ deletes the key unconditionally.
 delete :: Client -> Key -> Version -> IO Bool
 delete c k ver = do
-  response <- keyedOpExpecting c "DELETE" deleteReplies k (`deleteRequest` ver)
+  response <- keyedOpExpectingOnce c "DELETE" deleteReplies k (`deleteRequest` ver)
   status <- responseStatus response
   case status of
     NoError -> return True
@@ -433,7 +451,8 @@ delete c k ver = do
 -- saying which: when a server fails part-way through, the requests it was
 -- handling are sent again, and the retry finds the keys the first attempt
 -- deleted missing, so a per-key answer would be wrong for them. Use 'delete'
--- to learn whether a key was present.
+-- to learn whether a key was present: it never sends a request again once
+-- the server may have carried it out, and throws instead.
 --
 -- Every key is checked before anything is sent, so an invalid key deletes
 -- nothing. If this throws, some of the keys may have been deleted.
@@ -543,6 +562,14 @@ touchReplies = ["HD", "EN"]
 storeReplies = ["HD", "OK", "NS", "EX", "NF"]
 arithmeticReplies = ["VA", "NF", "NS", "EX"]
 deleteReplies = ["HD", "OK", "NF", "EX"]
+
+-- | 'keyedOpExpecting' for a store without a CAS version, which can be sent
+-- again: it stores the same value. A store with one is sent once, as
+-- 'keyedOpExpectingOnce' describes: its success changes the item's version,
+-- so a second one would find it changed and report failure.
+versioned :: Version -> Cluster -> String -> [ByteString] -> Key -> (WireKey -> ByteString) -> IO Response
+versioned 0 = keyedOpExpecting
+versioned _ = keyedOpExpectingOnce
 
 -- | The value, flags and CAS version carried by a @VA@ response.
 valueResult :: Response -> (Value, Flags, Version)

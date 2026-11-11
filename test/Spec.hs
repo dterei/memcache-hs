@@ -1311,40 +1311,41 @@ main = hspec $ do
     -- The first attempt fails after 300 ms, as the mock drops its connection
     -- or its time runs out: a server failure either way. Another thread,
     -- queued for the connection by then, gets it and holds it until the
-    -- delete has given up. The second attempt starts 300 ms later and times
-    -- out waiting.
+    -- touch has given up. The second attempt starts 300 ms later and times
+    -- out waiting. A touch can be sent again; a delete would not be.
     it "doesn't mark a server dead when a server failure is followed by a wait timeout" $
       withServerAndClientOpts fastStaysDead { Client.optsFailRetryDelay = 300 }
         [DelayMS 300 CloseConnection, MR "HD\r\n"] $ \server client -> do
           [s] <- toList <$> Cluster.getServers client
-          deleting <- async $ Client.delete client "key" 0
-          waitForRequests server 1 `shouldReturn` ["md key\r\n"]
+          touching <- async $ Client.touch client "key" 0
+          waitForRequests server 1 `shouldReturn` ["mg key T0 c\r\n"]
           held <- newEmptyMVar
           done <- newEmptyMVar
           holder <- async $ Server.withSocket s $ \_ -> putMVar held () >> timeout 3000000 (takeMVar done)
           takeMVar held
-          wait deleting `shouldThrow` (== ClientError Timeout)
+          wait touching `shouldThrow` (== ClientError Timeout)
           putMVar done ()
           _ <- wait holder
           readIORef (Server.failed s) `shouldReturn` 0
-          Client.delete client "key" 0 `shouldReturn` True
-          mockRequests server `shouldReturn` ["md key\r\n", "md key\r\n"]
+          Client.touch client "key" 0 `shouldReturn` Just 0
+          mockRequests server `shouldReturn` ["mg key T0 c\r\n", "mg key T0 c\r\n"]
 
     -- The pool holds one connection and the mock takes 90 ms over each
-    -- reply, so only about six of 8 deletes sent at once get theirs within
+    -- reply, so only about six of 8 touches sent at once get theirs within
     -- the 600 ms timeout. The rest run out of time, the first of them using
     -- the connection and any others waiting for it, and are retried. Their
-    -- retries need about 300 ms of their 600, so every delete succeeds and
-    -- the server isn't marked dead.
+    -- retries need about 300 ms of their 600, so every touch succeeds and
+    -- the server isn't marked dead. A touch can be sent again; a delete
+    -- would not be.
     it "doesn't mark a server dead when retries clear a burst queued for its only connection" $
       withServerAndClientOpts fastStaysDead { Client.optsServerTimeout = 600 }
         (repeat (DelayMS 90 (MR "HD\r\n"))) $ \_ client -> do
           results <- mapConcurrently
-            (\i -> try @MemcacheError (Client.delete client (C.pack (show i)) 0)) [1 .. 8 :: Int]
-          results `shouldBe` replicate 8 (Right True)
+            (\i -> try @MemcacheError (Client.touch client (C.pack (show i)) 0)) [1 .. 8 :: Int]
+          results `shouldBe` replicate 8 (Right (Just 0))
           [s] <- toList <$> Cluster.getServers client
           readIORef (Server.failed s) `shouldReturn` 0
-          Client.delete client "next" 0 `shouldReturn` True
+          Client.touch client "next" 0 `shouldReturn` Just 0
 
     -- With resource-pool 0.3.0.0 to 0.5.0.0, a connection that failed while
     -- the pool opened it left a request queued for the pool blocked until
@@ -1441,6 +1442,133 @@ main = hspec $ do
             , "version\r\n", "set auth 0 0 9\r\nuser pass\r\n" ]
           [s] <- toList <$> Cluster.getServers client
           readIORef (Server.failed s) `shouldReturn` 0
+
+    -- A request that mustn't be sent twice isn't sent again once the server
+    -- may have it: neither after its reply runs out of time, nor after the
+    -- server drops its connection. The mock would answer a retry on a new
+    -- connection. The operation throws the failure, with its retry unused,
+    -- and the server is marked dead, as when the last attempt fails. A retry
+    -- would have been sent before the operation returned.
+    forM_ sentOnce $ \(name, reply, run) -> do
+      it ("doesn't send " <> name <> " again after its reply times out") $
+        withServerAndClientOpts fastStaysDead [Noop, MR reply] $ \server client -> do
+          [s] <- toList <$> Cluster.getServers client
+          run client `shouldThrow` (== ClientError Timeout)
+          length <$> mockRequests server `shouldReturn` 1
+          readIORef (Server.failed s) >>= (`shouldNotBe` 0)
+
+      it ("doesn't send " <> name <> " again after the server drops its connection") $
+        withServerAndClientOpts fastStaysDead [CloseConnection, MR reply] $ \server client -> do
+          [s] <- toList <$> Cluster.getServers client
+          run client `shouldThrow` isUnexpectedEOF
+          length <$> mockRequests server `shouldReturn` 1
+          readIORef (Server.failed s) >>= (`shouldNotBe` 0)
+
+    -- Every other request is sent again on a new connection, and the server
+    -- isn't marked dead.
+    forM_ sentAgain $ \(name, reply, run) ->
+      it ("sends " <> name <> " again after the server drops its connection") $
+        withServerAndClientOpts fastStaysDead [CloseConnection, MR reply] $ \server client -> do
+          [s] <- toList <$> Cluster.getServers client
+          run client
+          length <$> mockRequests server `shouldReturn` 2
+          readIORef (Server.failed s) `shouldReturn` 0
+
+    -- A failure before any of the request is sent is retried for every
+    -- request, and the retry's success leaves the server alive.
+    forM_ [("a get", getOnce), ("an increment", incrementOnce)] $ \(name, (run, reply)) -> do
+      -- Nothing listens at first, so the first attempt's connection is
+      -- refused at once. The mock listens long before the retry, 500 ms
+      -- later. Started later, the first attempt would reach the mock and
+      -- succeed, so a slow run can only weaken the test, not fail it.
+      it ("retries " <> name <> " whose connection was refused") $
+        withBoundSocketReuseAddr loopbackAddress $ \port -> do
+          let spec = ServerSpec "127.0.0.1" (show port) Auth.NoAuth
+          client <- Client.newClient [spec] fastStaysDead { Client.optsFailRetryDelay = 500 }
+          running <- async $ run client
+          threadDelay 100000
+          withMockServerAt (atPort port loopbackAddress) [MR reply] $ \server -> do
+            wait running
+            length <$> mockRequests server `shouldReturn` 1
+            [s] <- toList <$> Cluster.getServers client
+            readIORef (Server.failed s) `shouldReturn` 0
+
+      -- Another thread holds the only connection for 450 ms, so the first
+      -- attempt runs out of its 300 ms waiting for it, and the retry, 10 ms
+      -- later, gets it.
+      it ("retries " <> name <> " that ran out of time waiting for its connection") $
+        withServerAndClientOpts fastStaysDead [MR reply] $ \server client -> do
+          [s] <- toList <$> Cluster.getServers client
+          held <- newEmptyMVar
+          holder <- async $ Server.withSocket s $ \_ -> putMVar held () >> threadDelay 450000
+          takeMVar held
+          run client
+          wait holder
+          length <$> mockRequests server `shouldReturn` 1
+          readIORef (Server.failed s) `shouldReturn` 0
+
+      -- The mock drops the first connection during authentication, before
+      -- the request is sent.
+      it ("retries " <> name <> " whose connection failed while authenticating") $
+        withMockServer
+          [ CloseConnection, MR "CLIENT_ERROR unauthenticated\r\n", MR "STORED\r\n", MR reply ] $ \server -> do
+            let spec = (mockServerSpec server) { ssAuth = Auth.Auth "user" "pass" }
+            client <- Client.newClient [spec] fastStaysDead
+            run client
+            requests <- mockRequests server
+            take 3 requests `shouldBe` ["version\r\n", "version\r\n", "set auth 0 0 9\r\nuser pass\r\n"]
+            length requests `shouldBe` 4
+            [s] <- toList <$> Cluster.getServers client
+            readIORef (Server.failed s) `shouldReturn` 0
+
+    -- Before sending a request that mustn't be sent twice, the connection is
+    -- checked. One that the server has closed or reset, as a restart or
+    -- memcached's idle_timeout leaves them, is closed instead, and that
+    -- failure, before sending, is retried: the request is sent once, on a new
+    -- connection, and the server isn't marked dead. Sent on the old one, it
+    -- would fail after it may have reached the server.
+    forM_
+      [ ("closed", \s -> leaveThreeClosed s "mn\r\n" isUnexpectedEOF)
+      , ("reset", \s -> leaveThreeClosed s "mn\r\nmn\r\n" anyIOException)
+      ] $ \(ended, leaveThree) ->
+      it ("sends an increment once, on a new connection, when the server has " <> ended <> " the idle ones") $
+        withServerAndClientOpts (threeConnections fast)
+          [CloseConnection, CloseConnection, CloseConnection, MR "VA 1 c5\r\n6\r\n"] $ \server client -> do
+            [s] <- toList <$> Cluster.getServers client
+            leaveThree s
+            Client.increment client "key" 0 1 0 0 `shouldReturn` Just (6, 5)
+            readIORef (Server.failed s) `shouldReturn` 0
+            mockRequests server `shouldReturn` replicate 3 "mn\r\n" ++ ["ma key D1 MI v c N0 J0\r\n"]
+
+    -- Bytes waiting on an idle connection would be read as the reply to the
+    -- next request, so that connection is closed too, before the request is
+    -- sent. Here a request is sent on the connection and given back without
+    -- its reply being read. The mock answers the increment on a new one.
+    it "sends an increment once, on a new connection, when a reply is waiting on the idle one" $
+      withServerAndClientOpts fast [MR "MN\r\n", MR "VA 1 c5\r\n6\r\n"] $ \server client -> do
+        [s] <- toList <$> Cluster.getServers client
+        Server.withSocket s (`sendRaw` "mn\r\n")
+        waitForRequests server 1 `shouldReturn` ["mn\r\n"]
+        -- The mock sends MN once it has recorded the request.
+        threadDelay 100000
+        Client.increment client "key" 0 1 0 0 `shouldReturn` Just (6, 5)
+        readIORef (Server.failed s) `shouldReturn` 0
+        mockRequests server `shouldReturn` ["mn\r\n", "ma key D1 MI v c N0 J0\r\n"]
+
+    -- A failure after sending that ends the operation still closes the
+    -- server's idle connections, as any server failure does. The increment
+    -- opens the pool's first connection, and the mock drops it 300 ms after
+    -- its request. Meanwhile a second connection is opened and given back.
+    it "closes the idle connections when a request sent once fails" $
+      withServerAndClientOpts (threeConnections dropping)
+        [DelayMS 300 CloseConnection, Noop] $ \server client -> do
+          [s] <- toList <$> Cluster.getServers client
+          failing <- async $ Client.increment client "key" 0 1 0 0
+          waitForRequests server 1 `shouldReturn` ["ma key D1 MI v c N0 J0\r\n"]
+          idle <- Server.withSocket s return
+          wait failing `shouldThrow` isUnexpectedEOF
+          readIORef (Server.failed s) >>= (`shouldNotBe` 0)
+          sendRaw idle "mn\r\n" `shouldThrow` anyIOException
 
   -- The mock serves one connection at a time, so it only answers a second
   -- client once the first client's connection has closed.
@@ -2299,6 +2427,40 @@ main = hspec $ do
     fastFailover = Client.def { Client.optsFailRetryDelay = 10, Client.optsDeadRetryDelay = 60000 }
     -- One attempt per operation, and a server it marks dead is used again at once.
     oneAttempt = Client.def { Client.optsServerRetries = 0, Client.optsDeadRetryDelay = 0 }
+    -- The operations whose request mustn't be sent twice, each with a
+    -- successful reply the mock would give a retry.
+    sentOnce :: [(String, B.ByteString, Client.Client -> IO ())]
+    sentOnce =
+      [ ("an increment", "VA 1 c5\r\n6\r\n", \c -> void (Client.increment c "key" 0 1 0 0))
+      , ("a decrement", "VA 1 c5\r\n4\r\n", \c -> void (Client.decrement c "key" 0 1 0 0))
+      , ("an append", "HD c5\r\n", \c -> void (Client.append c "key" "v" 0))
+      , ("a prepend", "HD c5\r\n", \c -> void (Client.prepend c "key" "v" 0))
+      , ("an add", "HD c5\r\n", \c -> void (Client.add c "key" "v" 0 0))
+      , ("a delete", "HD\r\n", \c -> void (Client.delete c "key" 0))
+      , ("a cas with a version", "HD c5\r\n", \c -> void (Client.cas c "key" "v" 0 0 9))
+      , ("a replace with a version", "HD c5\r\n", \c -> void (Client.replace c "key" "v" 0 0 9))
+      ]
+    -- The operations whose request can be sent again, each with a reply the
+    -- mock gives the retry, and a check of the result.
+    sentAgain :: [(String, B.ByteString, Client.Client -> Expectation)]
+    sentAgain =
+      [ ("a get", "VA 1 c5\r\nv\r\n", \c -> Client.get c "key" `shouldReturn` Just ("v", 0, 5))
+      , ("a get-and-touch", "VA 1 c5\r\nv\r\n", \c -> Client.gat c "key" 0 `shouldReturn` Just ("v", 0, 5))
+      , ("a touch", "HD c5\r\n", \c -> Client.touch c "key" 0 `shouldReturn` Just 5)
+      , ("a set", "HD c5\r\n", \c -> Client.set c "key" "v" 0 0 `shouldReturn` 5)
+      , ("a cas with version 0", "HD c5\r\n", \c -> Client.cas c "key" "v" 0 0 0 `shouldReturn` Just 5)
+      , ("a replace with version 0", "HD c5\r\n", \c -> Client.replace c "key" "v" 0 0 0 `shouldReturn` Just 5)
+      , ("a getMany batch", "VA 1 c5 O0\r\nv\r\nMN\r\n", \c -> Client.getMany c ["key"] `shouldReturn` [("key", ("v", 0, 5))])
+      , ("a setMany batch", "HD c5 O0\r\nMN\r\n", \c -> Client.setMany c [("key", "v", 0, 0)] `shouldReturn` [("key", 5)])
+      , ("a deleteMany batch", "HD O0\r\nMN\r\n", \c -> Client.deleteMany c ["key"])
+      , ("a version request", "VERSION 1.6.24\r\n", \c -> Client.version c `shouldReturn` "1.6.24")
+      , ("a flush", "OK\r\n", (`Client.flush` Nothing))
+      , ("a stats request", "STAT pid 1\r\nEND\r\n", \c -> map snd <$> Client.stats c Nothing `shouldReturn` [[("pid", "1")]])
+      ]
+    -- A get and an increment, each with the mock's reply to it.
+    getOnce = (\c -> Client.get c "key" `shouldReturn` Just ("v", 0, 5), "VA 1 c5\r\nv\r\n")
+    incrementOnce = (\c -> Client.increment c "key" 0 1 0 0 `shouldReturn` Just (6, 5), "VA 1 c5\r\n6\r\n")
+    loopbackAddress = N.SockAddrInet 0 (N.tupleToHostAddress (127, 0, 0, 1))
     -- Run a test with a fresh path for a Unix socket, or mark it pending
     -- where there are no Unix sockets.
     withUnixSocketPath test

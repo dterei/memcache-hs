@@ -3,7 +3,7 @@
 module Main where
 
 import           Control.Concurrent       (threadDelay)
-import           Control.Exception        (bracket, onException)
+import           Control.Exception        (bracket, finally, onException)
 import           Control.Monad            (filterM, forM, forM_, void)
 import qualified Data.ByteString.Char8    as B
 import           Data.Foldable            (toList)
@@ -26,12 +26,13 @@ import           System.Directory         (doesFileExist, findExecutable, getTem
 import           System.Exit              (ExitCode)
 import           System.IO                (hClose, hPutStr, openTempFile,
                                            openTempFileWithDefaultPermissions)
-import           System.Process           (ProcessHandle, createProcess, getCurrentPid, proc,
-                                           getProcessExitCode, terminateProcess,
+import           System.Process           (ProcessHandle, callProcess, createProcess, getCurrentPid,
+                                           getPid, getProcessExitCode, proc, terminateProcess,
                                            waitForProcess)
 import           System.Timeout           (timeout)
 import           Test.Hspec
-import           UnliftIO.Exception       (StringException (..))
+import qualified UnliftIO.Async           as Async
+import           UnliftIO.Exception       (StringException (..), try)
 
 main :: IO ()
 main = do
@@ -53,6 +54,7 @@ main = do
           describe "auth-file authentication" $ authSpecs authPort
           describe "three-server cluster" $ clusterSpecs clusterPorts
           describe "restarted server" $ restartSpecs path
+          describe "paused server" $ pausedSpecs path
           describe "Unix socket" $ unixSocketSpecs path
           describe "server out of memory" $ outOfMemorySpecs fullPort
           describe "ElastiCache discovery" $ elastiCacheSpecs port
@@ -343,7 +345,7 @@ clusterSpecs ports = beforeAll newClusterClient $ do
 -- | memcached closes every connection when it stops, so a pool that held
 -- several connections holds only closed ones once it is back.
 restartSpecs :: FilePath -> Spec
-restartSpecs executable =
+restartSpecs executable = do
   it "isn't marked dead when the pool held several connections" $ do
     port <- freePort
     client <- M.newClient [ServerSpec "127.0.0.1" (show port) M.NoAuth]
@@ -358,6 +360,68 @@ restartSpecs executable =
     withMemcachedOn executable [] port $ do
       M.get client "integration-restart" `shouldReturn` Nothing
       readIORef (Server.failed server) `shouldReturn` 0
+
+  -- An increment mustn't be sent twice, so it can't be retried once sent. The
+  -- client checks the pooled connection before sending it, finds it closed,
+  -- and sends the increment once, on a new connection.
+  it "sends an increment once, on a new connection, after a restart" $ do
+    port <- freePort
+    client <- M.newClient [ServerSpec "127.0.0.1" (show port) M.NoAuth] M.def
+    [server] <- toList <$> Cluster.getServers client
+    withMemcachedOn executable [] port $
+      void $ M.set client "integration-restart-counter" "0" 0 0
+    withMemcachedOn executable [] port $ do
+      other <- M.newClient [ServerSpec "127.0.0.1" (show port) M.NoAuth] M.def
+      _ <- M.set other "integration-restart-counter" "5" 0 0
+      fmap fst <$> M.increment client "integration-restart-counter" 0 1 0 0 `shouldReturn` Just 6
+      readIORef (Server.failed server) `shouldReturn` 0
+      fmap first <$> M.get other "integration-restart-counter" `shouldReturn` Just "6"
+
+-- | Tests against a memcached stopped with SIGSTOP while a request is on its
+-- way, so that the request's reply times out, and the server carries the
+-- request out once it continues.
+pausedSpecs :: FilePath -> Spec
+pausedSpecs executable = do
+  it "doesn't send an increment again after its reply times out" $
+    withPaused "integration-paused-counter" (Just "0") "incr_hits"
+      (\client key -> void (M.increment client key 0 1 0 0)) (Just "1")
+
+  it "doesn't send an add again after its reply times out" $
+    withPaused "integration-paused-add" Nothing "cmd_set"
+      (\client key -> void (M.add client key "added" 0 0)) (Just "added")
+ where
+  -- Store the key's value, if any, then stop memcached and run the operation
+  -- with a 300 ms timeout. memcached continues 650 ms later, after the first
+  -- attempt's timeout and the 200 ms before a retry. The operation must throw
+  -- Timeout and mark the server dead, without a retry, and memcached must
+  -- then carry the request out once: 300 ms after memcached continues,
+  -- another client finds the key's value, and the stat counting such
+  -- requests one higher than before. A retry would have been sent before
+  -- memcached continued, on a new connection, so memcached would carry it
+  -- out too, whether or not its reply came in time.
+  withPaused key initial stat run expected = do
+    port <- freePort
+    withMemcachedProcessOn executable [] port $ \process -> do
+      let spec = ServerSpec "127.0.0.1" (show port) M.NoAuth
+      client <- M.newClient [spec] M.def { M.optsServerTimeout = 300 }
+      other <- M.newClient [spec] M.def
+      [server] <- toList <$> Cluster.getServers client
+      mapM_ (\value -> M.set other key value 0 0) initial
+      let counted = do
+            [(_, stats)] <- M.stats other Nothing
+            maybe (fail $ "no " <> B.unpack stat) (return . read @Int . B.unpack) (lookup stat stats)
+      earlier <- counted
+      -- Open the client's connection first, so the request is all that
+      -- waits for memcached.
+      _ <- M.get client key
+      signal "STOP" process
+      result <- (Async.async (run client key) >>= \running -> threadDelay 650000 >> try (Async.wait running))
+        `finally` signal "CONT" process
+      result `shouldBe` Left (M.ClientError M.Timeout)
+      readIORef (Server.failed server) >>= (`shouldNotBe` 0)
+      threadDelay 300000
+      fmap first <$> M.get other key `shouldReturn` expected
+      counted `shouldReturn` earlier + 1
 
 -- | Tests against a memcached that listens on a Unix socket.
 unixSocketSpecs :: FilePath -> Spec
@@ -440,10 +504,26 @@ withMemcachedOn
   -> Int
   -> IO a
   -> IO a
-withMemcachedOn executable args port action = bracket acquire stopMemcached (const action)
+withMemcachedOn executable args port action =
+  withMemcachedProcessOn executable args port (const action)
+
+-- | Like 'withMemcachedOn', giving the action memcached's process.
+withMemcachedProcessOn
+  :: FilePath
+  -> [String]
+  -> Int
+  -> (ProcessHandle -> IO a)
+  -> IO a
+withMemcachedProcessOn executable args port = bracket acquire stopMemcached
  where
   acquire = startMemcached executable args port
     >>= either (\status -> fail $ "memcached exited before becoming ready: " <> show status) return
+
+-- | Send a signal, such as @STOP@ or @CONT@, to a process with kill(1).
+signal :: String -> ProcessHandle -> IO ()
+signal name process = do
+  pid <- getPid process
+  mapM_ (\p -> callProcess "kill" ["-" <> name, show p]) pid
 
 -- | Run an action against @n@ memcached servers.
 withMemcacheds :: FilePath -> Int -> ([Int] -> IO a) -> IO a

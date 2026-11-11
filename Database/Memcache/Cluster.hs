@@ -54,10 +54,13 @@ differently for the keys just below that point.
 When every attempt at an operation against a server fails, we mark the
 server as failed and remove it temporarily from the set of servers available,
 unless the last attempt only ran out of time waiting for a free connection to
-it (see 'optsServerRetries'). A key whose server is marked failed goes to the
-next live server found walking forward round the ring, so keys on live servers
-stay where they are, and 'NoServersReady' is thrown only when every server is
-marked failed. This is where libmemcached's auto-eject sends the key too,
+it (see 'optsServerRetries'). An operation whose request mustn't be sent
+twice, such as an increment, makes no more attempts once one has failed after
+its request may have reached the server, so that failure marks the server
+failed (see 'keyedOpExpectingOnce'). A key whose server is marked failed goes
+to the next live server found walking forward round the ring, so keys on live
+servers stay where they are, and 'NoServersReady' is thrown only when every
+server is marked failed. This is where libmemcached's auto-eject sends the key too,
 except when the number of live servers changes how many points each server
 gets (from 26 servers to 25, say): libmemcached rebuilds the ring from the
 live servers, while we keep every server's points.
@@ -132,8 +135,8 @@ module Database.Memcache.Cluster (
         ketamaServerForKey, isAlive, legacyServerForKey,
 
         -- * Operations
-        Retries, keyedOp, keyedOpExpecting, keyedBatchOp, anyOp, anyOpExpecting,
-        allOp, allOpExpecting, allOp'
+        Retries, keyedOp, keyedOpExpecting, keyedOpExpectingOnce, keyedBatchOp,
+        anyOp, anyOpExpecting, allOp, allOpExpecting, allOp'
     ) where
 
 import           Database.Memcache.Errors
@@ -144,7 +147,7 @@ import           Database.Memcache.Types.Server (Server (slotTaken))
 
 import           Control.Concurrent       (threadDelay)
 import           Control.Concurrent.MVar  (MVar, readMVar)
-import           Control.Monad            (foldM, unless, void, (<=<))
+import           Control.Monad            (foldM, unless, void, when, (<=<))
 import           Data.ByteString          (ByteString)
 import qualified Data.ByteString          as B
 import qualified Data.ByteString.Char8    as C
@@ -161,7 +164,8 @@ import           Data.Time.Clock.POSIX    (getPOSIXTime)
 import qualified Data.Vector              as V
 import           System.Timeout
 import           UnliftIO.Exception       (Exception, SomeException, fromException, handle, throwIO, try)
-import           Database.Memcache.Socket (Response(..), WireKey, encodeKey, noOpRequest, recvResponse, responseStatus, sendRaw)
+import           Database.Memcache.Socket (Response(..), WireKey, checkIdle, encodeKey, noOpRequest, recvResponse,
+                                           responseStatus, sendRaw)
 
 -- | Number of times to retry an operation against a server after its first
 -- attempt fails, before giving up (see 'optsServerRetries').
@@ -178,6 +182,28 @@ data Options = Options {
         -- retry like any failed attempt, but the last attempt decides: if it
         -- was such an attempt, the server isn't marked down, whatever the
         -- earlier attempts did (see 'optsServerTimeout').
+        --
+        -- A request that mustn't be sent twice is retried only after a
+        -- failure before any of it was sent: while waiting for a free
+        -- connection, connecting or authenticating, or on finding that the
+        -- server has closed the connection. Those are @increment@,
+        -- @decrement@, @append@, @prepend@, @add@ and @delete@, and @cas@ and
+        -- @replace@ with a version other than 0. Once the request may have
+        -- reached the server, a failure such as a timeout, a network error or
+        -- the server closing the connection is thrown as it is, and the server
+        -- is marked down as if every attempt had failed, whatever retries are
+        -- left. The server may have carried out the request, and a retry
+        -- could apply it twice, or report failure because the first one
+        -- succeeded (see 'keyedOpExpectingOnce').
+        --
+        -- Every other operation is retried after any failure, so the server
+        -- may carry out its request more than once: gets, @touch@, @set@,
+        -- @cas@ and @replace@ with version 0, the batches of @getMany@,
+        -- @setMany@ and @deleteMany@, @flush@, @stats@ and @version@, and
+        -- the operations of 'keyedOp', 'anyOp', 'allOp' and 'allOp''. Sent
+        -- again, these leave the same data and get an answer as true as the
+        -- first, but a store or delete repeated after another client has
+        -- changed the key undoes that change. Set this to 0 for no retries.
         --
         -- Default is 1, so an operation is tried at most twice. Before
         -- version 0.5 this was the number of attempts, not retries, and
@@ -431,14 +457,32 @@ legacyServerForKey c k = do
     \at a time. Use ketamaServerForKey, the default; this will be removed in \
     \the next major version." #-}
 
+-- | Whether a request can be sent again after a failure that may have come
+-- after the server received it.
+data Resend
+  -- | Sending it again leaves the same data and gets an answer as true as the
+  -- first: a get, an unconditional set, a flush.
+  = Resend
+  -- | It is sent at most once: a retry could carry it out twice, or answer
+  -- for the first one's effect, as an increment or an @add@ would.
+  | SendOnce
+  deriving Eq
+
 -- | Run a Memcached operation against a particular server, handling any
 -- failures that occur, retrying the specified number of times. The reply is
 -- checked with the given function while the connection is held, so that a
 -- reply it rejects closes the connection.
-serverOp :: Cluster -> Server -> (Response -> IO ()) -> ByteString -> IO Response
+--
+-- A request sent once is retried only after a failure before it was sent.
+-- So that a connection the server closed while it sat idle in the pool
+-- doesn't count as one, the connection is checked just before sending.
+serverOp :: Cluster -> Server -> Resend -> (Response -> IO ()) -> ByteString -> IO Response
 {-# INLINE serverOp #-}
-serverOp c s check req = handle (\(OutOfStep err) -> throwIO err) $
-  retryOp c s $ \s' -> withSocket s' $ \connection -> do
+serverOp c s resend check req = handle (\(OutOfStep err) -> throwIO err) $
+  retryOp c s $ \sent s' -> withSocket s' $ \connection -> do
+    when (resend == SendOnce) $ do
+      checkIdle connection
+      writeIORef sent True
     sendRaw connection req
     response <- recvResponse connection
     check response
@@ -477,9 +521,13 @@ instance Exception OutOfStep
 -- 'ErrValueTooLarge'. Any other reply is returned, and the connection goes
 -- back to the pool, so a reply the request cannot get leaves it out of step;
 -- 'keyedOpExpecting' rejects such a reply.
+--
+-- After a failure the request is sent again, even if the server may have
+-- carried it out (see 'optsServerRetries'), so use it only for requests that
+-- can be repeated. 'keyedOpExpectingOnce' is for those that can't.
 keyedOp :: Cluster -> Key -> (WireKey -> ByteString) -> IO Response
 {-# INLINE keyedOp #-}
-keyedOp c = keyedOpWith c rejectProtocolError
+keyedOp c = keyedOpWith c Resend rejectProtocolError
 
 -- | Like 'keyedOp', for a request whose reply can only have one of the given
 -- codes, such as @[\"VA\", \"EN\"]@ for a get with the @v@ flag. A reply with
@@ -493,19 +541,41 @@ keyedOp c = keyedOpWith c rejectProtocolError
 -- @Expected GET, got: \"HD\"@. The server has received the request, so it
 -- is not sent again, and the error doesn't count towards marking the server
 -- dead. Error replies (@ERROR@, @CLIENT_ERROR@ and @SERVER_ERROR@) throw as
--- they do for 'keyedOp'.
+-- they do for 'keyedOp'. After any other failure, the request is sent again,
+-- as with 'keyedOp'.
 keyedOpExpecting :: Cluster -> String -> [ByteString] -> Key -> (WireKey -> ByteString) -> IO Response
 {-# INLINE keyedOpExpecting #-}
-keyedOpExpecting c operation codes = keyedOpWith c (expectReply operation codes)
+keyedOpExpecting c operation codes = keyedOpWith c Resend (expectReply operation codes)
+
+-- | Like 'keyedOpExpecting', for a request that mustn't be sent twice, such
+-- as an increment, an @add@, a delete, or a store with a CAS version. Once
+-- the request may have reached the server, a failure, such as a timeout, a
+-- network error or the server closing the connection, isn't retried: the
+-- server may have carried out the request, and a second one could apply it
+-- twice, or report failure because the first one succeeded. The failure is
+-- thrown as it is, and still counts against the server: its idle connections
+-- are closed, and it is marked dead, as when the last of an operation's
+-- attempts fails. A failure before any of the request is sent, such as
+-- waiting for a connection, connecting or authenticating, is retried as for
+-- 'keyedOpExpecting'.
+--
+-- Before sending, the connection is checked, without waiting, for the server
+-- having closed it, as memcached does to idle connections when it restarts
+-- or after @-o idle_timeout@. Such a connection is closed, and the request is
+-- retried on another, as after any failure before sending (see
+-- 'Database.Memcache.Socket.checkIdle').
+keyedOpExpectingOnce :: Cluster -> String -> [ByteString] -> Key -> (WireKey -> ByteString) -> IO Response
+{-# INLINE keyedOpExpectingOnce #-}
+keyedOpExpectingOnce c operation codes = keyedOpWith c SendOnce (expectReply operation codes)
 
 -- | Run a keyed request, checking its reply with the given function.
-keyedOpWith :: Cluster -> (Response -> IO ()) -> Key -> (WireKey -> ByteString) -> IO Response
+keyedOpWith :: Cluster -> Resend -> (Response -> IO ()) -> Key -> (WireKey -> ByteString) -> IO Response
 {-# INLINE keyedOpWith #-}
-keyedOpWith c check k makeReq = do
+keyedOpWith c resend check k makeReq = do
     wire <- either (throwIO . ClientError) return (encodeKey k)
     s' <- cGetServerForKey c c k
     case s' of
-        Just s  -> serverOp c s check (makeReq wire)
+        Just s  -> serverOp c s resend check (makeReq wire)
         Nothing -> throwIO $ ClientError NoServersReady
 
 -- | Run keyed requests grouped by their selected server, pipelining each
@@ -515,6 +585,10 @@ keyedOpWith c check k makeReq = do
 -- memcached copies it into the reply, and that matches the reply to its
 -- request. A request may get no reply, as a quiet miss does. The results are
 -- grouped by server, and keep the order given within a server.
+--
+-- Like 'keyedOp', a batch is sent again after a failure, even one after the
+-- server may have carried out some of its requests, so use it only for
+-- requests that can be repeated.
 --
 -- A miss reply (@EN@) with no opaque is skipped, as there is nothing to
 -- return for it. memcached sends one when a read from extstore misses (for
@@ -553,7 +627,7 @@ keyedBatchOp c requests = do
     -- Write the whole batch in one go, then read it back. Batches are bounded
     -- so the server's replies cannot fill the socket buffers while we are
     -- still writing, which would deadlock both ends until the op times out.
-    runBatch server items = retryOp c server $ \server' -> withSocket server' $ \connection -> do
+    runBatch server items = retryOp c server $ \_ server' -> withSocket server' $ \connection -> do
       sendRaw connection (B.concat (map request items ++ [noOpRequest]))
       recvUntilMN connection items []
 
@@ -606,7 +680,9 @@ keyedBatchOp c requests = do
 -- | Run a Memcached operation against any single server in the cluster,
 -- handling any failures that occur, retrying the specified number of times.
 -- As with 'keyedOp', of the replies it can read, only an error reply throws;
--- 'anyOpExpecting' also rejects a reply the request cannot get.
+-- 'anyOpExpecting' also rejects a reply the request cannot get. Also as with
+-- 'keyedOp', the request is sent again after a failure, so it must be one
+-- that can be repeated.
 anyOp :: Cluster -> ByteString -> IO Response
 {-# INLINE anyOp #-}
 anyOp c = anyOpWith c rejectProtocolError
@@ -625,15 +701,17 @@ anyOpWith c check req = do
     servers' <- aliveServers c
     case V.uncons servers' of
         Nothing     -> throwIO $ ClientError NoServersReady
-        Just (s, _) -> serverOp c s check req
+        Just (s, _) -> serverOp c s Resend check req
 
 -- | Run a Memcached operation against all servers in the cluster, handling any
 -- failures that occur, retrying the specified number of times. As with
 -- 'keyedOp', of the replies it can read, only an error reply throws;
--- 'allOpExpecting' also rejects a reply the request cannot get.
+-- 'allOpExpecting' also rejects a reply the request cannot get. Also as with
+-- 'keyedOp', the request is sent again after a failure, so it must be one
+-- that can be repeated.
 allOp :: Cluster -> ByteString -> IO [(Server, Response)]
 {-# INLINE allOp #-}
-allOp c req = forAliveServers c $ \s -> serverOp c s rejectProtocolError req
+allOp c req = forAliveServers c $ \s -> serverOp c s Resend rejectProtocolError req
 
 -- | Like 'allOp', but rejects a reply whose code is none of the given ones,
 -- as 'keyedOpExpecting' does. The servers after one whose reply is rejected
@@ -641,7 +719,7 @@ allOp c req = forAliveServers c $ \s -> serverOp c s rejectProtocolError req
 allOpExpecting :: Cluster -> String -> [ByteString] -> ByteString -> IO [(Server, Response)]
 {-# INLINE allOpExpecting #-}
 allOpExpecting c operation codes req =
-    forAliveServers c $ \s -> serverOp c s (expectReply operation codes) req
+    forAliveServers c $ \s -> serverOp c s Resend (expectReply operation codes) req
 
 -- | Run a Memcached operation against all servers in the cluster, handling any
 -- failures that occur, retrying the specified number of times. Similar to
@@ -655,10 +733,12 @@ allOpExpecting c operation codes req =
 -- 'OpError', a 'BadCommand' or 'UnknownOp' protocol error, or an
 -- 'InvalidAuthentication' client error, which are rethrown at once. Each
 -- server failure closes the server's idle connections, before the operation
--- is retried or the server marked down.
+-- is retried or the server marked down. The operation is run again from the
+-- start after a failure, whatever requests it had sent, so its requests must
+-- be ones that can be repeated.
 allOp' :: Cluster -> (Server -> IO a) -> IO [(Server, a)]
 {-# INLINE allOp' #-}
-allOp' c op = forAliveServers c $ \s -> retryOp c s op
+allOp' c op = forAliveServers c $ \s -> retryOp c s (const op)
 
 -- | Run an action against every server not marked as failed, pairing each
 -- result with its server. Throws 'NoServersReady' if there are none.
@@ -681,7 +761,12 @@ forAliveServers c f = do
 -- server dead: the last attempt alone decides, whatever the earlier ones did.
 -- Every other failure but a client fault first closes the server's idle
 -- connections, before the operation is retried or the server marked dead.
-retryOp :: forall a. Cluster -> Server -> (Server -> IO a) -> IO a
+--
+-- Each attempt is also given an 'IORef' that it sets just before it sends a
+-- request that mustn't be sent twice. A failure after that isn't retried,
+-- whatever retries are left: it marks the server dead, as the last attempt's
+-- failure does, and is rethrown.
+retryOp :: forall a. Cluster -> Server -> (IORef Bool -> Server -> IO a) -> IO a
 {-# INLINE retryOp #-}
 retryOp Cluster{..} s op = go cRetries
   where
@@ -693,13 +778,15 @@ retryOp Cluster{..} s op = go cRetries
     -- caller can still interrupt the operation.
     go :: Int -> IO a
     {-# INLINE go #-}
-    go !n = try attempt >>= either (handleErrs n) return
+    go !n = do
+        sent <- newIORef False
+        try (attempt sent) >>= either (handleErrs n sent) return
 
     -- One attempt at the operation, with its own timeout and @slotTaken@.
-    attempt :: IO a
-    attempt = do
+    attempt :: IORef Bool -> IO a
+    attempt sent = do
         taken <- newIORef False
-        mr <- timeout cTimeout (op s { slotTaken = Just taken })
+        mr <- timeout cTimeout (op sent s { slotTaken = Just taken })
         case mr of
             Just r  -> return r
             Nothing -> do
@@ -708,9 +795,9 @@ retryOp Cluster{..} s op = go cRetries
                     then throwIO (ClientError Timeout)
                     else throwIO WaitedForSlot
 
-    handleErrs :: Int -> SomeException -> IO a
+    handleErrs :: Int -> IORef Bool -> SomeException -> IO a
     {-# INLINE handleErrs #-}
-    handleErrs n err
+    handleErrs n sent err
         | clientFault err = throwIO err
         | otherwise = case fromException err of
             Just WaitedForSlot -> retryOr n $ throwIO (ClientError Timeout)
@@ -722,9 +809,14 @@ retryOp Cluster{..} s op = go cRetries
                 -- retry, or the next operation once the server is back,
                 -- would take one of those.
                 close s
-                retryOr n $ do
-                    writeIORef (failed s) =<< getPOSIXTime
-                    throwIO err
+                -- The server may have carried out a request that mustn't be
+                -- sent twice, so its failure ends the operation, like the
+                -- last attempt's.
+                once <- readIORef sent
+                let giveUp = do
+                      writeIORef (failed s) =<< getPOSIXTime
+                      throwIO err
+                if once then giveUp else retryOr n giveUp
 
     -- Retry the operation if it has retries left, or else give up.
     retryOr :: Int -> IO a -> IO a
