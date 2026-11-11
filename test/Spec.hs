@@ -3,6 +3,7 @@
 module Main where
 
 import           MockServer
+import           RoutingSpec
 import qualified Database.Memcache.Auth    as Auth
 import qualified Database.Memcache.Client  as Client
 import qualified Database.Memcache.Cluster as Cluster
@@ -33,10 +34,11 @@ import           Data.IORef                (atomicModifyIORef', newIORef, readIO
 import           Data.List                 (find, nub)
 import           GHC.Clock                 (getMonotonicTime)
 import           GHC.Conc                  (ThreadStatus (..), threadStatus)
+import           System.IO.Error           (isDoesNotExistError)
 import           System.Timeout            (timeout)
 import           UnliftIO.Async            (Async, async, asyncThreadId, cancel,
                                             mapConcurrently, wait)
-import           UnliftIO.Exception        (StringException (..))
+import           UnliftIO.Exception        (StringException (..), tryIO)
 
 main :: IO ()
 main = hspec $ do
@@ -531,7 +533,7 @@ main = hspec $ do
 
     -- The unknown reply answers the batch's mn, so the mock has recorded both
     -- requests of each attempt before the client sees it.
-    it "marks the server dead once a batch's retries all get an unknown code" $
+    it "marks the server dead once every attempt at a batch gets an unknown code" $
       withServerAndClientOpts fastFailover
         [Noop, MR "XX O0\r\nMN\r\n", Noop, MR "XX O0\r\nMN\r\n"] $ \server client -> do
           Client.getMany client ["one"] `shouldThrow` (== ProtocolError (UnknownStatus "XX"))
@@ -927,6 +929,11 @@ main = hspec $ do
           }
         -- A server marked dead stays dead for the rest of the test.
         fastStaysDead = fast { Client.optsDeadRetryDelay = 60000 }
+        -- Options for the attempts helper below. Each attempt fails as soon
+        -- as the mock drops its connection; its 5 s are only so that a slow
+        -- machine can't turn the drop into a timeout.
+        dropping = fastStaysDead { Client.optsServerTimeout = 5000 }
+        withRetries n = dropping { Client.optsServerRetries = n }
         -- Up to three connections to the server, rather than one.
         threeConnections opts = opts
           { Client.optsServerOptions = Client.defaultServerOptions { Client.soNumResources = 3 } }
@@ -961,9 +968,25 @@ main = hspec $ do
       withServerAndClientOpts fast [DelayMS 350 Noop, MR "VA 3 f2 c7\r\nfoo\r\n"] $ \_ client ->
         Client.get client "key" `shouldReturn` Just ("foo", 2, 7)
 
+    -- Counting the retries down from minBound must not wrap round to
+    -- maxBound.
+    it "tries an operation once when retries are zero or negative" $
+      mapM (\n -> (n,) <$> attempts (withRetries n)) [0, -1, minBound]
+        `shouldReturn` [(0, 1), (-1, 1), (minBound, 1)]
+
+    it "tries an operation twice with one retry" $
+      attempts (withRetries 1) `shouldReturn` 2
+
+    it "tries an operation three times with two retries" $
+      attempts (withRetries 2) `shouldReturn` 3
+
+    it "retries an operation once by default, so tries it twice" $ do
+      Client.optsServerRetries Client.def `shouldBe` 1
+      attempts dropping `shouldReturn` 2
+
     it "marks a server dead once its retries run out, then revives it" $
       withServerAndClientOpts fast [CloseConnection, CloseConnection, MR "VA 3 f2 c7\r\nfoo\r\n"] $ \server client -> do
-        -- The default of two retries means two attempts in total.
+        -- The default of one retry means two attempts in total.
         Client.get client "key" `shouldThrow` isUnexpectedEOF
         length <$> mockRequests server `shouldReturn` 2
         Client.get client "key" `shouldThrow` (== ClientError NoServersReady)
@@ -1039,7 +1062,7 @@ main = hspec $ do
     -- reads. The mock serves one connection at a time: it answers that
     -- thread once it has sent the late reply, 250 ms after the get gives up.
     it "doesn't hand the connection of a request that timed out to a waiting thread" $
-      withServerAndClientOpts fastStaysDead { Client.optsServerRetries = 1, Client.optsServerTimeout = 500 }
+      withServerAndClientOpts fastStaysDead { Client.optsServerRetries = 0, Client.optsServerTimeout = 500 }
         [DelayMS 750 (MR "VA 3 f9 c9\r\nold\r\n"), MR "VA 3 f2 c7\r\nfoo\r\n"] $ \server client -> do
           [s] <- toList <$> Cluster.getServers client
           timingOut <- async $ Client.get client "key"
@@ -1168,7 +1191,7 @@ main = hspec $ do
     -- against the server although it waited first: its only attempt marks
     -- the server dead.
     it "marks a server dead when a request that waited for its connection times out using it" $
-      withServerAndClientOpts fastStaysDead { Client.optsServerRetries = 1 } [Noop, Noop] $ \server client -> do
+      withServerAndClientOpts fastStaysDead { Client.optsServerRetries = 0 } [Noop, Noop] $ \server client -> do
         [s] <- toList <$> Cluster.getServers client
         held <- newEmptyMVar
         release <- newEmptyMVar
@@ -1188,7 +1211,7 @@ main = hspec $ do
     -- the connection, and its only attempt marks the server dead. With a new
     -- 1 s once it had the connection, it would get the reply.
     it "counts the wait for the connection towards the attempt's timeout" $
-      withServerAndClientOpts fastStaysDead { Client.optsServerRetries = 1, Client.optsServerTimeout = 1000 }
+      withServerAndClientOpts fastStaysDead { Client.optsServerRetries = 0, Client.optsServerTimeout = 1000 }
         [DelayMS 800 (MR "HD\r\n")] $ \server client -> do
           [s] <- toList <$> Cluster.getServers client
           held <- newEmptyMVar
@@ -1270,7 +1293,7 @@ main = hspec $ do
         , MR "VA 3 f0 c1\r\nfoo\r\n" ] $ \server -> do
           let spec = (mockServerSpec server) { ssAuth = Auth.Auth "user" "pass" }
           client <- Client.newClient [spec]
-            Client.def { Client.optsServerRetries = 1, Client.optsServerTimeout = 3000 }
+            Client.def { Client.optsServerRetries = 0, Client.optsServerTimeout = 3000 }
           first <- async $ Client.get client "key"
           waitForRequests server 1 `shouldReturn` ["version\r\n"]
           second <- async $ Client.get client "key"
@@ -1289,7 +1312,7 @@ main = hspec $ do
         , MR "VA 3 f0 c1\r\nfoo\r\n" ] $ \server -> do
           let spec = (mockServerSpec server) { ssAuth = Auth.Auth "user" "pass" }
           client <- Client.newClient [spec]
-            Client.def { Client.optsServerRetries = 1, Client.optsServerTimeout = 3000 }
+            Client.def { Client.optsServerRetries = 0, Client.optsServerTimeout = 3000 }
           first <- async $ Client.get client "key"
           waitForRequests server 1 `shouldReturn` ["version\r\n"]
           second <- async $ Client.get client "key"
@@ -1314,7 +1337,7 @@ main = hspec $ do
         , [MR "CLIENT_ERROR unauthenticated\r\n", MR "STORED\r\n", MR "VA 3 f0 c1\r\nfoo\r\n"] ] $ \server -> do
           let spec = (mockServerSpec server) { ssAuth = Auth.Auth "user" "pass" }
           client <- Client.newClient [spec] Client.def
-            { Client.optsServerRetries = 1, Client.optsServerTimeout = 3000
+            { Client.optsServerRetries = 0, Client.optsServerTimeout = 3000
             , Client.optsServerOptions = Client.defaultServerOptions { Client.soNumResources = 2 } }
           [s] <- toList <$> Cluster.getServers client
           held <- newEmptyMVar
@@ -1342,7 +1365,7 @@ main = hspec $ do
         , MR "CLIENT_ERROR unauthenticated\r\n", MR "CLIENT_ERROR authentication failure\r\n" ] $ \server -> do
           let spec = (mockServerSpec server) { ssAuth = Auth.Auth "user" "pass" }
           client <- Client.newClient [spec]
-            Client.def { Client.optsServerRetries = 1, Client.optsServerTimeout = 3000 }
+            Client.def { Client.optsServerRetries = 0, Client.optsServerTimeout = 3000 }
           first <- async $ Client.get client "key"
           waitForRequests server 1 `shouldReturn` ["version\r\n"]
           second <- async $ Client.get client "key"
@@ -1663,7 +1686,7 @@ main = hspec $ do
     it "have the documented values" $ do
       Client.defaultServerSpec `shouldBe` Client.ServerSpec "127.0.0.1" "11211" Client.NoAuth
       serverFields Client.defaultServerOptions `shouldBe` (1, 1, 300)
-      optionFields Client.defaultOptions `shouldBe` (2, 200, 1500, 750, (1, 1, 300))
+      optionFields Client.defaultOptions `shouldBe` (1, 200, 1500, 750, (1, 1, 300))
 
     it "are the values def gives" $ do
       Client.defaultServerSpec `shouldBe` Client.def
@@ -1722,6 +1745,70 @@ main = hspec $ do
         Client.version client `shouldReturn` "1.6.1"
         requests <- (++) <$> mockRequests a <*> mockRequests b
         requests `shouldBe` ["version\r\n"]
+
+  -- These are pending unless localhost resolves to more than one address;
+  -- see withLocalhostAddresses. Each takes a free port at the first address,
+  -- and listens at the same port at the later one.
+  describe "connecting" $ do
+    -- The socket bound at the first address refuses the connection, and
+    -- keeps other processes from listening there.
+    it "tries the next address when one refuses the connection" $
+      withLocalhostAddresses $ \first later ->
+      withBoundSocket first $ \port ->
+      withMockServerAt (atPort port later) [MR "VA 3 f2 c7\r\nfoo\r\n"] $ \server -> do
+        client <- Client.newClient [localhostSpec server Auth.NoAuth] patient
+        Client.get client "key" `shouldReturn` Just ("foo", 2, 7)
+
+    -- Sockets bound at both addresses refuse the connection, so the get fails
+    -- with a connection error, as it does where a host has one address. The
+    -- socket at the later address sets SO_REUSEADDR, as connections to an
+    -- earlier mock at that port can still be in TIME_WAIT there. Once a mock
+    -- listens at the later address, a new client's get reaches it.
+    it "fails with the connection error when every address refuses the connection" $
+      withLocalhostAddresses $ \first later ->
+      withBoundSocket first $ \port -> do
+        let spec = ServerSpec "localhost" (show port) Auth.NoAuth
+        refused <- Client.newClient [spec] oneAttempt { Client.optsServerTimeout = 10000 }
+        withBoundSocketReuseAddr (atPort port later) $ \_ ->
+          Client.get refused "key" `shouldThrow` isDoesNotExistError
+        withMockServerAt (atPort port later) [MR "VA 3 f2 c7\r\nfoo\r\n"] $ \_ -> do
+          client <- Client.newClient [spec] patient
+          Client.get client "key" `shouldReturn` Just ("foo", 2, 7)
+
+    -- A second mock, at the same port on the later address, records whether
+    -- the client tries there too once the credentials are rejected. Once the
+    -- first mock's responses have run out, it stops listening, and the next
+    -- get moves on to the second mock, which shows that the client can reach
+    -- it. A get that connects before then has its connection reset, and its
+    -- retry moves on.
+    it "does not try the next address once authentication fails" $
+      withLocalhostAddresses $ \first later ->
+      withMockServerAt first
+        [MR "CLIENT_ERROR unauthenticated\r\n", MR "CLIENT_ERROR authentication failure\r\n"] $ \server ->
+      withMockServerAt (atPort (mockPort server) later)
+        [MR "CLIENT_ERROR unauthenticated\r\n", MR "STORED\r\n", MR "VA 3 f2 c7\r\nfoo\r\n"] $ \other -> do
+        client <- Client.newClient [localhostSpec server (Auth.Auth "user" "pass")] patient
+        Client.get client "key" `shouldThrow` (== OpError TextAuthFail)
+        mockRequests server `shouldReturn` ["version\r\n", "set auth 0 0 9\r\nuser pass\r\n"]
+        mockRequests other `shouldReturn` []
+        Client.get client "key" `shouldReturn` Just ("foo", 2, 7)
+
+    -- Connecting to the first address gets no answer, as its listener's
+    -- queue is full, so the only attempt runs out of time there. The mock at
+    -- the later address must get nothing. Once the listener has closed, the
+    -- first address refuses, and a new client gets the mock's reply, which
+    -- shows that the mock could be reached all along.
+    it "tries no later address once one that doesn't answer has used up the attempt's time" $
+      withLocalhostAddresses $ \first later ->
+      withFullListener first $ \port stopListening ->
+      withMockServerAt (atPort port later) [MR "VA 3 f2 c7\r\nfoo\r\n"] $ \server -> do
+        impatient <- Client.newClient [localhostSpec server Auth.NoAuth]
+          oneAttempt { Client.optsServerTimeout = 300 }
+        Client.get impatient "key" `shouldThrow` (== ClientError Timeout)
+        mockRequests server `shouldReturn` []
+        stopListening
+        client <- Client.newClient [localhostSpec server Auth.NoAuth] patient
+        Client.get client "key" `shouldReturn` Just ("foo", 2, 7)
 
   describe "ElastiCache discovery" $ do
     it "rejects an endpoint that is not a configuration endpoint" $
@@ -1932,6 +2019,32 @@ main = hspec $ do
         -- open, both flushes went over it.
         mockClosed a `shouldReturn` 0
 
+    -- The order breaks ties on the ketama ring. Discovery used to sort the
+    -- servers by sid, so both the first discovery and the refresh list the
+    -- node with the higher sid first.
+    it "keeps the servers in the order discovery lists them in" $
+      withMockServer [MR "OK\r\n"] $ \a ->
+      withMockServer [MR "OK\r\n"] $ \b ->
+      withMockServer [MR "OK\r\n"] $ \c -> do
+        -- Discovery makes its servers from the same specs, so with these
+        -- sids. Each is read from a cluster of its own, which can't sort it.
+        let sidOf m = map Server.sid . toList
+              <$> (Cluster.getServers =<< Cluster.newCluster [mockServerSpec m] Client.def)
+        [sidA] <- sidOf a
+        [sidB] <- sidOf b
+        let (hi, lo) = if sidA > sidB then (a, b) else (b, a)
+        withMockServer (refreshTo [hi, lo] ++ refreshTo [hi, lo, c] ++ noReplies) $ \cfg ->
+          -- With this time limit no refresh runs out of time on a slow
+          -- machine, which would shift the replies.
+          withDiscovery Client.def { Client.optsServerTimeout = 10000 } $ \opts start _ -> do
+            client <- EC.newClient opts tenMs (endpoint cfg)
+            let ports = map Server.serverPort . toList <$> Cluster.getServers client
+                portsOf = map (show . mockPort)
+            ports `shouldReturn` portsOf [hi, lo]
+            start
+            waitFor 3 (length <$> ports) `shouldReturn` 3
+            ports `shouldReturn` portsOf [hi, lo, c]
+
     -- The first refresh adds b, the second fails, and the third lists a and b
     -- again.
     it "reuses the servers of known nodes after a refresh fails" $
@@ -2005,6 +2118,8 @@ main = hspec $ do
         -- Checked last, as in the test above.
         length initial `shouldBe` 2
 
+  routingSpec
+
   where
     recvResponseFrom bytes =
       bracket
@@ -2035,6 +2150,17 @@ main = hspec $ do
     isUnexpectedResponse (ProtocolError (UnexpectedResponse _)) = True
     isUnexpectedResponse _ = False
     closePair (left, right) = N.close left >> N.close right
+    -- How many times a get is tried against a server that drops every
+    -- connection. The server must then be marked dead. A get still retrying
+    -- after 5 s fails the test, naming the retries, rather than hanging it.
+    attempts opts = withServerAndClientOpts opts (replicate 5 CloseConnection) $ \server client -> do
+      ended <- timeout 5000000 (Client.get client "key" `shouldThrow` isUnexpectedEOF)
+      case ended of
+        Just () -> pure ()
+        Nothing -> expectationFailure $ "still retrying after 5 s, with optsServerRetries = "
+          <> show (Client.optsServerRetries opts)
+      Client.get client "key" `shouldThrow` (== ClientError NoServersReady)
+      length <$> mockRequests server
     allStats [(_, [ ("curr_items", "2"), ("rusage_user", "0.1 0.2") ])] = True
     allStats _ = False
     expectedAuthRequests = "version\r\nset auth 0 0 9\r\nuser pass\r\n"
@@ -2050,6 +2176,10 @@ main = hspec $ do
     connStats = "STAT 65535:addr ?:<AF 0>\r\nSTAT 65535:listen_addr unix:" <> C.replicate 107 'p'
       <> "\r\nSTAT 65535:state conn_io_pending\r\nSTAT 65535:secs_since_last_cmd 2147483647\r\n"
     fst3 (value, _, _) = value
+    localhostSpec server = ServerSpec "localhost" (show (mockPort server))
+    -- Each attempt has 10 s, so that even on a slow machine one is unlikely
+    -- to run out of time after using up a mock's reply.
+    patient = Client.def { Client.optsServerTimeout = 10000 }
     hour = 3600 * 1000000
     tenMs = 10 * 1000
     -- The endpoint check only looks for ".cfg" somewhere in the URI, so put it
@@ -2192,6 +2322,31 @@ recvExactly socket n = do
   if B.null chunk
     then return B.empty
     else (chunk <>) <$> recvExactly socket (n - B.length chunk)
+
+-- | Run a test with the first address localhost resolves to and a later,
+-- different one, or mark it pending where there are no two such addresses that
+-- a mock server can listen on. There are where localhost resolves to both ::1
+-- and 127.0.0.1 and IPv6 is enabled, but not where it resolves to 127.0.0.1
+-- alone or doesn't resolve at all.
+withLocalhostAddresses :: (N.SockAddr -> N.SockAddr -> Expectation) -> Expectation
+withLocalhostAddresses test = do
+  resolved <- tryIO $ N.getAddrInfo (Just hints) (Just "localhost") (Just "0")
+  case map N.addrAddress <$> resolved of
+    Left err -> pendingWith $ "cannot resolve localhost: " ++ displayException err
+    Right addresses@(first : rest) | later : _ <- reverse (filter (/= first) rest) -> do
+      listenable <- and <$> mapM canListenAt [first, later]
+      if listenable
+        then test first later
+        else pendingWith $ "cannot listen on the addresses of localhost: " ++ show addresses
+    Right addresses -> pendingWith $ "localhost resolves to a single address: " ++ show addresses
+  where
+    hints = N.defaultHints { N.addrSocketType = N.Stream }
+
+-- | The given address with its port replaced.
+atPort :: N.PortNumber -> N.SockAddr -> N.SockAddr
+atPort port (N.SockAddrInet _ host) = N.SockAddrInet port host
+atPort port (N.SockAddrInet6 _ flow host scope) = N.SockAddrInet6 port flow host scope
+atPort _ address = address
 
 -- | Keys of up to 260 arbitrary bytes, biased towards safe ones.
 keyGen :: Gen B.ByteString

@@ -1,6 +1,6 @@
 ## ToDo
 
-Behavior and API fixes, including routing and virtual nodes, are tracked in
+Behavior and API fixes are tracked in
 [#46](https://github.com/dterei/memcache-hs/issues/46).
 
 Optional:

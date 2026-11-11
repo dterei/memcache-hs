@@ -12,9 +12,109 @@ Portability : GHC
 
 Handles a group of connections to different Memcached servers.
 
-We use consistent hashing to choose which server to route a request to. On an
-error, we mark the server as failed and remove it temporarily from the set of
-servers available.
+= Routing
+
+Keys are spread over the servers by ketama consistent hashing, computed
+exactly as libmemcached does for @MEMCACHED_BEHAVIOR_KETAMA_WEIGHTED@ (see
+"Database.Memcache.Ketama"). Each server gets 160 points on a 32-bit ring
+(156 for some numbers of servers), taken from MD5 digests of its name, and a
+key goes to the server owning the first point at or after the MD5 hash of the
+key. Adding or removing a server only moves the keys on that server's points,
+unless it changes the number of points each server gets (from 24 servers to
+25, say), which moves a few percent of the other keys too.
+
+Every server has weight 1, and is named from the host and port strings of its
+'ServerSpec' exactly as written: the host alone for port @\"11211\"@,
+otherwise @host:port@. Hosts are not resolved, so @localhost@ and @127.0.0.1@
+are different names. The key is hashed as given, not in its base64 form on
+the wire. Other clients using libmemcached's weighted ketama distribution
+therefore choose the same server for every key, as long as they are given the
+same host strings and ports in the same order and equal weights: libmemcached
+with @MEMCACHED_BEHAVIOR_KETAMA_WEIGHTED@, php-memcached with
+@OPT_LIBKETAMA_COMPATIBLE@, pylibmc with the @ketama_weighted@ behavior, and
+twemproxy with @hash: md5@ and @distribution: ketama@ and its servers listed
+without node names.
+
+The order of the servers only matters in the rare case that two of them have
+a point with the same value. The server listed first then owns the point, as
+in libmemcached 1.1 and later. Earlier versions of libmemcached, and
+twemproxy, leave such a tie to their C library's sort, so they may choose
+differently for the keys just below that point.
+
+'ketamaServerForKey' routes keys this way, and is the default
+'optsGetServerForKey'.
+
+= Failures
+
+When every attempt at an operation against a server fails, we mark the
+server as failed and remove it temporarily from the set of servers available,
+unless the last attempt only ran out of time waiting for a free connection to
+it (see 'optsServerRetries'). A key whose server is marked failed goes to the
+next live server found walking forward round the ring, so keys on live servers
+stay where they are, and 'NoServersReady' is thrown only when every server is
+marked failed. This is where libmemcached's auto-eject sends the key too,
+except when the number of live servers changes how many points each server
+gets (from 26 servers to 25, say): libmemcached rebuilds the ring from the
+live servers, while we keep every server's points.
+
+= Upgrading from 0.4
+
+Versions before 0.5 compared a @hashable@ hash of the key with hashes of the
+servers. They sent keys to no more than two servers at a time, and the
+mapping could change with the @hashable@ version. That router is kept for
+one release, deprecated, as 'legacyServerForKey'.
+
+With /n/ servers, upgrading moves all but about one key in /n/ to a
+different server, once: about half the keys with 2 servers, 70% with 3 and
+88% with 8. Expect a burst of cache misses. A single server is unaffected.
+
+While old and new versions run side by side, as in a rolling deploy, they
+read and write a moved key on different servers. A change or delete made by
+one is not seen by the other, which can read a stale copy until the copy
+expires, even after the deploy.
+
+One way to switch is all at once, at a quiet time. Copies stored under the
+old mapping stay on their servers, where failover can still find them, so
+you may want to flush the cache afterwards.
+
+The other way avoids the stale reads of a rolling deploy by switching in
+stages. Deploy each step to every instance before starting the next:
+
+1. Upgrade with @optsGetServerForKey = legacyServerForKey@. Keys stay where
+   they are, as long as the build uses the same @hashable@ version and
+   platform as before, and the servers come from 'newCluster' or from
+   ElastiCache discovery (see 'legacyServerForKey'). GHC warns that it is
+   deprecated, so a build with @-Werror@ also needs @-Wno-deprecations@.
+
+2. Add a second client for the same servers that uses 'ketamaServerForKey'.
+   Whenever a key is changed or deleted, also delete it through the second
+   client, unless both clients send it to the same server: compare the
+   'serverHost' and 'serverPort' of the servers their routers return for
+   the key.
+
+3. If a server was marked failed less than your longest expiry time ago,
+   flush the cache first. Then swap the two clients' routers. Every change
+   still deletes the key under the other mapping, so neither version reads a
+   stale copy of a key the other has changed or deleted.
+
+4. Once your longest expiry time has passed since step 3 was on every
+   instance, remove the second client. Until then, copies stored under the
+   old mapping can still be on a key's old server, where failover can find
+   them, and the second client's deletes keep them from going stale. If
+   some keys never expire, flush the cache instead of waiting, and then
+   remove the second client.
+
+The flush in step 3 removes copies that a failover stored on a key's new
+server before step 2 was on every instance. Step 2's deletes remove such a
+copy only when the key next changes. Counters and locks kept in memcached
+can't be moved this way: while instances use different mappings, they
+update them on different servers.
+
+'optsServerRetries' changed too. It now counts the retries after an
+operation's first attempt, where 0.4 counted the attempts, so a value of 1
+or more that you set yourself makes one more attempt than in 0.4, after one
+more 'optsFailRetryDelay'. Set it one lower to keep the old number of
+attempts. The default went from 2 to 1, which still means two attempts.
 -}
 module Database.Memcache.Cluster (
         -- * Cluster
@@ -22,19 +122,24 @@ module Database.Memcache.Cluster (
         Cluster, ServerSpec(..), Options(..), defaultOptions, newCluster,
         getServers, setServers,
 
+        -- * Routing
+        -- | Routers for 'optsGetServerForKey', and 'isAlive' for writing one.
+        ketamaServerForKey, isAlive, legacyServerForKey,
+
         -- * Operations
         Retries, keyedOp, keyedOpExpecting, keyedBatchOp, anyOp, anyOpExpecting,
         allOp, allOpExpecting, allOp'
     ) where
 
 import           Database.Memcache.Errors
+import qualified Database.Memcache.Ketama as Ketama
 import           Database.Memcache.Server
 import           Database.Memcache.Types
 import           Database.Memcache.Types.Server (Server (slotTaken))
 
 import           Control.Concurrent       (threadDelay)
 import           Control.Concurrent.MVar  (MVar, readMVar)
-import           Control.Monad            (foldM, unless, void)
+import           Control.Monad            (foldM, unless, void, (<=<))
 import           Data.ByteString          (ByteString)
 import qualified Data.ByteString          as B
 import qualified Data.ByteString.Char8    as C
@@ -42,8 +147,10 @@ import           Data.Default
 import           Data.Fixed               (Milli)
 import           Data.Hashable            (hash)
 import           Data.IORef
-import           Data.List                (find, sort)
-import           Data.Maybe               (fromMaybe, isJust)
+import           Data.List                (find)
+import           Data.Maybe               (isJust)
+import qualified Data.Text                as T
+import qualified Data.Text.Encoding       as T
 import           Data.Time.Clock          (NominalDiffTime)
 import           Data.Time.Clock.POSIX    (getPOSIXTime)
 import qualified Data.Vector              as V
@@ -51,20 +158,25 @@ import           System.Timeout
 import           UnliftIO.Exception       (Exception, SomeException, fromException, handle, throwIO)
 import           Database.Memcache.Socket (Response(..), WireKey, encodeKey, noOpRequest, recvResponse, responseStatus, sendRaw)
 
--- | Number of times to retry an operation before considering it failed.
+-- | Number of times to retry an operation against a server after its first
+-- attempt fails, before giving up (see 'optsServerRetries').
 type Retries = Int
 
 -- | Options specifies how a Memcached cluster should be configured.
 data Options = Options {
-        -- | Number of times to retry an operation on failure. If consecutive
-        -- failures exceed this value for a server, we mark it as down and
-        -- failover to a different server for the next operation. An attempt
-        -- that only ran out of time waiting for a free connection to the
-        -- server counts towards this like any failure, but the last attempt
-        -- decides: if it was such an attempt, the server isn't marked down,
-        -- whatever the earlier attempts did (see 'optsServerTimeout').
+        -- | Number of times to retry an operation against a server after it
+        -- fails, so each operation is tried at most @1 + optsServerRetries@
+        -- times. Zero or a negative value means it is tried once. If every
+        -- attempt fails, we mark the server as down and failover to a
+        -- different server for the next operation. An attempt that only ran
+        -- out of time waiting for a free connection to the server uses up a
+        -- retry like any failed attempt, but the last attempt decides: if it
+        -- was such an attempt, the server isn't marked down, whatever the
+        -- earlier attempts did (see 'optsServerTimeout').
         --
-        -- Default is 2.
+        -- Default is 1, so an operation is tried at most twice. Before
+        -- version 0.5 this was the number of attempts, not retries, and
+        -- defaulted to 2, which also meant two attempts.
         optsServerRetries        :: Retries,
         -- | After an operation has failed, how long to wait before retrying it
         -- while still within the 'optsServerRetries' count?
@@ -96,7 +208,8 @@ data Options = Options {
         optsServerTimeout        :: Milli,
         -- | Figure out which server to talk to for a given key.
         --
-        -- Default is @getServerForKeyDefault@.
+        -- Default is 'ketamaServerForKey'. A custom router can use 'isAlive'
+        -- to skip servers marked failed.
         optsGetServerForKey      :: Cluster -> Key -> IO (Maybe Server),
         -- | Convert server specifications into servers.
         --
@@ -109,13 +222,11 @@ data Options = Options {
 
 -- | The default cluster options:
 --
--- * 'optsServerRetries': 2
+-- * 'optsServerRetries': 1 (one retry, so an operation is tried at most twice)
 -- * 'optsFailRetryDelay': 200ms
 -- * 'optsDeadRetryDelay': 1500ms
 -- * 'optsServerTimeout': 750ms
--- * 'optsGetServerForKey': the built-in consistent-hashing router
---   (@getServerForKeyDefault@, not exported; reuse it as
---   @optsGetServerForKey defaultOptions@)
+-- * 'optsGetServerForKey': 'ketamaServerForKey'
 -- * 'optsServerSpecsToServers': 'newServerDefault' for each server
 -- * 'optsServerOptions': 'defaultServerOptions'
 --
@@ -123,11 +234,11 @@ data Options = Options {
 -- @defaultOptions { optsServerTimeout = 250 }@.
 defaultOptions :: Options
 defaultOptions = Options {
-            optsServerRetries  = 2,
+            optsServerRetries  = 1,
             optsFailRetryDelay = 200,
             optsDeadRetryDelay = 1500,
             optsServerTimeout  = 750,
-            optsGetServerForKey = getServerForKeyDefault,
+            optsGetServerForKey = ketamaServerForKey,
             optsServerSpecsToServers = mapM . newServerDefault,
             optsServerOptions = defaultServerOptions
         }
@@ -138,7 +249,12 @@ instance Default Options where
 
 -- | Memcached cluster.
 data Cluster = Cluster {
-        cServers         :: Either (MVar (V.Vector Server)) (V.Vector Server),
+        -- | Either servers that discovery replaces, or a fixed set of servers
+        -- and their ketama ring, built on first use.
+        cServers         :: Either (MVar (V.Vector Server)) (V.Vector Server, Ketama.Ring),
+        -- | For servers in an 'MVar': the ketama ring last built and the
+        -- servers it was built for.
+        cRingCache       :: IORef (V.Vector Server, Ketama.Ring),
 
         -- See @Options@ for description of these values.
 
@@ -151,20 +267,30 @@ data Cluster = Cluster {
 
 -- | Get the currently configured servers.
 getServers :: Cluster -> IO (V.Vector Server)
-getServers = either readMVar pure . cServers
+getServers = either readMVar (pure . fst) . cServers
 
 -- | Replace the cluster's server set, preserving its routing and retry options.
+--
+-- Servers are kept in the order given, which breaks ties on the ketama ring
+-- (see "Database.Memcache.Cluster"). A cluster given an 'MVar' caches the ring
+-- for the servers in it, rebuilding it only when their hosts or ports change.
+-- Every cluster made by 'setServers' shares that cache with the one it was
+-- made from, so alternating between two clusters with different hosts in
+-- their 'MVar's rebuilds the ring on each switch.
 setServers :: Cluster -> Either (MVar (V.Vector Server)) (V.Vector Server) -> Cluster
-setServers c servers = c { cServers = servers }
+setServers c servers = c { cServers = fmap withRing servers }
 
 -- | Establish a new connection to a group of Memcached servers.
 newCluster :: [ServerSpec] -> Options -> IO Cluster
 newCluster []    _ = throwIO $ ClientError NoServersReady
 newCluster hosts Options{..} = do
     s <- optsServerSpecsToServers optsServerOptions hosts
+    let fixed = withRing (V.fromList s)
+    cache <- newIORef fixed
     return $
         Cluster {
-            cServers   = Right $ V.fromList $ sort s,
+            cServers   = Right fixed,
+            cRingCache = cache,
             cRetries   = optsServerRetries ,
             cFailDelay = toMicroseconds optsFailRetryDelay,
             cDeadDelay = fromRational $ toRational optsDeadRetryDelay / 1000,
@@ -193,22 +319,106 @@ serverAlive deadDelay s = do
                     writeIORef (failed s) 0
                     return True
 
+-- | Whether a server can be used: it isn't marked failed, or it was marked
+-- failed at least 'optsDeadRetryDelay' ago, in which case this clears the
+-- mark. A custom 'optsGetServerForKey' can use it to skip servers marked
+-- failed, as 'ketamaServerForKey' does.
+isAlive :: Cluster -> Server -> IO Bool
+{-# INLINE isAlive #-}
+isAlive c = serverAlive (cDeadDelay c)
+
 -- | The servers not currently marked as failed.
 aliveServers :: Cluster -> IO (V.Vector Server)
 {-# INLINE aliveServers #-}
 aliveServers c = getServers c >>= V.filterM (serverAlive $ cDeadDelay c)
 
--- | Figure out which server to talk to for this key. I.e., the distribution
--- method. We use consistent hashing based on the CHORD approach.
-getServerForKeyDefault :: Cluster -> Key -> IO (Maybe Server)
-{-# INLINE getServerForKeyDefault #-}
-getServerForKeyDefault  c k = do
-    let hashedKey = hash k
-        searchF s = sid s < hashedKey
+-- | The default router: a key goes to its owner on the ketama ring, or if
+-- that server is marked failed, to the next live server walking forward round
+-- the ring (see the module description). 'Nothing' if the cluster has no
+-- servers or every server is marked failed.
+ketamaServerForKey :: Cluster -> Key -> IO (Maybe Server)
+{-# INLINE ketamaServerForKey #-}
+ketamaServerForKey c k = do
+    (servers, ring) <- either (cachedRing c <=< readMVar) pure (cServers c)
+    let firstAlive [] = return Nothing
+        firstAlive (i:is) = do
+            let s = servers V.! i
+            alive <- isAlive c s
+            if alive then return (Just s) else firstAlive is
+    firstAlive $ Ketama.owners ring $ Ketama.keyHash k
+
+-- | Servers read from the cluster's 'MVar', with their ketama ring. The ring
+-- last built is cached with the servers it was built for, and reused while the
+-- 'MVar' holds the same 'Server' values, as it does after an ElastiCache
+-- refresh that finds the same nodes. Otherwise the ring is reused if the
+-- hosts and ports are the same, and rebuilt only if they differ.
+cachedRing :: Cluster -> V.Vector Server -> IO (V.Vector Server, Ketama.Ring)
+cachedRing c servers = do
+    cached@(builtFor, _) <- readIORef (cRingCache c)
+    if sameServers builtFor servers
+        then return cached
+        -- Install the new ring before building it, so concurrent requests
+        -- share one build.
+        else atomicModifyIORef' (cRingCache c) $ \(builtFor', ring) ->
+            let new | sameNames builtFor' servers = (servers, ring)
+                    | otherwise = withRing servers
+            in (new, new)
+
+-- | Whether two vectors hold the same 'Server' values in the same order. Each
+-- 'Server' has its own 'failed' 'IORef', so this compares a pointer per server,
+-- and allocates nothing.
+sameServers :: V.Vector Server -> V.Vector Server -> Bool
+sameServers = pairwise (\x y -> failed x == failed y)
+
+-- | Whether two vectors hold servers with the same hosts and ports in the same
+-- order, and so the same ketama ring.
+sameNames :: V.Vector Server -> V.Vector Server -> Bool
+sameNames = pairwise (\x y -> serverHost x == serverHost y && serverPort x == serverPort y)
+
+-- | Whether two vectors are the same length and every pair of servers at the
+-- same position passes the test, checked with a loop so nothing is allocated.
+pairwise :: (Server -> Server -> Bool) -> V.Vector Server -> V.Vector Server -> Bool
+{-# INLINE pairwise #-}
+pairwise same xs ys = V.length xs == V.length ys && go 0
+  where
+    go i = i == V.length xs || (same (V.unsafeIndex xs i) (V.unsafeIndex ys i) && go (i + 1))
+
+-- | Servers with their ketama ring, all with weight 1, named from the host and
+-- port they were configured with. The ring is built when it is first used.
+withRing :: V.Vector Server -> (V.Vector Server, Ketama.Ring)
+withRing servers = (servers, Ketama.ring (map named (V.toList servers)))
+  where
+    named s = (Ketama.serverName (utf8 (serverHost s)) (utf8 (serverPort s)), 1)
+    utf8 = T.encodeUtf8 . T.pack
+
+-- | The router of versions before 0.5. It is kept for one release, so that
+-- a fleet can switch to 'ketamaServerForKey' in stages (see the module
+-- description).
+--
+-- Like those versions, it sends a key to the live server with the lowest
+-- @sid@ if that @sid@ is below the key's @hashable@ hash, and otherwise to
+-- the live server with the highest @sid@. It gives the same server as 0.4
+-- only when built with the same @hashable@ version on the same platform, as
+-- @hashable@'s hashes can differ between them. 0.4 also kept the servers of
+-- 'newCluster' and of ElastiCache discovery sorted by @sid@, but searched
+-- servers given to 'setServers' in the order given, so for those this
+-- router can choose a different server than 0.4 did.
+legacyServerForKey :: Cluster -> Key -> IO (Maybe Server)
+legacyServerForKey c k = do
     servers' <- aliveServers c
+    -- 0.4 kept the servers sorted by sid, and sent the key to the first one
+    -- whose sid is below its hash, or else to the last one: so to the first
+    -- server with the lowest sid, if that is below the hash, or else to the
+    -- last one with the highest. The servers are no longer sorted, so find
+    -- those two, in one pass each.
+    let lowest = V.foldl1' (\s s' -> if sid s' < sid s then s' else s) servers'
+        highest = V.foldl1' (\s s' -> if sid s' >= sid s then s' else s) servers'
     return $ if V.null servers'
         then Nothing
-        else Just $ fromMaybe (V.last servers') (V.find searchF servers')
+        else Just $ if sid lowest < hash k then lowest else highest
+{-# DEPRECATED legacyServerForKey "It sends keys to no more than two servers \
+    \at a time. Use ketamaServerForKey, the default; this will be removed in \
+    \the next major version." #-}
 
 -- | Run a Memcached operation against a particular server, handling any
 -- failures that occur, retrying the specified number of times. The reply is
@@ -451,14 +661,14 @@ forAliveServers c f = do
             res <- V.mapM f servers'
             return $ V.toList $ V.zip servers' res
 
--- | Run an IO operation multiple times if an exception is thrown, marking the
--- server as dead if it fails more than the allowed number of retries. Each
--- attempt is given the server with a new @slotTaken@, which 'withSocket' sets
--- once it holds a slot in the server's pool. An attempt that runs out of time
--- before that never reached the server. It is retried like any failure, but
--- if it is the last attempt, it throws v'Timeout' without marking the server
--- dead: the last attempt alone decides, whatever the earlier ones did. Every
--- other failure but a client fault first closes the server's idle
+-- | Run an IO operation, retrying it up to the allowed number of retries if an
+-- exception is thrown, and marking the server as dead if every attempt fails.
+-- Each attempt is given the server with a new @slotTaken@, which 'withSocket'
+-- sets once it holds a slot in the server's pool. An attempt that runs out of
+-- time before that never reached the server. It is retried like any failure,
+-- but if it is the last attempt, it throws v'Timeout' without marking the
+-- server dead: the last attempt alone decides, whatever the earlier ones did.
+-- Every other failure but a client fault first closes the server's idle
 -- connections, before the operation is retried or the server marked dead.
 retryOp :: forall a. Cluster -> Server -> (Server -> IO a) -> IO a
 {-# INLINE retryOp #-}
@@ -466,7 +676,7 @@ retryOp Cluster{..} s op = go cRetries
   where
     go :: Int -> IO a
     {-# INLINE go #-}
-    go !n = handle (handleErrs $ n - 1) $ do
+    go !n = handle (handleErrs n) $ do
         taken <- newIORef False
         mr <- timeout cTimeout (op s { slotTaken = Just taken })
         case mr of
@@ -495,12 +705,12 @@ retryOp Cluster{..} s op = go cRetries
                     writeIORef (failed s) =<< getPOSIXTime
                     throwIO err
 
-    -- Retry the operation if it has attempts left, or else give up.
+    -- Retry the operation if it has retries left, or else give up.
     retryOr :: Int -> IO a -> IO a
     {-# INLINE retryOr #-}
     retryOr n giveUp
         | n <= 0 = giveUp
-        | otherwise = threadDelay cFailDelay >> go n
+        | otherwise = threadDelay cFailDelay >> go (n - 1)
 
 -- | Thrown by an attempt that runs out of time while it waits for a slot in
 -- the server's pool. @retryOp@ retries it like a failure, but without closing

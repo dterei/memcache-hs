@@ -34,8 +34,16 @@ import Network.URI (URI (..), URIAuth (..), parseAbsoluteURI, unEscapeString)
 --
 -- 'show' hides the password; see 'Authentication'.
 data ServerSpec = ServerSpec
-  { -- | Hostname of server to connect to, or the path of a Unix socket if it
-    -- begins with @/@, in which case 'ssPort' is ignored.
+  { -- | Hostname of server to connect to. If it resolves to several
+    -- addresses, each is tried in turn until one accepts the connection. If
+    -- each refuses it or fails in some other way, connecting fails with the
+    -- first address's error. The addresses share the time an attempt at an
+    -- operation has (@optsServerTimeout@): an address that doesn't answer in
+    -- that time uses it up, and that attempt then tries none of the later
+    -- ones.
+    --
+    -- If it begins with @/@, it is instead the path of a Unix socket, in
+    -- which case 'ssPort' is ignored.
     ssHost :: HostName,
     -- | Port number server is running on.
     ssPort :: ServiceName,

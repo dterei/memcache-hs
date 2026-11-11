@@ -27,7 +27,9 @@ import           Network.Socket                 (HostName, ServiceName)
 
 -- | Memcached server connection.
 data Server = Server {
-        -- | ID of server for consistent hashing.
+        -- | Hash of the server's host and port, which the 'Eq' and 'Ord'
+        -- instances compare. Only the deprecated @legacyServerForKey@ routes
+        -- keys by this value; see "Database.Memcache.Cluster".
         sid    :: {-# UNPACK #-} !Int,
         -- | Connection pool to server. It holds slots rather than
         -- connections, so that waiting for a free slot is all a request does

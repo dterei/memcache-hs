@@ -18,7 +18,8 @@ server's 'failed' timestamp is used by cluster retry handling.
 -}
 module Database.Memcache.Server (
       -- * Server
-        Server(sid, failed), newServerDefault, withSocket, close, closeAll,
+        Server(sid, failed), serverHost, serverPort, newServerDefault,
+        withSocket, close, closeAll,
 
       -- * ServerOptions
         ServerOptions(..), defaultServerOptions
@@ -37,12 +38,21 @@ import           Data.Pool (Pool)
 import           Database.Memcache.Types  (ServerSpec (..))
 import           UnliftIO.Exception
 
-import           Network.Socket           (getAddrInfo)
+import           Network.Socket           (HostName, ServiceName, getAddrInfo)
 import qualified Network.Socket           as S
 #if MIN_VERSION_resource_pool(0,4,0)
 #else
 import           Data.Time.Clock          (NominalDiffTime)
 #endif
+
+-- | The host the server was configured with, as given in its 'ServerSpec'.
+serverHost :: Server -> HostName
+serverHost = addr
+
+-- | The port or service name the server was configured with, as given in its
+-- 'ServerSpec'.
+serverPort :: Server -> ServiceName
+serverPort = port
 
 -- | Configurable options when creating a @Server@.
 --
@@ -191,26 +201,55 @@ connectTagged gen ss = do
 
 connectSocket :: ServerSpec -> IO Connection
 connectSocket ServerSpec{..} = do
-    (family, address) <- case ssHost of
-        '/' : _ -> return (S.AF_UNIX, S.SockAddrUnix ssHost)
-        _ -> do
-            let hints = S.defaultHints {
-                  S.addrSocketType = S.Stream
-                }
-            addr:_ <- getAddrInfo (Just hints) (Just ssHost) (Just ssPort)
-            return (S.addrFamily addr, S.addrAddress addr)
+    let hints = S.defaultHints {
+      S.addrSocketType = S.Stream
+    }
+    -- A path is a Unix socket: there is nothing to look up, so it is the
+    -- only address to try.
+    addr:addrs <- case ssHost of
+        '/' : _ -> return [S.defaultHints {
+            S.addrFamily = S.AF_UNIX,
+            S.addrSocketType = S.Stream,
+            S.addrAddress = S.SockAddrUnix ssHost
+          }]
+        _ -> getAddrInfo (Just hints) (Just ssHost) (Just ssPort)
     bracketOnError
-        (S.socket family S.Stream S.defaultProtocol)
+        (connectFirst addr addrs)
         S.close
         (\s -> do
-            S.connect s address
-            when (family /= S.AF_UNIX) $ do
+            -- A Unix socket rejects NoDelay, and has no TCP connection to
+            -- keep alive.
+            when (S.addrFamily addr /= S.AF_UNIX) $ do
                 S.setSocketOption s S.KeepAlive 1
                 S.setSocketOption s S.NoDelay 1
             buffered <- newConnection s
             authenticate buffered ssAuth
             return buffered
         )
+
+-- | Connect a socket to the first of the resolved addresses that accepts,
+-- trying them in order, so a host whose first address refuses the connection
+-- (such as ::1 when the server listens on 127.0.0.1 only) can still be reached
+-- through the others. If none accepts, rethrows the first address's error:
+-- the resolver sorts addresses this host cannot use, such as IPv6 where it is
+-- disabled, last, so the later errors are often just about those.
+--
+-- Only an 'IOException' from creating or connecting a socket moves on to the
+-- next address, so the attempt's timeout ends the loop. Errors once
+-- connected, such as rejected credentials, are raised after this returns:
+-- they come from the server, and trying another address would hide them.
+connectFirst :: S.AddrInfo -> [S.AddrInfo] -> IO S.Socket
+connectFirst addr addrs = do
+    result <- tryIO $ connectTo addr
+    case result of
+        Right s  -> return s
+        Left err -> foldr orElse (throwIO err) addrs
+  where
+    orElse next rest = tryIO (connectTo next) >>= either (const rest) return
+    connectTo a = bracketOnError
+        (S.socket (S.addrFamily a) (S.addrSocketType a) (S.addrProtocol a))
+        S.close
+        (\s -> S.connect s (S.addrAddress a) >> return s)
 
 releaseSocket :: Connection -> IO ()
 releaseSocket = closeConnection

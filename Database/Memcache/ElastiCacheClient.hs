@@ -24,7 +24,6 @@ import Control.Monad (guard, when, (<=<))
 import Data.Bifunctor (first)
 import Data.ByteString (ByteString)
 import qualified Data.ByteString.Char8 as C
-import Data.List (sort)
 import qualified Data.List.NonEmpty as NE
 import Data.Text (Text)
 import qualified Data.Text as T
@@ -146,9 +145,9 @@ repeatAutoDiscover opts interval cfgEndpoint mVar initialNodes = do
 -- each.
 type Nodes = [((HostName, ServiceName), [Server])]
 
--- | The servers of the given nodes, in the order 'Client.newClient' uses.
+-- | The servers of the given nodes, in the order they were discovered.
 nodeServers :: Nodes -> V.Vector Server
-nodeServers = V.fromList . sort . concatMap snd
+nodeServers = V.fromList . concatMap snd
 
 -- | Pair each discovered node with its servers from the given nodes, making
 -- servers only for nodes not among them. Also returns the servers of the given
