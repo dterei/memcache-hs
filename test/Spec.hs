@@ -31,7 +31,7 @@ import           Data.Either               (isLeft)
 import           Data.Foldable             (toList)
 import           Data.IORef                (atomicModifyIORef', newIORef, readIORef,
                                             writeIORef)
-import           Data.List                 (find, nub)
+import           Data.List                 (find, isPrefixOf, nub)
 import           GHC.Clock                 (getMonotonicTime)
 import           GHC.Conc                  (ThreadStatus (..), threadStatus)
 import           System.IO.Error           (isDoesNotExistError)
@@ -1622,10 +1622,16 @@ main = hspec $ do
       , ("memcached://[2001:db8::1]", "2001:db8::1", "11211", Auth.NoAuth)
       , ("memcached://user:secret@[::1]:1234", "::1", "1234", Auth.Auth "user" "secret")
       , ("memcached://[fe80::1%25eth0]:1234", "fe80::1%eth0", "1234", Auth.NoAuth)
-      -- A path without a host is a Unix socket.
+      -- A path after an empty host is a Unix socket.
       , ("memcached:///run/memcached.sock", "/run/memcached.sock", "11211", Auth.NoAuth)
       , ("memcached://user:secret@/run/mc%20d.sock", "/run/mc d.sock", "11211", Auth.Auth "user" "secret")
       , ("memcached://cache.example/ignored", "cache.example", "11211", Auth.NoAuth)
+      -- Its path is percent-decoded to bytes, one Char each, as SockAddrUnix
+      -- writes them.
+      , ("memcached:///run/caf%C3%A9.sock", "/run/caf\xc3\xa9.sock", "11211", Auth.NoAuth)
+      -- A path of just / is no socket.
+      , ("memcached:///", "127.0.0.1", "11211", Auth.NoAuth)
+      , ("memcached://:11211/", "127.0.0.1", "11211", Auth.NoAuth)
       ]
 
     mapM_ rejects
@@ -1641,7 +1647,17 @@ main = hspec $ do
       , ("memcached://user:pa%0Dss@cache.example", "password contains a forbidden delimiter")
       , ("memcached://us%00er:secret@cache.example", "username contains a forbidden delimiter")
       , ("memcached://user:pa%00ss@cache.example", "password contains a forbidden delimiter")
+      -- A Unix socket takes no port, and its path no NUL, which would end it.
+      , ("memcached://:1234/run/memcached.sock", "A Unix socket path takes no port")
+      , ("memcached:///run/mc%00d.sock", "Unix socket path contains NUL")
       ]
+
+    -- Without the "//", the URI has no host, not even an empty one, so its
+    -- path is no socket. Were it one, the password of the second URI, which
+    -- is missing a slash, would be in ssHost, which show prints.
+    it "takes no Unix socket path from a URI without //" $
+      forM_ ["memcached:/run/memcached.sock", "memcached:/user:secret@cache.example"] $ \uri ->
+        fmap ssHost (parseServerSpec uri) `shouldSatisfy` either (const True) (not . isPrefixOf "/")
 
     it "gives getAddrInfo an IPv6 address it accepts" $ do
       spec <- either fail return $ parseServerSpec "memcached://[::1]:11211"

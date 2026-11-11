@@ -22,6 +22,7 @@ where
 import Control.Monad (guard)
 import Data.ByteString (ByteString)
 import qualified Data.ByteString as B
+import qualified Data.ByteString.Char8 as C
 import Data.Char (digitToInt, isHexDigit, ord)
 import Data.Default
 import Data.Maybe (fromMaybe)
@@ -59,9 +60,15 @@ data ServerSpec = ServerSpec
 -- must pass 'validateCredentials'; one given without the other is ignored.
 -- An IPv6 address goes in brackets, as in @memcached:\/\/[::1]:11211@.
 --
--- A path with no host is a Unix socket, as in
--- @memcached:\/\/\/run\/memcached.sock@ or
--- @memcached:\/\/user:secret\@\/run\/memcached.sock@.
+-- A path after an empty host is a Unix socket, as in
+-- @memcached:\/\/\/run\/memcached.sock@, or
+-- @memcached:\/\/user:secret\@\/run\/memcached.sock@ with credentials. The
+-- path is percent-decoded to bytes too, which 'ssHost' holds one per 'Char',
+-- so @%C3%A9@ is the two bytes that encode U+00E9 in UTF-8. It mustn't contain
+-- @%00@. A socket takes no port, so
+-- @memcached:\/\/:11211\/run\/memcached.sock@ is an error. A path of just
+-- @\/@ is no socket: @memcached:\/\/\/@ and @memcached:\/\/:11211\/@ are
+-- @127.0.0.1@ on port @11211@, as @memcached:\/\/@ is.
 --
 -- Error messages never quote the URI, as it may contain a password.
 parseServerSpec :: String -> Either String ServerSpec
@@ -71,12 +78,10 @@ parseServerSpec s = do
 
   let mAuth = uriAuthority uri
   auth <- maybe (pure Nothing) (readAuthentication . uriUserInfo) mAuth
-  let setPath ss = case uriPath uri of
-        p@('/' : _) | maybe True (null . uriRegName) mAuth -> ss {ssHost = unEscapeString p}
-        _ -> ss
+  socketPath <- readSocketPath uri
 
   pure
-    . setPath
+    . maybe id setSocketPath socketPath
     . maybe id setHost mAuth
     . maybe id setPort mAuth
     . maybe id setAuth auth
@@ -91,6 +96,25 @@ readAuthentication userInfo = case break (== ':') (takeWhile (/= '@') userInfo) 
         pass = unEscapeBytes p
     validateCredentials user pass
     pure $ Just $ Auth user pass
+  _ -> pure Nothing
+
+-- | Read the path of a Unix socket from a URI whose host is empty, such as
+-- @memcached:\/\/\/run\/memcached.sock@. There is none unless the URI has
+-- the @\/\/@ of an authority, so that a URI missing a slash, such as
+-- @memcached:\/user:secret\@cache.example@, never puts its password in
+-- 'ssHost', which 'show' prints, and unless the path is more than @\/@, so
+-- that @memcached:\/\/\/@ is still the default server.
+--
+-- The path is percent-decoded to bytes, one 'Char' each, as
+-- 'Network.Socket.SockAddrUnix' writes a path one byte per 'Char'. A NUL
+-- would end the path early, so it is an error.
+readSocketPath :: URI -> Either String (Maybe FilePath)
+readSocketPath uri = case (uriAuthority uri, uriPath uri) of
+  (Just a, p@('/' : _ : _)) | null (uriRegName a) -> do
+    note "A Unix socket path takes no port" $ guard $ null (uriPort a)
+    let path = C.unpack (unEscapeBytes p)
+    note "Unix socket path contains NUL" $ guard $ notElem '\0' path
+    pure (Just path)
   _ -> pure Nothing
 
 -- | Percent-decode a string to the bytes it encodes. Unlike
@@ -121,6 +145,9 @@ setPort auth ss = fromMaybe ss $ do
     (':' : p) -> Just p
     p -> Just p
   pure $ ss {ssPort = p}
+
+setSocketPath :: FilePath -> ServerSpec -> ServerSpec
+setSocketPath path ss = ss {ssHost = path}
 
 setAuth :: Authentication -> ServerSpec -> ServerSpec
 setAuth auth ss = ss {ssAuth = auth}
