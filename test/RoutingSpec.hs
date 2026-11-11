@@ -160,6 +160,18 @@ routingSpec = do
       cluster <- clusterOf [(host, 11211, 1) | (host, _) <- servers]
       mapM (route cluster) manyKeys `shouldReturn` map expected manyKeys
 
+    it "names a Unix socket on the ring by the bytes of its path" $ do
+      -- Paths held a byte per Char, as the client connects to them and as
+      -- parseServerSpec decodes memcached:///run/caf%C3%A9-a.sock: \195\169
+      -- is U+00E9 in UTF-8. libmemcached names a socket by these bytes, so
+      -- they mustn't be encoded in UTF-8 again, as a host's characters are.
+      -- serverFor names each server by C.pack of its host, which keeps them.
+      let sockets = [ ("/run/caf\195\169-a.sock", 11211, 1)
+                    , ("/run/caf\195\169-b.sock", 11211, 1)
+                    , ("/run/caf\195\169-c.sock", 0, 1) ]
+      cluster <- clusterOf sockets
+      mapM (route cluster) manyKeys `shouldReturn` map (serverFor sockets) manyKeys
+
     it "sends a failed server's keys to the next live server, and keeps the rest" $ do
       cluster <- clusterOf (scenarioServers "host4")
       cache3 <- serverNamed cluster "cache3.example.com:11211"

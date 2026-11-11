@@ -4,11 +4,12 @@
 --
 -- Each mock listens on 127.0.0.1 unless given another address, and on an
 -- ephemeral port of its own unless given a port, so tests can run several at
--- once and never clash with a real memcached on the default port.
+-- once and never clash with a real memcached on the default port. A mock can
+-- also listen on a Unix socket, at a path from 'withSocketPath'.
 module MockServer (
         MockResponse(..), MockServer(..), withMockServer, withMockServerAt,
         withConcurrentMockServer, withBoundSocket, withBoundSocketReuseAddr,
-        withFullListener, canListenAt, mockServerSpec
+        withFullListener, withSocketPath, canListenAt, mockServerSpec
     ) where
 
 import           Control.Concurrent
@@ -20,6 +21,9 @@ import           Data.Maybe                (isJust)
 import           Database.Memcache.Types   (Authentication (NoAuth), ServerSpec (..))
 import qualified Network.Socket            as N
 import qualified Network.Socket.ByteString as N
+import           System.Directory          (getTemporaryDirectory, removeFile,
+                                            removePathForcibly)
+import           System.IO                 (hClose, openTempFile)
 import           System.Timeout            (timeout)
 import           Text.Read                  (readMaybe)
 import           UnliftIO.Async             (concurrently_)
@@ -42,7 +46,7 @@ data MockResponse
 
 -- | A running mock server.
 data MockServer = MockServer
-    { -- | The port the mock is listening on.
+    { -- | The port the mock is listening on, or 0 on a Unix socket.
       mockPort     :: N.PortNumber
       -- | Every request received so far, oldest first, including any data
       -- block that followed the command line.
@@ -128,8 +132,12 @@ withListener address serveClients action = do
         N.setSocketOption sock N.ReuseAddr 1
         N.bind sock address
         N.listen sock 10
-        N.socketPort sock >>= putMVar ready
+        listeningPort sock >>= putMVar ready
         serveClients sock received closed
+    -- A Unix socket has no port.
+    listeningPort sock = case address of
+      N.SockAddrUnix{} -> return 0
+      _                -> N.socketPort sock
 
 -- | An ephemeral port on 127.0.0.1.
 loopback :: N.SockAddr
@@ -195,12 +203,29 @@ withFullListener address action =
     port <- N.socketPort sock
     action port (N.close sock)
 
--- | A TCP socket for the given address's family.
+-- | Run an action with the path of a Unix socket in the temporary directory,
+-- at which nothing exists yet, so that a mock can listen there. Whatever is
+-- at the path once the action is done, such as the mock's socket, is
+-- removed.
+withSocketPath :: (FilePath -> IO a) -> IO a
+withSocketPath = bracket freshPath removePathForcibly
+  where
+    -- A temporary file's name is one no other file has. Remove the file, so
+    -- that a socket can be bound in its place.
+    freshPath = do
+      tmp <- getTemporaryDirectory
+      (path, file) <- openTempFile tmp "memcache-hs.sock"
+      hClose file
+      removeFile path
+      return path
+
+-- | A stream socket for the given address's family: TCP, or a Unix socket.
 newSocket :: N.SockAddr -> IO N.Socket
 newSocket address = N.socket (addressFamily address) N.Stream N.defaultProtocol
 
 addressFamily :: N.SockAddr -> N.Family
 addressFamily N.SockAddrInet6{} = N.AF_INET6
+addressFamily N.SockAddrUnix{}  = N.AF_UNIX
 addressFamily _                 = N.AF_INET
 
 -- | Answer requests on one connection until the responses run out or the

@@ -31,7 +31,7 @@ import           Data.Either               (isLeft)
 import           Data.Foldable             (toList)
 import           Data.IORef                (atomicModifyIORef', newIORef, readIORef,
                                             writeIORef)
-import           Data.List                 (find, nub)
+import           Data.List                 (find, isPrefixOf, nub)
 import           GHC.Clock                 (getMonotonicTime)
 import           GHC.Conc                  (ThreadStatus (..), threadStatus)
 import           System.IO.Error           (isDoesNotExistError)
@@ -1622,6 +1622,19 @@ main = hspec $ do
       , ("memcached://[2001:db8::1]", "2001:db8::1", "11211", Auth.NoAuth)
       , ("memcached://user:secret@[::1]:1234", "::1", "1234", Auth.Auth "user" "secret")
       , ("memcached://[fe80::1%25eth0]:1234", "fe80::1%eth0", "1234", Auth.NoAuth)
+      -- A path after an empty host is a Unix socket.
+      , ("memcached:///run/memcached.sock", "/run/memcached.sock", "11211", Auth.NoAuth)
+      , ("memcached://user:secret@/run/mc%20d.sock", "/run/mc d.sock", "11211", Auth.Auth "user" "secret")
+      , ("memcached://cache.example/ignored", "cache.example", "11211", Auth.NoAuth)
+      -- Its path is percent-decoded to bytes, one Char each, as SockAddrUnix
+      -- writes them.
+      , ("memcached:///run/caf%C3%A9.sock", "/run/caf\xc3\xa9.sock", "11211", Auth.NoAuth)
+      -- A path of only slashes is no socket: the root directory isn't one.
+      , ("memcached:///", "127.0.0.1", "11211", Auth.NoAuth)
+      , ("memcached://:11211/", "127.0.0.1", "11211", Auth.NoAuth)
+      , ("memcached:////", "127.0.0.1", "11211", Auth.NoAuth)
+      , ("memcached:///%2F", "127.0.0.1", "11211", Auth.NoAuth)
+      , ("memcached://:11211//", "127.0.0.1", "11211", Auth.NoAuth)
       ]
 
     mapM_ rejects
@@ -1637,7 +1650,17 @@ main = hspec $ do
       , ("memcached://user:pa%0Dss@cache.example", "password contains a forbidden delimiter")
       , ("memcached://us%00er:secret@cache.example", "username contains a forbidden delimiter")
       , ("memcached://user:pa%00ss@cache.example", "password contains a forbidden delimiter")
+      -- A Unix socket takes no port, and its path no NUL, which would end it.
+      , ("memcached://:1234/run/memcached.sock", "A Unix socket path takes no port")
+      , ("memcached:///run/mc%00d.sock", "Unix socket path contains NUL")
       ]
+
+    -- Without the "//", the URI has no host, not even an empty one, so its
+    -- path is no socket. Were it one, the password of the second URI, which
+    -- is missing a slash, would be in ssHost, which show prints.
+    it "takes no Unix socket path from a URI without //" $
+      forM_ ["memcached:/run/memcached.sock", "memcached:/user:secret@cache.example"] $ \uri ->
+        fmap ssHost (parseServerSpec uri) `shouldSatisfy` either (const True) (not . isPrefixOf "/")
 
     it "gives getAddrInfo an IPv6 address it accepts" $ do
       spec <- either fail return $ parseServerSpec "memcached://[::1]:11211"
@@ -1806,6 +1829,38 @@ main = hspec $ do
         client <- Client.newClient [localhostSpec server Auth.NoAuth] patient
         Client.get client "key" `shouldReturn` Just ("foo", 2, 7)
 
+  describe "Unix sockets" $ do
+    -- A host that begins with / is the path of a Unix socket, which the
+    -- client connects to without looking anything up: a lookup with this
+    -- port, which names no service, would fail. Nor may it set TCP's
+    -- options, as a Unix socket rejects NoDelay.
+    it "connects to a host that begins with / through the socket at that path" $
+      withUnixSocketPath $ \path ->
+      withMockServerAt (N.SockAddrUnix path) [MR "VA 3 f2 c7\r\nfoo\r\n"] $ \server -> do
+        client <- Client.newClient [ServerSpec path "no-such-service" Auth.NoAuth] oneAttempt
+        Client.get client "key" `shouldReturn` Just ("foo", 2, 7)
+        mockRequests server `shouldReturn` ["mg key v f c\r\n"]
+
+    it "authenticates over a Unix socket" $
+      withUnixSocketPath $ \path ->
+      withMockServerAt (N.SockAddrUnix path)
+        [MR "CLIENT_ERROR unauthenticated\r\n", MR "STORED\r\n", MR "VA 3 f2 c7\r\nfoo\r\n"] $ \server -> do
+        client <- Client.newClient [ServerSpec path "11211" (Auth.Auth "user" "pass")] oneAttempt
+        Client.get client "key" `shouldReturn` Just ("foo", 2, 7)
+        mockRequests server `shouldReturn`
+          ["version\r\n", "set auth 0 0 9\r\nuser pass\r\n", "mg key v f c\r\n"]
+
+    -- The path is percent-encoded, but for its slashes, in case the
+    -- temporary directory's name has characters a URI can't.
+    it "connects through the socket a memcached:/// URI names" $
+      withUnixSocketPath $ \path ->
+      withMockServerAt (N.SockAddrUnix path) [MR "VA 3 f2 c7\r\nfoo\r\n"] $ \_ -> do
+        let escape c = if c == '/' then "/" else percentEncode (C.singleton c)
+        spec <- either fail return $ parseServerSpec ("memcached://" <> concatMap escape path)
+        ssHost spec `shouldBe` path
+        client <- Client.newClient [spec] oneAttempt
+        Client.get client "key" `shouldReturn` Just ("foo", 2, 7)
+
   describe "ElastiCache discovery" $ do
     it "rejects an endpoint that is not a configuration endpoint" $
       isLeft (EC.parseConfigurationEndpoint "memcached://cache.example:11211") `shouldBe` True
@@ -1837,6 +1892,23 @@ main = hspec $ do
           Client.get client "key" `shouldReturn` Just ("foo", 0, 1)
           waitForRequests cfg 2 `shouldReturn`
             ["version\r\n", "get AmazonElastiCache:cluster\r\n"]
+
+    -- Discovery makes memcached://<host>:<port> of each node line, so hosts
+    -- such as these, whose "?" puts the port in the query, would make the
+    -- node a Unix socket on this machine, of the endpoint's choosing. The
+    -- third gives its URI an empty port, which a socket can't have.
+    forM_
+      [ ("/var/run/docker.sock?", "Node names a Unix socket: memcached:///var/run/docker.sock?:11211")
+      , ("u:p@/x.sock?", "Node names a Unix socket: memcached://u:p@/x.sock?:11211")
+      , (":/x.sock?", "A Unix socket path takes no port: memcached://:/x.sock?:11211")
+      ] $ \(host, expected) ->
+      it ("won't take the node " <> C.unpack host <> " for a Unix socket") $ do
+        let body = "1\n" <> host <> "|127.0.0.1|11211\n"
+            config = "CONFIG cluster 0 " <> C.pack (show (B.length body)) <> "\r\n"
+              <> body <> "\r\nEND\r\n"
+        withMockServer [MR "VERSION 1.6.12\r\n", MR config, Noop] $ \cfg ->
+          EC.newClient Client.def hour (endpoint cfg) `shouldThrow`
+            \(StringException message _) -> message == expected
 
     -- An error reply is one line with no END line after it, and memcached
     -- keeps the connection open, as the Noop does: discovery must not wait
@@ -2163,6 +2235,11 @@ main = hspec $ do
     fastFailover = Client.def { Client.optsFailRetryDelay = 10, Client.optsDeadRetryDelay = 60000 }
     -- One attempt per operation, and a server it marks dead is used again at once.
     oneAttempt = Client.def { Client.optsServerRetries = 0, Client.optsDeadRetryDelay = 0 }
+    -- Run a test with a fresh path for a Unix socket, or mark it pending
+    -- where there are no Unix sockets.
+    withUnixSocketPath test
+      | N.isUnixDomainSocketAvailable = withSocketPath test
+      | otherwise = pendingWith "Unix sockets are unavailable"
     -- Long enough to read a stats reply of hundreds of thousands of lines.
     slowStats opts = opts { Client.optsServerTimeout = 10000 }
     -- What @stats conns@ reports for one client connection at its longest,

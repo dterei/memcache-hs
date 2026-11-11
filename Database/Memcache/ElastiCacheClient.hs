@@ -86,9 +86,10 @@ newtype ConfigurationEndpoint
 -- throws v'ClientError' 'Timeout'. If the endpoint sends an error reply, such
 -- as the @ERROR@ that plain memcached sends as it has no @config@ command,
 -- this throws a @StringException@ from "UnliftIO.Exception", as it does for a
--- reply that can't be parsed. If a reply goes on for more than 1 MiB without
--- the line end or the @END@ line that discovery is waiting for, this throws
--- v'Database.Memcache.Errors.ProtocolError'
+-- reply that can't be parsed, or that lists a node whose host is a path,
+-- which would make it a Unix socket on this machine. If a reply goes on for
+-- more than 1 MiB without the line end or the @END@ line that discovery is
+-- waiting for, this throws v'Database.Memcache.Errors.ProtocolError'
 -- 'Database.Memcache.Errors.BadLength'.
 --
 -- Servers are made by calling 'optsServerSpecsToServers' with one node at a
@@ -98,8 +99,9 @@ newtype ConfigurationEndpoint
 -- idle ones at once, and one in use as soon as its request finishes. Each
 -- refresh has the same time and length limits as the first discovery. A
 -- refresh that fails, for example because it runs out of time or the reply is
--- an error, is too long, can't be parsed or lists no nodes, leaves the servers
--- as they are, and discovery tries again after the next interval.
+-- an error, is too long, can't be parsed, lists no nodes or lists a Unix
+-- socket, leaves the servers as they are, and discovery tries again after the
+-- next interval.
 --
 -- N.B. The interval is in the same units as 'threadDelay'.
 newClient :: Options -> Int -> ConfigurationEndpoint -> IO Client
@@ -221,7 +223,15 @@ handleRawNodeInfo = mapM (parseNode . T.unpack <=< convertToUri) . T.splitOn " "
     -- Node addresses come from the server and hold no credentials, so name
     -- the one that failed.
     parseNode :: String -> Either String ServerSpec
-    parseNode uri = first (<> (": " <> uri)) (parseServerSpec uri)
+    parseNode uri = first (<> (": " <> uri)) $ do
+      spec <- parseServerSpec uri
+      -- A node is a host to reach over the network. A host such as
+      -- "/var/run/docker.sock?" makes a URI whose path is a Unix socket,
+      -- with the port in its query, so without this the endpoint, or anyone
+      -- who can change its reply, could point the client at any local socket.
+      case ssHost spec of
+        '/' : _ -> Left "Node names a Unix socket"
+        _ -> pure spec
 
     convertToUri :: Text -> Either String Text
     convertToUri t =

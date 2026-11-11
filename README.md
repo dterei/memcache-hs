@@ -121,6 +121,31 @@ The server must be started with `-Y <authfile>`, where the auth file holds one
 credentials and all data are sent unencrypted; only rely on them within a
 trusted network.
 
+### Unix sockets
+
+A host that begins with `/` is the path of a Unix socket instead, for a
+memcached on the same machine. Start memcached with `-s <path>` to listen on
+the socket, which stops it listening on the network, and with `-a <mode>` to
+set the socket's permissions: the default, `0700`, lets only memcached's own
+user connect.
+
+```haskell
+  mc <- M.newClient [M.ServerSpec "/run/memcached/memcached.sock" "11211" M.NoAuth] M.def
+```
+
+As a URI, the path follows an empty host, and there is no port:
+`memcached:///run/memcached/memcached.sock`, or
+`memcached://user:secret@/run/memcached/memcached.sock` with credentials.
+
+The client doesn't use a socket's port to connect, but the port still names
+the server, along with the path, when keys are routed, so changing it moves
+keys to other servers. `"11211"`, which a URI gives, names the socket by its
+path alone, as libmemcached's `memcached_server_add` does, and `"0"` names it
+`path:0`, as libmemcached's `memcached_server_add_unix_socket` and pylibmc do.
+
+The operating system limits the path's length: 108 bytes on Linux and 104 on
+macOS, including the terminating NUL.
+
 ### Amazon ElastiCache
 
 `Database.Memcache.ElastiCacheClient` creates a client from an ElastiCache

@@ -26,14 +26,19 @@ unless it changes the number of points each server gets (from 24 servers to
 Every server has weight 1, and is named from the host and port strings of its
 'ServerSpec' exactly as written: the host alone for port @\"11211\"@,
 otherwise @host:port@. Hosts are not resolved, so @localhost@ and @127.0.0.1@
-are different names. The key is hashed as given, not in its base64 form on
-the wire. Other clients using libmemcached's weighted ketama distribution
-therefore choose the same server for every key, as long as they are given the
-same host strings and ports in the same order and equal weights: libmemcached
-with @MEMCACHED_BEHAVIOR_KETAMA_WEIGHTED@, php-memcached with
-@OPT_LIBKETAMA_COMPATIBLE@, pylibmc with the @ketama_weighted@ behavior, and
-twemproxy with @hash: md5@ and @distribution: ketama@ and its servers listed
-without node names.
+are different names. A Unix socket is named by its path in the same way, as
+the bytes the client connects to, one per 'Char' (see 'ssHost'), whereas a
+host is named in UTF-8. The client doesn't use a socket's port to connect,
+but port @\"11211\"@ names it by the path alone, as libmemcached's
+@memcached_server_add@ does, and @\"0\"@ names it @path:0@, as libmemcached's
+@memcached_server_add_unix_socket@ and pylibmc do. The key is hashed as given,
+not in its base64 form on the wire. Other clients using libmemcached's
+weighted ketama distribution therefore choose the same server for every key,
+as long as they are given the same host strings and ports in the same order
+and equal weights: libmemcached with @MEMCACHED_BEHAVIOR_KETAMA_WEIGHTED@,
+php-memcached with @OPT_LIBKETAMA_COMPATIBLE@, pylibmc with the
+@ketama_weighted@ behavior, and twemproxy with @hash: md5@ and
+@distribution: ketama@ and its servers listed without node names.
 
 The order of the servers only matters in the rare case that two of them have
 a point with the same value. The server listed first then owns the point, as
@@ -388,7 +393,13 @@ pairwise same xs ys = V.length xs == V.length ys && go 0
 withRing :: V.Vector Server -> (V.Vector Server, Ketama.Ring)
 withRing servers = (servers, Ketama.ring (map named (V.toList servers)))
   where
-    named s = (Ketama.serverName (utf8 (serverHost s)) (utf8 (serverPort s)), 1)
+    named s = (Ketama.serverName (hostBytes (serverHost s)) (utf8 (serverPort s)), 1)
+    -- A Unix socket's path holds a byte per Char, the bytes the client
+    -- connects to, and libmemcached names a socket by those bytes. Encoding
+    -- them in UTF-8, as a host's characters are, would give a path outside
+    -- ASCII another name.
+    hostBytes path@('/' : _) = C.pack path
+    hostBytes host = utf8 host
     utf8 = T.encodeUtf8 . T.pack
 
 -- | The router of versions before 0.5. It is kept for one release, so that

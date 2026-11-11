@@ -204,13 +204,24 @@ connectSocket ServerSpec{..} = do
     let hints = S.defaultHints {
       S.addrSocketType = S.Stream
     }
-    addr:addrs <- getAddrInfo (Just hints) (Just ssHost) (Just ssPort)
+    -- A path is a Unix socket: there is nothing to look up, so it is the
+    -- only address to try.
+    addr:addrs <- case ssHost of
+        '/' : _ -> return [S.defaultHints {
+            S.addrFamily = S.AF_UNIX,
+            S.addrSocketType = S.Stream,
+            S.addrAddress = S.SockAddrUnix ssHost
+          }]
+        _ -> getAddrInfo (Just hints) (Just ssHost) (Just ssPort)
     bracketOnError
         (connectFirst addr addrs)
         S.close
         (\s -> do
-            S.setSocketOption s S.KeepAlive 1
-            S.setSocketOption s S.NoDelay 1
+            -- A Unix socket rejects NoDelay, and has no TCP connection to
+            -- keep alive.
+            when (S.addrFamily addr /= S.AF_UNIX) $ do
+                S.setSocketOption s S.KeepAlive 1
+                S.setSocketOption s S.NoDelay 1
             buffered <- newConnection s
             authenticate buffered ssAuth
             return buffered
