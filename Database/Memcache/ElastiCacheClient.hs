@@ -79,6 +79,11 @@ newtype ConfigurationEndpoint
 --
 -- This function discovers all the nodes in a cluster and sets up a new thread to run autodiscovery on an interval.
 --
+-- Discovery connects to the configuration endpoint like any other server, so
+-- it fails for a cluster running a memcached older than 1.6.10, having sent
+-- only the authentication exchange, when the endpoint has credentials, and
+-- @version@ (see "Database.Memcache.Client").
+--
 -- N.B. The interval is in the same units as 'threadDelay'.
 newClient :: Options -> Int -> ConfigurationEndpoint -> IO Client
 newClient options interval cfgEndpoint = bracket acquireCfgClient releaseCfgClient resolveCluster'

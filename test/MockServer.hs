@@ -5,7 +5,8 @@
 -- Each mock listens on its own ephemeral port on 127.0.0.1, so tests can run
 -- several at once and never clash with a real memcached on the default port.
 module MockServer (
-        MockResponse(..), MockServer(..), withMockServer, mockServerSpec
+        MockResponse(..), MockServer(..), withMockServer, withMockMemcached,
+        mockServerSpec
     ) where
 
 import           Control.Concurrent
@@ -49,7 +50,18 @@ mockServerSpec server = ServerSpec "127.0.0.1" (show (mockPort server)) NoAuth
 -- in order, one per request, across however many connections the client
 -- makes; once they run out it closes the connection and stops listening.
 withMockServer :: [MockResponse] -> (MockServer -> IO a) -> IO a
-withMockServer responses action = do
+withMockServer = runMockServer Nothing
+
+-- | Like 'withMockServer', but the mock reports itself as memcached of the
+-- given version, such as @"1.6.24"@. The client asks for the server's version
+-- on every new connection before sending anything else, so the mock answers
+-- the first request on each connection with @VERSION@ and that version,
+-- without using up a response. That request is still recorded.
+withMockMemcached :: B.ByteString -> [MockResponse] -> (MockServer -> IO a) -> IO a
+withMockMemcached version = runMockServer (Just ("VERSION " <> version <> "\r\n"))
+
+runMockServer :: Maybe B.ByteString -> [MockResponse] -> (MockServer -> IO a) -> IO a
+runMockServer greeting responses action = do
   ready <- newEmptyMVar
   received <- newIORef []
   bracket
@@ -79,9 +91,16 @@ withMockServer responses action = do
       pending <- readIORef remaining
       unless (null pending) $ do
         (client, _) <- N.accept sock
-        handle ignore (clientHandler client remaining received)
+        handle ignore (greet client received >> clientHandler client remaining received)
           `finally` N.close client
         acceptLoop sock remaining received
+
+    -- Answer the version check that starts each connection, if the mock
+    -- reports a version.
+    greet client received = forM_ greeting $ \reply -> do
+      request <- recvReq client
+      modifyIORef' received (request :)
+      N.sendAll client reply
 
     ignore :: SomeException -> IO ()
     ignore = const (return ())

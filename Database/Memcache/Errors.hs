@@ -54,7 +54,12 @@ data ClientError
 data ProtocolError
     -- | Received an unknown response line.
     = UnknownPkt    { protocolError :: String }
-    -- | Unknown Memcached operation.
+    -- | Unknown Memcached operation. Also thrown when a new connection asks
+    -- the server for its version and the reply is a version below 1.6.10, or
+    -- any other reply that is neither an error nor a readable version; the
+    -- message quotes the reply. The connection is then closed, having sent
+    -- only the authentication exchange, when credentials are set, and
+    -- @version@.
     | UnknownOp     { protocolError :: String }
     -- | Unknown Memcached status field value.
     | UnknownStatus { protocolError :: String }

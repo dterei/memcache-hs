@@ -67,6 +67,11 @@ data Response = Response
   } deriving (Eq, Show)
 
 -- | Create a connection wrapper around a socket.
+--
+-- This doesn't check the server's version. Connections that
+-- "Database.Memcache.Server" makes are checked, and refuse a server older than
+-- memcached 1.6.10; a connection made here directly is not, so check the
+-- server's version before sending it 'storeRequest' or 'modifyRequest'.
 newConnection :: N.Socket -> IO Connection
 newConnection s = Connection s <$> newIORef B.empty
 
@@ -342,7 +347,12 @@ touchRequest key expiry = render (B.length (wireKey key)) $
 
 -- | Encode a storage request.
 --
--- Don't send a value longer than 1 GiB, the largest item memcached can store:
+-- Send this only to memcached 1.6.10 or later. Older servers reject it without
+-- reading the value, and then run the value's bytes as commands. Connections
+-- that "Database.Memcache.Server" makes check the server's version, but a
+-- connection made with 'newConnection' directly does not.
+--
+-- Nor send a value longer than 1 GiB, the largest item memcached can store:
 -- memcached mishandles a data length over 2147483645 bytes, and then runs the
 -- rest of the value's bytes as commands. The operations in
 -- "Database.Memcache.Client" refuse such a value; this encoder doesn't.
@@ -367,7 +377,12 @@ arithmeticRequest mode key initial delta expiry version = render (B.length (wire
 
 -- | Encode an append or prepend request.
 --
--- Don't send a value longer than 1 GiB, the largest item memcached can store:
+-- Send this only to memcached 1.6.10 or later. Older servers reject it without
+-- reading the value, and then run the value's bytes as commands. Connections
+-- that "Database.Memcache.Server" makes check the server's version, but a
+-- connection made with 'newConnection' directly does not.
+--
+-- Nor send a value longer than 1 GiB, the largest item memcached can store:
 -- memcached mishandles a data length over 2147483645 bytes, and then runs the
 -- rest of the value's bytes as commands. The operations in
 -- "Database.Memcache.Client" refuse such a value; this encoder doesn't.

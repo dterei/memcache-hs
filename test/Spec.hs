@@ -21,7 +21,9 @@ import qualified Network.Socket            as N
 import qualified Network.Socket.ByteString as N
 import           Control.Concurrent        (forkIO, threadDelay)
 import           Control.Exception         (bracket)
+import           Control.Monad             (forM_, void)
 import           Data.Either               (isLeft)
+import           Data.List                 (isInfixOf)
 import           Foreign.Marshal.Alloc     (mallocBytes)
 import           System.Timeout            (timeout)
 
@@ -280,7 +282,7 @@ main = hspec $ do
       withServerAndClient [MR "VA 5 f1 c11 kone\r\nfirst\r\n", Noop, MR "MN\r\n"] $ \server client -> do
         Client.getMany client ["one", "two"] `shouldReturn` [("one", ("first", 1, 11))]
         mockRequests server `shouldReturn`
-          ["mg one v f c k q\r\n", "mg two v f c k q\r\n", "mn\r\n"]
+          ["version\r\n", "mg one v f c k q\r\n", "mg two v f c k q\r\n", "mn\r\n"]
 
     it "maps encoded keys back to the caller's key" $ do
       let encoded = Base64.encode "a b"
@@ -296,7 +298,7 @@ main = hspec $ do
     it "gets a hit" $
       withServerAndClient [MR "VA 3 f2 c7\r\nfoo\r\n"] $ \server client -> do
         Client.get client "key" `shouldReturn` Just ("foo", 2, 7)
-        mockRequests server `shouldReturn` ["mg key v f c\r\n"]
+        mockRequests server `shouldReturn` ["version\r\n", "mg key v f c\r\n"]
 
     it "returns Nothing for a miss" $
       withClient [MR "EN\r\n"] $ \client ->
@@ -314,7 +316,8 @@ main = hspec $ do
       withServerAndClient [MR "VA 3 f2 c7\r\nfoo\r\n", MR "EN\r\n"] $ \server client -> do
         Client.gat client "key" 60 `shouldReturn` Just ("foo", 2, 7)
         Client.gat client "key" 60 `shouldReturn` Nothing
-        mockRequests server `shouldReturn` ["mg key v f c T60\r\n", "mg key v f c T60\r\n"]
+        mockRequests server `shouldReturn`
+          ["version\r\n", "mg key v f c T60\r\n", "mg key v f c T60\r\n"]
 
     it "touches a value" $
       withClient [MR "HD c3\r\n", MR "EN\r\n"] $ \client -> do
@@ -324,7 +327,7 @@ main = hspec $ do
     it "stores and returns the server CAS" $
       withServerAndClient [MR "HD c9\r\n"] $ \server client -> do
         Client.set client "key" "foo" 2 30 `shouldReturn` 9
-        mockRequests server `shouldReturn` ["ms key 3 F2 T30 MS c\r\nfoo\r\n"]
+        mockRequests server `shouldReturn` ["version\r\n", "ms key 3 F2 T30 MS c\r\nfoo\r\n"]
 
     it "reports a set the server did not store" $
       withClient [MR "NS\r\n"] $ \client ->
@@ -347,8 +350,8 @@ main = hspec $ do
         Client.cas client "key" "v" 0 0 2 `shouldReturn` Just 3
         Client.cas client "key" "v" 0 0 2 `shouldReturn` Nothing
         Client.cas client "key" "v" 0 0 2 `shouldReturn` Nothing
-        requests <- mockRequests server
-        requests `shouldSatisfy` all (== "ms key 1 F0 T0 C2 MS c\r\nv\r\n")
+        mockRequests server `shouldReturn`
+          "version\r\n" : replicate 3 "ms key 1 F0 T0 C2 MS c\r\nv\r\n"
 
     it "deletes a present key" $
       withClient [MR "HD\r\n"] $ \client ->
@@ -364,8 +367,8 @@ main = hspec $ do
         Client.get client "key" `shouldThrow` isBadCommand
 
     it "reads version" $
-      withClient [MR "VERSION 1.6.0\r\n"] $ \client ->
-        Client.version client `shouldReturn` "1.6.0"
+      withClient [MR ("VERSION " <> supportedVersion <> "\r\n")] $ \client ->
+        Client.version client `shouldReturn` supportedVersion
 
     it "collects stats until END, keeping values that contain spaces" $
       withClient [MR "STAT curr_items 2\r\nSTAT rusage_user 0.1 0.2\r\nEND\r\n"] $ \client -> do
@@ -376,7 +379,7 @@ main = hspec $ do
       withServerAndClient [MR "END\r\n"] $ \server client -> do
         result <- Client.stats client (Just "cachedump 1 100")
         map snd result `shouldBe` [[]]
-        mockRequests server `shouldReturn` ["stats cachedump 1 100\r\n"]
+        mockRequests server `shouldReturn` ["version\r\n", "stats cachedump 1 100\r\n"]
 
     it "keeps non-STAT stats lines" $
       withClient [MR "ITEM key [3 b; 0 s]\r\nEND\r\n"] $ \client -> do
@@ -390,7 +393,7 @@ main = hspec $ do
     it "returns the new counter value and CAS" $
       withServerAndClient [MR "VA 1 c2\r\n0\r\n"] $ \server client -> do
         Client.decrement client "counter" 10 1 60 0 `shouldReturn` Just (0, 2)
-        mockRequests server `shouldReturn` ["ma counter D1 MD v c N60 J10\r\n"]
+        mockRequests server `shouldReturn` ["version\r\n", "ma counter D1 MD v c N60 J10\r\n"]
 
     it "reports arithmetic on a non-numeric value" $
       withClient [MR "CLIENT_ERROR cannot increment or decrement non-numeric value\r\n"] $ \client ->
@@ -403,12 +406,12 @@ main = hspec $ do
     it "prepends to an existing key" $
       withServerAndClient [MR "HD c4\r\n"] $ \server client -> do
         Client.prepend client "key" "pre" 0 `shouldReturn` Just 4
-        mockRequests server `shouldReturn` ["ms key 3 MP c\r\npre\r\n"]
+        mockRequests server `shouldReturn` ["version\r\n", "ms key 3 MP c\r\npre\r\n"]
 
     it "flushes" $
       withServerAndClient [MR "OK\r\n"] $ \server client -> do
         Client.flush client (Just 10) `shouldReturn` ()
-        mockRequests server `shouldReturn` ["flush_all 10\r\n"]
+        mockRequests server `shouldReturn` ["version\r\n", "flush_all 10\r\n"]
 
     it "reports an oversized value as a status, not a protocol failure" $
       withClient [MR "SERVER_ERROR object too large for cache\r\n"] $ \client ->
@@ -426,8 +429,8 @@ main = hspec $ do
     it "sends quit" $
       withServerAndClient [Noop] $ \server client -> do
         Client.quit client
-        requests <- waitForRequests server 1
-        requests `shouldBe` ["quit\r\n"]
+        requests <- waitForRequests server 2
+        requests `shouldBe` ["version\r\n", "quit\r\n"]
 
   -- The value is one byte over the 1 GiB limit. In the test of each
   -- operation, the client's server is a port that is bound but not listening,
@@ -476,7 +479,9 @@ main = hspec $ do
     it "retries after the server drops the connection" $
       withServerAndClientOpts fast [CloseConnection, MR "VA 3 f2 c7\r\nfoo\r\n"] $ \server client -> do
         Client.get client "key" `shouldReturn` Just ("foo", 2, 7)
-        length <$> mockRequests server `shouldReturn` 2
+        -- The retry's new connection checks the version again.
+        mockRequests server `shouldReturn`
+          ["version\r\n", "mg key v f c\r\n", "version\r\n", "mg key v f c\r\n"]
 
     it "retries after an operation times out" $
       withServerAndClientOpts fast [DelayMS 350 Noop, MR "VA 3 f2 c7\r\nfoo\r\n"] $ \_ client ->
@@ -486,10 +491,17 @@ main = hspec $ do
       withServerAndClientOpts fast [CloseConnection, CloseConnection, MR "VA 3 f2 c7\r\nfoo\r\n"] $ \server client -> do
         -- The default of two retries means two attempts in total.
         Client.get client "key" `shouldThrow` isUnexpectedEOF
-        length <$> mockRequests server `shouldReturn` 2
+        mockRequests server `shouldReturn`
+          ["version\r\n", "mg key v f c\r\n", "version\r\n", "mg key v f c\r\n"]
         Client.get client "key" `shouldThrow` (== ClientError NoServersReady)
         threadDelay 400000
         Client.get client "key" `shouldReturn` Just ("foo", 2, 7)
+
+    it "checks the version again on the connection a retry opens" $
+      withMockServer [supported, CloseConnection, MR "VERSION 1.6.9\r\n", MR "VA 3 f2 c7\r\nfoo\r\n"] $ \server -> do
+        client <- Client.newClient [mockServerSpec server] fast
+        Client.get client "key" `shouldThrow` refused "VERSION 1.6.9"
+        mockRequests server `shouldReturn` ["version\r\n", "mg key v f c\r\n", "version\r\n"]
 
   describe "authenticate" $ do
     it "accepts credentials once the server confirms auth-file mode" $
@@ -531,12 +543,103 @@ main = hspec $ do
         [" ", "\t", "\r", "\n"]
 
     it "authenticates each new client connection" $
-      withMockServer [MR "CLIENT_ERROR unauthenticated\r\n", MR "STORED\r\n", MR "VA 3 f2 c7\r\nfoo\r\n"] $ \server -> do
-        let spec = (mockServerSpec server) { ssAuth = Auth.Auth "user" "pass" }
-        client <- Client.newClient [spec] Client.def
+      withMockServer (authExchange ++ [supported, MR "VA 3 f2 c7\r\nfoo\r\n"]) $ \server -> do
+        client <- Client.newClient [withCredentials server] Client.def
         Client.get client "key" `shouldReturn` Just ("foo", 2, 7)
-        mockRequests server `shouldReturn`
-          ["version\r\n", "set auth 0 0 9\r\nuser pass\r\n", "mg key v f c\r\n"]
+        mockRequests server `shouldReturn` authRequests ++ ["version\r\n", "mg key v f c\r\n"]
+
+  -- Older servers don't read the data block of the meta set this client
+  -- sends, so they run the value's bytes as commands. The client must not
+  -- send them anything but its version check (and, with credentials, the
+  -- authentication exchange before it). Each mock has a reply left over for
+  -- a request that should never come, so that one would be recorded.
+  describe "server version check" $ do
+    forM_ oldVersions $ \v ->
+      it ("refuses memcached " <> C.unpack v <> ", sending it nothing but version") $
+        withMockServer [MR ("VERSION " <> v <> "\r\n"), MR "HD c1\r\n"] $ \server -> do
+          client <- Client.newClient [mockServerSpec server] Client.def
+          Client.set client "key" "value" 0 0 `shouldThrow` refused ("VERSION " <> v)
+          mockRequests server `shouldReturn` ["version\r\n"]
+
+    -- Every operation that sends a value, not only set, must be refused
+    -- before the value reaches the server.
+    forM_ valueOps $ \(name, op) ->
+      it ("refuses memcached 1.6.9 for " <> name <> ", sending it nothing but version") $
+        withMockServer [MR "VERSION 1.6.9\r\n", MR "HD c1\r\n"] $ \server -> do
+          client <- Client.newClient [mockServerSpec server] Client.def
+          op client `shouldThrow` refused "VERSION 1.6.9"
+          mockRequests server `shouldReturn` ["version\r\n"]
+
+    forM_ newVersions $ \v ->
+      it ("accepts memcached " <> C.unpack v) $
+        withMockServer [MR ("VERSION " <> v <> "\r\n"), MR "HD c9\r\n"] $ \server -> do
+          client <- Client.newClient [mockServerSpec server] Client.def
+          Client.set client "key" "value" 0 0 `shouldReturn` 9
+          mockRequests server `shouldReturn` ["version\r\n", "ms key 5 F0 T0 MS c\r\nvalue\r\n"]
+
+    forM_ unreadableReplies $ \reply ->
+      it ("refuses a server that answers version with " <> show reply) $
+        withMockServer [MR (reply <> "\r\n"), MR "HD c1\r\n"] $ \server -> do
+          client <- Client.newClient [mockServerSpec server] Client.def
+          Client.set client "key" "value" 0 0 `shouldThrow` refused reply
+          mockRequests server `shouldReturn` ["version\r\n"]
+
+    -- Such as a server in auth-file mode, when the client has no credentials.
+    it "throws a CLIENT_ERROR reply to version as it would for any request" $
+      withMockServer [MR "CLIENT_ERROR unauthenticated\r\n", MR "HD c1\r\n"] $ \server -> do
+        client <- Client.newClient [mockServerSpec server] Client.def
+        Client.set client "key" "value" 0 0
+          `shouldThrow` (== ProtocolError (E.BadCommand "unauthenticated"))
+        mockRequests server `shouldReturn` ["version\r\n"]
+
+    it "throws an ERROR reply to version as it would for any request" $
+      withMockServer [MR "ERROR\r\n", MR "HD c1\r\n"] $ \server -> do
+        client <- Client.newClient [mockServerSpec server] Client.def
+        Client.set client "key" "value" 0 0 `shouldThrow` (== ProtocolError (UnknownOp "ERROR"))
+        mockRequests server `shouldReturn` ["version\r\n"]
+
+    -- A server failure is retried, as it would be for any request, but each
+    -- attempt still sends nothing but version.
+    it "throws a SERVER_ERROR reply to version as it would for any request" $
+      withMockServer [MR "SERVER_ERROR busy\r\n", MR "SERVER_ERROR busy\r\n", MR "HD c1\r\n"] $ \server -> do
+        client <- Client.newClient [mockServerSpec server] Client.def { Client.optsFailRetryDelay = 10 }
+        Client.set client "key" "value" 0 0 `shouldThrow` (== ProtocolError (E.ServerError "busy"))
+        mockRequests server `shouldReturn` ["version\r\n", "version\r\n"]
+
+    -- The server's version won't change on a retry: a refusal is a client
+    -- fault, so the operation fails at once and the server stays alive.
+    it "neither retries a refused server nor marks it dead" $
+      withMockServer [MR "VERSION 1.6.9\r\n", MR "VERSION 1.6.9\r\n", MR "HD c1\r\n", MR "HD c1\r\n"] $ \server -> do
+        client <- Client.newClient [mockServerSpec server] Client.def
+        Client.set client "key" "value" 0 0 `shouldThrow` refused "VERSION 1.6.9"
+        mockRequests server `shouldReturn` ["version\r\n"]
+        -- A server marked dead would fail with NoServersReady without being
+        -- asked again.
+        Client.get client "key" `shouldThrow` refused "VERSION 1.6.9"
+        mockRequests server `shouldReturn` ["version\r\n", "version\r\n"]
+
+    describe "with credentials" $ do
+      forM_ oldVersions $ \v ->
+        it ("asks again after authenticating, and refuses memcached " <> C.unpack v) $
+          withMockServer (authExchange ++ [MR ("VERSION " <> v <> "\r\n"), MR "HD c1\r\n"]) $ \server -> do
+            client <- Client.newClient [withCredentials server] Client.def
+            Client.set client "key" "value" 0 0 `shouldThrow` refused ("VERSION " <> v)
+            mockRequests server `shouldReturn` authRequests ++ ["version\r\n"]
+
+      forM_ newVersions $ \v ->
+        it ("asks again after authenticating, and accepts memcached " <> C.unpack v) $
+          withMockServer (authExchange ++ [MR ("VERSION " <> v <> "\r\n"), MR "HD c9\r\n"]) $ \server -> do
+            client <- Client.newClient [withCredentials server] Client.def
+            Client.set client "key" "value" 0 0 `shouldReturn` 9
+            mockRequests server `shouldReturn`
+              authRequests ++ ["version\r\n", "ms key 5 F0 T0 MS c\r\nvalue\r\n"]
+
+      forM_ unreadableReplies $ \reply ->
+        it ("refuses a server that answers version with " <> show reply <> " after authenticating") $
+          withMockServer (authExchange ++ [MR (reply <> "\r\n"), MR "HD c1\r\n"]) $ \server -> do
+            client <- Client.newClient [withCredentials server] Client.def
+            Client.set client "key" "value" 0 0 `shouldThrow` refused reply
+            mockRequests server `shouldReturn` authRequests ++ ["version\r\n"]
 
   describe "server URIs" $ do
     it "parses host and port" $
@@ -565,8 +668,8 @@ main = hspec $ do
 
   describe "clusters" $ do
     it "fails over to another server once one is marked dead" $
-      withMockServer [MR "VA 1 f0 c1\r\nA\r\n", CloseConnection, CloseConnection] $ \a ->
-      withMockServer [MR "VA 1 f0 c1\r\nB\r\n", CloseConnection, CloseConnection] $ \b -> do
+      withMockMemcached supportedVersion [MR "VA 1 f0 c1\r\nA\r\n", CloseConnection, CloseConnection] $ \a ->
+      withMockMemcached supportedVersion [MR "VA 1 f0 c1\r\nB\r\n", CloseConnection, CloseConnection] $ \b -> do
         client <- Client.newClient [mockServerSpec a, mockServerSpec b] fastFailover
         first <- Client.get client "key"
         -- The server that answered now drops two connections in a row, which
@@ -577,7 +680,7 @@ main = hspec $ do
         map (fmap fst3) [first, second] `shouldSatisfy` (`elem` [[Just "A", Just "B"], [Just "B", Just "A"]])
 
     it "throws NoServersReady once every server is dead" $
-      withMockServer [CloseConnection, CloseConnection] $ \a -> do
+      withMockMemcached supportedVersion [CloseConnection, CloseConnection] $ \a -> do
         client <- Client.newClient [mockServerSpec a] fastFailover
         Client.get client "key" `shouldThrow` isUnexpectedEOF
         Client.get client "key" `shouldThrow` (== ClientError NoServersReady)
@@ -585,49 +688,56 @@ main = hspec $ do
         Client.version client `shouldThrow` (== ClientError NoServersReady)
 
     it "flushes every server" $
-      withMockServer [MR "OK\r\n"] $ \a ->
-      withMockServer [MR "OK\r\n"] $ \b -> do
+      withMockMemcached supportedVersion [MR "OK\r\n"] $ \a ->
+      withMockMemcached supportedVersion [MR "OK\r\n"] $ \b -> do
         client <- Client.newClient [mockServerSpec a, mockServerSpec b] Client.def
         Client.flush client Nothing
-        mockRequests a `shouldReturn` ["flush_all\r\n"]
-        mockRequests b `shouldReturn` ["flush_all\r\n"]
+        mockRequests a `shouldReturn` ["version\r\n", "flush_all\r\n"]
+        mockRequests b `shouldReturn` ["version\r\n", "flush_all\r\n"]
 
     it "collects stats from every server" $
-      withMockServer [MR "STAT pid 1\r\nEND\r\n"] $ \a ->
-      withMockServer [MR "STAT pid 2\r\nEND\r\n"] $ \b -> do
+      withMockMemcached supportedVersion [MR "STAT pid 1\r\nEND\r\n"] $ \a ->
+      withMockMemcached supportedVersion [MR "STAT pid 2\r\nEND\r\n"] $ \b -> do
         client <- Client.newClient [mockServerSpec a, mockServerSpec b] Client.def
         results <- Client.stats client Nothing
         concatMap snd results `shouldMatchList` [("pid", "1"), ("pid", "2")]
 
     it "asks a single server for the version" $
-      withMockServer [MR "VERSION 1.6.1\r\n"] $ \a ->
-      withMockServer [MR "VERSION 1.6.1\r\n"] $ \b -> do
+      withMockMemcached supportedVersion [supported] $ \a ->
+      withMockMemcached supportedVersion [supported] $ \b -> do
         client <- Client.newClient [mockServerSpec a, mockServerSpec b] Client.def
-        Client.version client `shouldReturn` "1.6.1"
-        requests <- (++) <$> mockRequests a <*> mockRequests b
-        requests `shouldBe` ["version\r\n"]
+        Client.version client `shouldReturn` supportedVersion
+        -- The connection's own version check, then the operation.
+        requests <- sequence [mockRequests a, mockRequests b]
+        requests `shouldMatchList` [["version\r\n", "version\r\n"], []]
 
   describe "ElastiCache discovery" $ do
     it "rejects an endpoint that is not a configuration endpoint" $
       isLeft (EC.parseConfigurationEndpoint "memcached://cache.example:11211") `shouldBe` True
 
     it "discovers nodes with the config command" $
-      withMockServer [MR "VA 3 f0 c1\r\nfoo\r\n"] $ \node -> do
+      withMockMemcached supportedVersion [MR "VA 3 f0 c1\r\nfoo\r\n"] $ \node -> do
         let config = "CONFIG cluster 0 " <> nodeList node <> "END\r\n"
-        withMockServer [MR "VERSION 1.6.12\r\n", MR config, Noop] $ \cfg -> do
-          client <- EC.newClient Client.def hour (endpoint cfg)
+        withMockMemcached "1.6.12" [MR "VERSION 1.6.12\r\n", MR config, Noop] $ \cfg -> do
+          client <- inTime (EC.newClient Client.def hour (endpoint cfg))
           Client.get client "key" `shouldReturn` Just ("foo", 0, 1)
-          waitForRequests cfg 3 `shouldReturn`
-            ["version\r\n", "config get cluster\r\n", "quit\r\n"]
+          -- The connection's own version check, then discovery's.
+          waitForRequests cfg 4 `shouldReturn`
+            ["version\r\n", "version\r\n", "config get cluster\r\n", "quit\r\n"]
 
-    it "discovers nodes from the cluster key on engines before 1.4.14" $
+    -- Engines before 1.4.14 keep the node list in a key, which discovery
+    -- used to read with a plain get. Like any server older than memcached
+    -- 1.6.10, they are now refused before discovery sends anything.
+    it "refuses a configuration endpoint older than memcached 1.6.10" $
       withMockServer [MR "VA 3 f0 c1\r\nfoo\r\n"] $ \node -> do
         let value = "VALUE AmazonElastiCache:cluster 0 " <> nodeList node <> "END\r\n"
         withMockServer [MR "VERSION 1.4.5\r\n", MR value, Noop] $ \cfg -> do
-          client <- EC.newClient Client.def hour (endpoint cfg)
-          Client.get client "key" `shouldReturn` Just ("foo", 0, 1)
-          waitForRequests cfg 3 `shouldReturn`
-            ["version\r\n", "get AmazonElastiCache:cluster\r\n", "quit\r\n"]
+          inTime (EC.newClient Client.def hour (endpoint cfg)) `shouldThrow` refused "VERSION 1.4.5"
+          -- Discovery's connection is refused after asking for the version.
+          -- Quitting its client then opens another, which the mock answers
+          -- with the node list; that is no version either, so it is refused
+          -- too.
+          mockRequests cfg `shouldReturn` ["version\r\n", "version\r\n"]
 
   where
     recvResponseFrom bytes =
@@ -662,7 +772,38 @@ main = hspec $ do
     allStats [(_, [ ("curr_items", "2"), ("rusage_user", "0.1 0.2") ])] = True
     allStats _ = False
     expectedAuthRequests = "version\r\nset auth 0 0 9\r\nuser pass\r\n"
+    -- A server in auth-file mode rejects the client's first version request,
+    -- then accepts its credentials.
+    authExchange = [MR "CLIENT_ERROR unauthenticated\r\n", MR "STORED\r\n"]
+    authRequests = ["version\r\n", "set auth 0 0 9\r\nuser pass\r\n"]
+    withCredentials server = (mockServerSpec server) { ssAuth = Auth.Auth "user" "pass" }
+    supported = MR ("VERSION " <> supportedVersion <> "\r\n")
+    -- Versions as memcached reports them, with Ubuntu's suffix and a
+    -- release candidate's; 1.10.0 and 1.6.9 catch comparing them as text.
+    oldVersions =
+      ["1.6.9", "1.5.22", "1.4.25", "1.6.0", "1.4.25 Ubuntu", "1.6.9-rc1", "0.10.10"]
+    newVersions =
+      ["1.6.10", "1.6.14", "1.6.24", "1.6.100", "1.7.0", "1.10.0", "2.0.0", "1.6.10-rc1", "1.6.24 Ubuntu"]
+    unreadableReplies =
+      [ "VERSION", "VERSION 1.6", "VERSION 1.7", "VERSION 1.6.x", "VERSION v1.6.24"
+      , "VERSION 1..6.24", "VERSION 1.6.+10", "VERSION -1.6.24", "HD", "END", "HD 1.6.24" ]
+    -- The operations that send a value, each storing one that would run as
+    -- a command on a server older than 1.6.10.
+    valueOps :: [(String, Client.Client -> IO ())]
+    valueOps =
+      [ ("set",     \c -> void $ Client.set c "key" injection 0 0)
+      , ("add",     \c -> void $ Client.add c "key" injection 0 0)
+      , ("replace", \c -> void $ Client.replace c "key" injection 0 0 0)
+      , ("cas",     \c -> void $ Client.cas c "key" injection 0 0 1)
+      , ("append",  \c -> void $ Client.append c "key" injection 0)
+      , ("prepend", \c -> void $ Client.prepend c "key" injection 0)
+      ]
+    injection :: B.ByteString
+    injection = "set injected 0 0 3\r\nbad"
     fastFailover = Client.def { Client.optsFailRetryDelay = 10, Client.optsDeadRetryDelay = 60000 }
+    -- Discovery has no timeout of its own, so a client that sent the mock
+    -- something it has no reply for would wait for one forever.
+    inTime action = timeout 2000000 action >>= maybe (fail "timed out") return
     fst3 (value, _, _) = value
     hour = 3600 * 1000000
     -- The endpoint check only looks for ".cfg" somewhere in the URI, so put it
@@ -674,7 +815,8 @@ main = hspec $ do
       let body = "1\n127.0.0.1|127.0.0.1|" <> C.pack (show (mockPort node)) <> "\n"
       in C.pack (show (B.length body)) <> "\r\n" <> body <> "\r\n"
 
--- | Run an action with a client connected to a fresh mock server.
+-- | Run an action with a client connected to a fresh mock server, which
+-- reports 'supportedVersion' to each connection's version check.
 withClient :: [MockResponse] -> (Client.Client -> IO a) -> IO a
 withClient responses action = withServerAndClient responses (const action)
 
@@ -683,9 +825,22 @@ withServerAndClient = withServerAndClientOpts Client.def
 
 withServerAndClientOpts
   :: Client.Options -> [MockResponse] -> (MockServer -> Client.Client -> IO a) -> IO a
-withServerAndClientOpts opts responses action = withMockServer responses $ \server -> do
+withServerAndClientOpts opts responses action = withMockMemcached supportedVersion responses $ \server -> do
   client <- Client.newClient [mockServerSpec server] opts
   action server client
+
+-- | The version that mock servers report unless a test says otherwise: one
+-- the client accepts.
+supportedVersion :: B.ByteString
+supportedVersion = "1.6.24"
+
+-- | Whether an exception is the client refusing a server that answered its
+-- version check with the given reply: 'UnknownOp', with a message that quotes
+-- the reply and names the minimum version.
+refused :: B.ByteString -> MemcacheError -> Bool
+refused reply (ProtocolError (UnknownOp message)) =
+  show reply `isInfixOf` message && "1.6.10 or later" `isInfixOf` message
+refused _ _ = False
 
 -- | Run an action with a client whose server is a port on 127.0.0.1 that is
 -- bound but not listening, so every attempt to connect to it is refused.

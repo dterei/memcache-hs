@@ -14,8 +14,17 @@ key-value store typically used as a distributed and shared cache. Clients can
 connect to a single Memcached server or a cluster of servers; clusters use
 consistent hashing to route requests to the appropriate server.
 
-This requires memcached 1.6.0 or newer, the first release with the meta
-commands; older servers reject every operation with @ERROR@.
+This requires memcached 1.6.10 or newer. Older servers reject the meta set
+command this client stores values with, without reading the value that
+follows it, and then run the value's bytes as commands. So each new connection
+asks the server for its version before it is used: until that check passes,
+the only requests sent are the authentication exchange, when credentials are
+set, and @version@. Unless the server reports 1.6.10 or later, the connection
+is closed and v'ProtocolError' 'UnknownOp' is thrown, quoting the server's
+reply; an error reply, such as @CLIENT_ERROR unauthenticated@, throws what it
+throws for any request. A refused version isn't retried, and doesn't mark the
+server as failed. Through a proxy, the check sees only the proxy's version, so
+every memcached behind it must be 1.6.10 or later too.
 
 Authentication uses Memcached's experimental text-protocol auth-file mechanism
 (@-Y authfile@), introduced in memcached 1.5.15. Enabling @-Y@ also disables
@@ -136,6 +145,11 @@ type StatResults = [(ByteString, ByteString)]
 
 -- | Create a client for the supplied servers. An empty list uses the default
 -- local server specification.
+--
+-- Nothing is sent until an operation needs a connection to a server. Each new
+-- connection then checks the server's version, and refuses a server older than
+-- memcached 1.6.10: until the check passes, the only requests sent are the
+-- authentication exchange, when credentials are set, and @version@.
 newClient :: [ServerSpec] -> Options -> IO Client
 newClient scs = newCluster $ if null scs then [def] else scs
 

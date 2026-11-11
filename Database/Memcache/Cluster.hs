@@ -71,6 +71,10 @@ data Options = Options {
         -- | How long to wait for an operation to complete before considering
         -- it failed.
         --
+        -- When an attempt at an operation has to open a new connection, this
+        -- also covers opening it: connecting, authenticating when there are
+        -- credentials, and asking the server for its version.
+        --
         -- Default is 750ms.
         optsServerTimeout        :: Milli,
         -- | Figure out which server to talk to for a given key.
@@ -310,7 +314,9 @@ retryOp Cluster{..} s op = go cRetries
 
 -- | A rejected command or a reported operation status is an answer, not a
 -- server failure: retrying it will fail identically and must not count towards
--- marking the server dead.
+-- marking the server dead. That includes the 'UnknownOp' a new connection
+-- throws when it refuses the server's version: a retry would find the same
+-- version.
 clientFault :: SomeException -> Bool
 clientFault err = case fromException err of
     Just (ProtocolError BadCommand{}) -> True
