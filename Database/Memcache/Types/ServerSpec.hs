@@ -46,8 +46,8 @@ data ServerSpec = ServerSpec
     -- If it begins with @/@, it is instead the path of a Unix socket. The
     -- client connects to it without looking it up or using 'ssPort', though
     -- the port still names the server: see 'ssPort'. Each 'Char' of the path
-    -- is one byte of it, so a path outside ASCII is given as its bytes, as
-    -- 'parseServerSpec' gives it.
+    -- is one byte of it, both to connect and to name the server, so a path
+    -- outside ASCII is given as its bytes, as 'parseServerSpec' gives it.
     ssHost :: HostName,
     -- | Port number server is running on. A Unix socket has none, and the
     -- client doesn't use this to connect to one, but it still names the
