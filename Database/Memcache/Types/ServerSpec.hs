@@ -43,10 +43,20 @@ data ServerSpec = ServerSpec
     -- that time uses it up, and that attempt then tries none of the later
     -- ones.
     --
-    -- If it begins with @/@, it is instead the path of a Unix socket, in
-    -- which case 'ssPort' is ignored.
+    -- If it begins with @/@, it is instead the path of a Unix socket. The
+    -- client connects to it without looking it up or using 'ssPort', though
+    -- the port still names the server: see 'ssPort'. Each 'Char' of the path
+    -- is one byte of it, so a path outside ASCII is given as its bytes, as
+    -- 'parseServerSpec' gives it.
     ssHost :: HostName,
-    -- | Port number server is running on.
+    -- | Port number server is running on. A Unix socket has none, and the
+    -- client doesn't use this to connect to one, but it still names the
+    -- server, as it does any other: the host and port make the server's name
+    -- on the hash ring that routes keys (see "Database.Memcache.Cluster") and
+    -- its @sid@, so changing a socket's port moves keys to other servers.
+    -- @\"11211\"@ names a socket by its path alone, as libmemcached's
+    -- @memcached_server_add@ does, and @\"0\"@ names it @path:0@, as
+    -- libmemcached's @memcached_server_add_unix_socket@ and pylibmc do.
     ssPort :: ServiceName,
     -- | Credentials to use for text auth-file authentication with this server.
     ssAuth :: Authentication
@@ -66,9 +76,10 @@ data ServerSpec = ServerSpec
 -- path is percent-decoded to bytes too, which 'ssHost' holds one per 'Char',
 -- so @%C3%A9@ is the two bytes that encode U+00E9 in UTF-8. It mustn't contain
 -- @%00@. A socket takes no port, so
--- @memcached:\/\/:11211\/run\/memcached.sock@ is an error. A path of just
--- @\/@ is no socket: @memcached:\/\/\/@ and @memcached:\/\/:11211\/@ are
--- @127.0.0.1@ on port @11211@, as @memcached:\/\/@ is.
+-- @memcached:\/\/:11211\/run\/memcached.sock@ is an error, and its 'ssPort'
+-- is @\"11211\"@, which names it by its path alone (see 'ssPort'). A path of
+-- just @\/@ is no socket: @memcached:\/\/\/@ and @memcached:\/\/:11211\/@
+-- are @127.0.0.1@ on port @11211@, as @memcached:\/\/@ is.
 --
 -- Error messages never quote the URI, as it may contain a password.
 parseServerSpec :: String -> Either String ServerSpec
