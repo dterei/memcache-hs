@@ -22,12 +22,17 @@ module Database.Memcache.Auth
 import Database.Memcache.Errors
 import Database.Memcache.Socket
 import Database.Memcache.Types
+import Database.Memcache.Types.Authentication (validateCredentials)
 
 import Control.Monad (unless)
 import qualified Data.ByteString.Char8 as B8
 import UnliftIO.Exception (catch, throwIO)
 
--- | Authenticate a connection using text-protocol credentials.
+-- | Authenticate a connection using text-protocol credentials. Throws
+-- 'InvalidAuthentication' when the credentials can't be sent safely,
+-- @'OpError' 'TextAuthFail'@ when the server rejects them, and another
+-- 'MemcacheError', such as 'UnexpectedResponse', for any other reply but
+-- @STORED@.
 authenticate :: Connection -> Authentication -> IO ()
 authenticate _ NoAuth = return ()
 authenticate socket (Auth user pass) = do
@@ -46,17 +51,12 @@ authenticate socket (Auth user pass) = do
   response <- recvResponse socket
   result <- responseStatus response `catch` handleAuthFailure
   case result of
-    NoError -> return ()
+    NoError | responseCode response == "STORED" -> return ()
+    -- Any other reply could leave the connection out of step, so it must not
+    -- reach the pool.
+    NoError -> throwIO $ ProtocolError UnexpectedResponse
+      { protocolError = "Expected AUTH, got: " <> show (responseCode response) }
     status -> throwIO $ OpError status
   where
     handleAuthFailure (ProtocolError BadCommand{}) = throwIO $ OpError TextAuthFail
     handleAuthFailure err = throwIO (err :: MemcacheError)
-
--- | Validate that credentials contain no delimiters used by the auth command.
-validateCredentials :: Username -> Password -> Either String ()
-validateCredentials user pass
-  | B8.any forbidden user = Left "username contains a forbidden delimiter"
-  | B8.any forbidden pass = Left "password contains a forbidden delimiter"
-  | otherwise = Right ()
-  where
-    forbidden c = c == ' ' || c == '\t' || c == '\r' || c == '\n' || c == ':'
