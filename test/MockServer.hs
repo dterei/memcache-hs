@@ -6,9 +6,16 @@
 -- ephemeral port of its own unless given a port, so tests can run several at
 -- once and never clash with a real memcached on the default port. A mock can
 -- also listen on a Unix socket, at a path from 'withSocketPath'.
+--
+-- The client asks for the server's version on every new connection before it
+-- sends anything else. A mock made by 'withMockServer' and the functions like
+-- it answers that request like any other, with its next response, so a test
+-- can script the reply. A mock made by 'withMockMemcached' and the functions
+-- like it reports itself as memcached of a given version instead.
 module MockServer (
         MockResponse(..), MockServer(..), withMockServer, withMockServerAt,
-        withConcurrentMockServer, withBoundSocket, withBoundSocketReuseAddr,
+        withConcurrentMockServer, withMockMemcached, withMockMemcachedAt,
+        withConcurrentMockMemcached, withBoundSocket, withBoundSocketReuseAddr,
         withFullListener, withSocketPath, canListenAt, mockServerSpec
     ) where
 
@@ -26,7 +33,7 @@ import           System.Directory          (getTemporaryDirectory, removeFile,
 import           System.IO                 (hClose, openTempFile)
 import           System.Timeout            (timeout)
 import           Text.Read                  (readMaybe)
-import           UnliftIO.Async             (concurrently_)
+import           UnliftIO.Async             (concurrently_, withAsync)
 import           UnliftIO.Exception         (IOException, SomeException, bracket, finally,
                                             handle, onException, throwIO)
 
@@ -75,19 +82,78 @@ withMockServer = withMockServerAt loopback
 -- | Like 'withMockServer', but listening on the given address instead of
 -- 127.0.0.1. A port of 0 picks a free one.
 withMockServerAt :: N.SockAddr -> [MockResponse] -> (MockServer -> IO a) -> IO a
-withMockServerAt address responses = withListener address $ \sock received closed -> do
+withMockServerAt = serveInTurn Nothing
+
+-- | Like 'withMockServer', but the mock reports itself as memcached of the
+-- given version, such as @"1.6.24"@: it answers the first request on each
+-- connection, the client's version check, with @VERSION@ and that version,
+-- without using up a response. That request is still recorded.
+--
+-- The mock answers each connection's version check as soon as it accepts the
+-- connection, even while it is serving another one, as the client can't use
+-- a connection until then. It still serves the responses to one connection
+-- at a time, in the order it accepted them, and once the responses run out,
+-- it closes every connection and stops listening.
+withMockMemcached :: B.ByteString -> [MockResponse] -> (MockServer -> IO a) -> IO a
+withMockMemcached version = withMockMemcachedAt version loopback
+
+-- | Like 'withMockServerAt', but reporting the given version, as
+-- 'withMockMemcached' does.
+withMockMemcachedAt :: B.ByteString -> N.SockAddr -> [MockResponse] -> (MockServer -> IO a) -> IO a
+withMockMemcachedAt version = serveInTurn (Just (versionReply version))
+
+-- | Like 'withConcurrentMockServer', but reporting the given version, as
+-- 'withMockMemcached' does.
+withConcurrentMockMemcached :: B.ByteString -> [[MockResponse]] -> (MockServer -> IO a) -> IO a
+withConcurrentMockMemcached version = serveConcurrently (Just (versionReply version))
+
+versionReply :: B.ByteString -> B.ByteString
+versionReply version = "VERSION " <> version <> "\r\n"
+
+-- | Serve one connection at a time on the given address, answering the first
+-- request on each connection with the greeting, if there is one, and then
+-- each request with the next of the responses.
+serveInTurn
+  :: Maybe B.ByteString -> N.SockAddr -> [MockResponse] -> (MockServer -> IO a) -> IO a
+serveInTurn greeting address responses = withListener address $ \sock received closed -> do
   remaining <- newIORef responses
   -- Once the responses run out the listening socket closes, so later
   -- connection attempts are refused straight away.
-  acceptLoop sock remaining received closed
+  case greeting of
+    Nothing -> acceptLoop sock remaining received closed
+    Just reply -> greetingEach reply sock remaining received closed
   where
     -- Serve one connection at a time.
     acceptLoop sock remaining received closed = do
       pending <- readIORef remaining
       unless (null pending) $ do
         (client, _) <- N.accept sock
-        serveConnection client remaining received closed
+        serveConnection Nothing client remaining received closed
         acceptLoop sock remaining received closed
+
+    -- Greet each connection in a thread of its own as soon as it is
+    -- accepted, and queue it, then serve the queued connections one at a
+    -- time. Every connection accepted is closed once the responses run out.
+    greetingEach reply sock remaining received closed = do
+      queue <- newChan
+      accepted <- newIORef []
+      let acceptor = forever $ do
+            (client, _) <- N.accept sock
+            atomicModifyIORef' accepted (\clients -> (client : clients, ()))
+            void $ forkIO $ handle ignore $ do
+              greet reply client received closed
+              writeChan queue client
+          serveQueued = do
+            pending <- readIORef remaining
+            unless (null pending) $ do
+              client <- readChan queue
+              serveConnection Nothing client remaining received closed
+              serveQueued
+      withAsync acceptor (const serveQueued)
+        `finally` (readIORef accepted >>= mapM_ N.close)
+
+    ignore :: SomeException -> IO ()
+    ignore = const (return ())
 
 -- | Like 'withMockServer', but each connection gets its own responses: the
 -- n-th connection the server accepts gets the n-th list. The server answers
@@ -97,14 +163,17 @@ withMockServerAt address responses = withListener address $ \sock received close
 -- list has its connection. 'mockRequests' gives the requests of every
 -- connection, in the order they arrived.
 withConcurrentMockServer :: [[MockResponse]] -> (MockServer -> IO a) -> IO a
-withConcurrentMockServer scripts = withListener loopback $ \sock received closed -> do
+withConcurrentMockServer = serveConcurrently Nothing
+
+serveConcurrently :: Maybe B.ByteString -> [[MockResponse]] -> (MockServer -> IO a) -> IO a
+serveConcurrently greeting scripts = withListener loopback $ \sock received closed -> do
   -- Closing the listening socket here refuses later connection attempts
   -- straight away; closing it again on the way out does nothing.
   let serveFrom [] = N.close sock
       serveFrom (responses:rest) = do
         (client, _) <- N.accept sock
         remaining <- newIORef responses
-        concurrently_ (serveConnection client remaining received closed) (serveFrom rest)
+        concurrently_ (serveConnection greeting client remaining received closed) (serveFrom rest)
   serveFrom scripts
 
 -- | Listen on the given address and serve it with the given function in the
@@ -234,11 +303,14 @@ addressFamily N.SockAddrUnix{}  = N.AF_UNIX
 addressFamily _                 = N.AF_INET
 
 -- | Answer requests on one connection until the responses run out or the
--- script closes it, then close it.
+-- script closes it, then close it. If there is a greeting, the first request
+-- is answered with it, without using up a response.
 serveConnection
-  :: N.Socket -> IORef [MockResponse] -> IORef [B.ByteString] -> IORef Int -> IO ()
-serveConnection client remaining received closed =
-  handle ignore clientHandler `finally` N.close client
+  :: Maybe B.ByteString -> N.Socket -> IORef [MockResponse] -> IORef [B.ByteString] -> IORef Int
+  -> IO ()
+serveConnection greeting client remaining received closed =
+  handle ignore (mapM_ (\reply -> greet reply client received closed) greeting >> clientHandler)
+    `finally` N.close client
   where
     ignore :: SomeException -> IO ()
     ignore = const (return ())
@@ -248,11 +320,7 @@ serveConnection client remaining received closed =
       case pending of
         [] -> return ()
         (r:rest) -> do
-          -- withConcurrentMockServer records requests and closed connections
-          -- from several threads.
-          request <- recvReq client
-            `onException` atomicModifyIORef' closed (\n -> (n + 1, ()))
-          atomicModifyIORef' received (\requests -> (request : requests, ()))
+          recordRequest client received closed
           writeIORef remaining rest
           continue <- respond r
           when continue clientHandler
@@ -272,6 +340,22 @@ serveConnection client remaining received closed =
         N.close client
         void (tryPutMVar reset ())
         return False
+
+-- | Read the first request on a connection, the client's version check, and
+-- answer it with the reply.
+greet :: B.ByteString -> N.Socket -> IORef [B.ByteString] -> IORef Int -> IO ()
+greet reply client received closed = do
+  recordRequest client received closed
+  N.sendAll client reply
+
+-- | Read the next request and record it, or count the connection as closed if
+-- the client has closed it. Requests and closed connections can be recorded
+-- from several threads at once.
+recordRequest :: N.Socket -> IORef [B.ByteString] -> IORef Int -> IO ()
+recordRequest client received closed = do
+  request <- recvReq client
+    `onException` atomicModifyIORef' closed (\n -> (n + 1, ()))
+  atomicModifyIORef' received (\requests -> (request : requests, ()))
 
 -- | Read one request: its command line and, for storage commands, the data
 -- block that follows it.

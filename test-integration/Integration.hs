@@ -424,17 +424,20 @@ pausedSpecs executable = do
  where
   -- Store the key's value, if any, then stop memcached and run the operation
   -- with a 300 ms timeout. memcached continues 650 ms later, after the first
-  -- attempt's timeout and the 200 ms before a retry. The operation must throw
-  -- Timeout and mark the server dead, without a retry, and memcached must
-  -- then carry the request out once: 300 ms after memcached continues,
-  -- another client finds the key's value, and the stat counting such
-  -- requests one higher than before. A retry would have been sent before
-  -- memcached continued, on a new connection, so memcached would carry it
-  -- out too, whether or not its reply came in time.
+  -- attempt's timeout and before a retry would start, 1 s after it. The
+  -- operation must throw Timeout and mark the server dead, without a retry,
+  -- and memcached must then carry the request out once: 300 ms after
+  -- memcached continues, another client finds the key's value, and the stat
+  -- counting such requests one higher than before. A retry would open a new
+  -- connection, which asks for the server's version before it sends the
+  -- request, so it can't send the request while memcached is stopped. It
+  -- would start once memcached has continued, and send the request, which
+  -- memcached would carry out too.
   withPaused key initial stat run expected =
     withMemcachedProcess executable [] $ \(port, process) -> do
       let spec = ServerSpec "127.0.0.1" (show port) M.NoAuth
-      client <- M.newClient [spec] M.def { M.optsServerTimeout = 300 }
+      client <- M.newClient [spec]
+        M.def { M.optsServerTimeout = 300, M.optsFailRetryDelay = 1000 }
       other <- M.newClient [spec] M.def
       [server] <- toList <$> Cluster.getServers client
       mapM_ (\value -> M.set other key value 0 0) initial
@@ -446,12 +449,16 @@ pausedSpecs executable = do
       -- waits for memcached.
       _ <- M.get client key
       -- Whatever fails from the STOP on, continue memcached: it acts on the
-      -- SIGTERM that ends it after the test only once it continues. An
-      -- operation the client failed to time out would wait for memcached for
-      -- ever, so give it 5 s, and cancel it if it is still running then.
+      -- SIGTERM that ends it after the test only once it continues.
+      -- Otherwise it continues 650 ms after the operation starts, whether or
+      -- not the operation has finished. Give the operation 5 s more, so that
+      -- one that never ends fails the test rather than hanging it, and cancel
+      -- it if it is still running then.
       result <- (signal "STOP" process >> waitStopped process
-                  >> Async.withAsync (run client key) (\running ->
-                       threadDelay 650000 >> timeout 5000000 (try (Async.wait running))))
+                  >> Async.withAsync (run client key) (\running -> do
+                       threadDelay 650000
+                       signal "CONT" process
+                       timeout 5000000 (try (Async.wait running))))
         `finally` signal "CONT" process
       result `shouldBe` Just (Left (M.ClientError M.Timeout))
       readIORef (Server.failed server) >>= (`shouldNotBe` 0)

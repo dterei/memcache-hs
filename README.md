@@ -18,8 +18,20 @@ the same server as from libmemcached-based clients given the same server list.
 Version 0.5 changed the routing, so upgrading moves keys to different servers,
 once; see [Upgrading from 0.4](#upgrading-from-04).
 
-**This library requires memcached 1.6.0 or newer**, the first release with the
-meta commands. Against older servers every operation is rejected with `ERROR`.
+**This library requires memcached 1.6.10 or newer.** Older servers reject the
+meta set command this library stores values with, without reading the value
+that follows it, and then run the value's bytes as commands. So each new
+connection asks the server for its version before it is used: until that check
+passes, the only requests sent are the authentication exchange, when
+credentials are set, and `version`. Unless the server reports 1.6.10 or later,
+the connection is closed and the operation fails with
+`ProtocolError (UnknownOp message)`, where the message quotes the server's
+reply, or, if the server answered with an error such as
+`CLIENT_ERROR unauthenticated`, with the error that reply gives any request. A
+refused version isn't retried, and doesn't mark the server as failed. The
+check sees only the server the client connects to: through a proxy, such as
+memcached's own `-o proxy_config` mode, it sees the proxy's version, so every
+memcached behind a proxy must be 1.6.10 or newer too.
 
 Authentication uses a memcached auth file with `-Y authfile`, an experimental
 ASCII-protocol auth mode added in memcached 1.5.15; the old binary protocol
@@ -181,7 +193,13 @@ import qualified Database.Memcache.ElastiCacheClient as EC
   mc <- EC.newClient M.def (60 * 1000000) endpoint
 ```
 
+Discovery connects to the configuration endpoint like any other server, so it
+fails for a cluster running a memcached older than 1.6.10.
+
 ### Upgrading from 0.4
+
+Version 0.5 requires memcached 1.6.10 or newer and refuses an older server, so
+upgrade any older memcached first, including any behind a proxy.
 
 Version 0.5 routes keys with ketama consistent hashing, where 0.4 sent keys to
 no more than two servers at a time. With n servers, upgrading moves all but
@@ -291,8 +309,11 @@ There are two test suites:
 - `spec` holds the unit and property tests, which run against an in-process
   mock server and need nothing installed.
 - `integration` starts its own `memcached` servers on free local ports and
-  tests against them, so it needs memcached 1.6 or newer on your `PATH`.
+  tests against them, so it needs memcached 1.6.13 or newer on your `PATH`.
   Without it, the suite reports a single pending test instead of failing.
+  With 1.6.10 to 1.6.12, which the library accepts, two of its tests fail,
+  as those servers answer an `append` or `prepend` with the version the
+  request carried, or 0, rather than the new one.
   memcached refuses to run as root without `-u`, so run the suite as an
   ordinary user.
 

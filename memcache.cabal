@@ -8,8 +8,11 @@ description:
   group of Memcached servers and perform out-of-band caching for things like
   SQL results, rendered pages, or third-party APIs.
 
-  It uses the Memcached Meta Text protocol and requires memcached 1.6.0 or
-  newer. Username/password authentication is supported through memcached's
+  It uses the Memcached Meta Text protocol and requires memcached 1.6.10 or
+  newer: each new connection checks the server's version, and refuses an
+  older server. Until the check passes, the only requests sent are the
+  authentication exchange, when credentials are set, and @version@.
+  Username/password authentication is supported through memcached's
   @-Y authfile@ mode; the binary protocol and SASL authentication are no longer
   supported. It supports connecting to a single, or a cluster of Memcached
   servers. When connecting to a cluster, keys are routed by ketama consistent

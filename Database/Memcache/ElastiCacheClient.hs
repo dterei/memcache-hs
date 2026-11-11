@@ -103,18 +103,19 @@ newtype ConfigurationEndpoint
 -- called with them masked, as in the acquire action of a @bracket@.
 --
 -- The first discovery must finish within 'optsServerTimeout' (connecting,
--- then asking for the version and for the cluster configuration), or this
--- throws v'ClientError' 'Timeout'. If the endpoint sends an error reply, such
--- as the @ERROR@ that plain memcached sends as it has no @config@ command,
--- this throws a @StringException@ from "UnliftIO.Exception", as it does for a
--- reply that can't be parsed, a version of more than 64 bytes, and a
--- configuration that lists no nodes, more than 1,000, an empty node, the same
--- host and port twice, or a node that isn't a plain host and port: one whose
--- host or port is empty, or whose host has a character, such as @\/@, @?@ or
--- @\@@, that would change the host or port, add credentials or make the node
--- a Unix socket on this machine. A host given as an IPv6 address in brackets
--- is rejected too. If a reply goes on for more than 1 MiB without the line
--- end or the @END@ line that discovery is waiting for, this throws
+-- which asks for the version, then asking for it again and for the cluster
+-- configuration), or this throws v'ClientError' 'Timeout'. If the endpoint
+-- sends an error reply, such as the @ERROR@ that plain memcached sends as it
+-- has no @config@ command, this throws a @StringException@ from
+-- "UnliftIO.Exception", as it does for a reply that can't be parsed, a
+-- version of more than 64 bytes, and a configuration that lists no nodes,
+-- more than 1,000, an empty node, the same host and port twice, or a node
+-- that isn't a plain host and port: one whose host or port is empty, or whose
+-- host has a character, such as @\/@, @?@ or @\@@, that would change the host
+-- or port, add credentials or make the node a Unix socket on this machine. A
+-- host given as an IPv6 address in brackets is rejected too. If a reply goes
+-- on for more than 1 MiB without the line end or the @END@ line that
+-- discovery is waiting for, this throws
 -- v'Database.Memcache.Errors.ProtocolError'
 -- 'Database.Memcache.Errors.BadLength'.
 --
@@ -140,6 +141,14 @@ newtype ConfigurationEndpoint
 -- empty node or one twice, or lists a node that isn't a plain host and port,
 -- leaves the servers as they are, and discovery tries again after the next
 -- interval.
+--
+-- Discovery connects to the configuration endpoint like any other server, so
+-- it fails for a cluster running a memcached older than 1.6.10, having sent
+-- only the authentication exchange, when the endpoint has credentials, and
+-- @version@ (see "Database.Memcache.Client"). Each refresh opens a new
+-- connection to the endpoint, so against an endpoint older than that it fails
+-- like any other refresh, and the connections the client opens to the nodes
+-- it discovers are checked in the same way.
 --
 -- N.B. The interval is in the same units as 'threadDelay'.
 newClient :: Options -> Int -> ConfigurationEndpoint -> IO Client
