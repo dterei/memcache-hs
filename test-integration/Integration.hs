@@ -24,7 +24,8 @@ import qualified Network.Socket           as N
 import           System.Directory         (doesFileExist, findExecutable, getTemporaryDirectory,
                                            removeFile, removePathForcibly)
 import           System.Exit              (ExitCode)
-import           System.IO                (hClose, hPutStr, openTempFileWithDefaultPermissions)
+import           System.IO                (hClose, hPutStr, openTempFile,
+                                           openTempFileWithDefaultPermissions)
 import           System.Process           (ProcessHandle, createProcess, getCurrentPid, proc,
                                            getProcessExitCode, terminateProcess,
                                            waitForProcess)
@@ -52,6 +53,7 @@ main = do
           describe "auth-file authentication" $ authSpecs authPort
           describe "three-server cluster" $ clusterSpecs clusterPorts
           describe "restarted server" $ restartSpecs path
+          describe "Unix socket" $ unixSocketSpecs path
           describe "server out of memory" $ outOfMemorySpecs fullPort
           describe "ElastiCache discovery" $ elastiCacheSpecs port
 
@@ -357,6 +359,21 @@ restartSpecs executable =
       M.get client "integration-restart" `shouldReturn` Nothing
       readIORef (Server.failed server) `shouldReturn` 0
 
+-- | Tests against a memcached that listens on a Unix socket.
+unixSocketSpecs :: FilePath -> Spec
+unixSocketSpecs executable =
+  it "sets and gets through a memcached:/// URI" $
+    withSocketPath $ \path -> do
+      -- With -s, memcached listens on the socket alone. The port only names
+      -- its pid file.
+      port <- freePort
+      withMemcachedOn executable ["-s", path, "-a", "0700"] port $ do
+        spec <- either fail return $ M.parseServerSpec ("memcached://" <> path)
+        ssHost spec `shouldBe` path
+        client <- M.newClient [spec] M.def
+        cas <- M.set client "integration-unix" "value" 5 0
+        M.get client "integration-unix" `shouldReturn` Just ("value", 5, cas)
+
 -- | Tests against a server that reports running out of memory instead of
 -- evicting.
 outOfMemorySpecs :: Int -> Spec
@@ -446,6 +463,21 @@ withAuthfile action = do
     hPutStr handle "user:secret\ncolon:se:cr:et\n"
     hClose handle
     action path
+
+-- | Run an action with the path of a Unix socket in the temporary directory,
+-- at which nothing exists yet, and remove whatever is there afterwards, such
+-- as the socket memcached made.
+withSocketPath :: (FilePath -> IO a) -> IO a
+withSocketPath = bracket freshPath removePathForcibly
+  where
+    -- A temporary file's name is one no other file has. Remove the file, so
+    -- that memcached can make its socket in its place.
+    freshPath = do
+      tmp <- getTemporaryDirectory
+      (path, file) <- openTempFile tmp "memcached.sock"
+      hClose file
+      removeFile path
+      return path
 
 freePort :: IO Int
 freePort = bracket (socket AF_INET Stream defaultProtocol) close $ \sock -> do

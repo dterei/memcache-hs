@@ -1843,6 +1843,38 @@ main = hspec $ do
         client <- Client.newClient [localhostSpec server Auth.NoAuth] patient
         Client.get client "key" `shouldReturn` Just ("foo", 2, 7)
 
+  describe "Unix sockets" $ do
+    -- A host that begins with / is the path of a Unix socket, which the
+    -- client connects to without looking anything up: a lookup with this
+    -- port, which names no service, would fail. Nor may it set TCP's
+    -- options, as a Unix socket rejects NoDelay.
+    it "connects to a host that begins with / through the socket at that path" $
+      withUnixSocketPath $ \path ->
+      withMockServerAt (N.SockAddrUnix path) [MR "VA 3 f2 c7\r\nfoo\r\n"] $ \server -> do
+        client <- Client.newClient [ServerSpec path "no-such-service" Auth.NoAuth] oneAttempt
+        Client.get client "key" `shouldReturn` Just ("foo", 2, 7)
+        mockRequests server `shouldReturn` ["mg key v f c\r\n"]
+
+    it "authenticates over a Unix socket" $
+      withUnixSocketPath $ \path ->
+      withMockServerAt (N.SockAddrUnix path)
+        [MR "CLIENT_ERROR unauthenticated\r\n", MR "STORED\r\n", MR "VA 3 f2 c7\r\nfoo\r\n"] $ \server -> do
+        client <- Client.newClient [ServerSpec path "11211" (Auth.Auth "user" "pass")] oneAttempt
+        Client.get client "key" `shouldReturn` Just ("foo", 2, 7)
+        mockRequests server `shouldReturn`
+          ["version\r\n", "set auth 0 0 9\r\nuser pass\r\n", "mg key v f c\r\n"]
+
+    -- The path is percent-encoded, but for its slashes, in case the
+    -- temporary directory's name has characters a URI can't.
+    it "connects through the socket a memcached:/// URI names" $
+      withUnixSocketPath $ \path ->
+      withMockServerAt (N.SockAddrUnix path) [MR "VA 3 f2 c7\r\nfoo\r\n"] $ \_ -> do
+        let escape c = if c == '/' then "/" else percentEncode (C.singleton c)
+        spec <- either fail return $ parseServerSpec ("memcached://" <> concatMap escape path)
+        ssHost spec `shouldBe` path
+        client <- Client.newClient [spec] oneAttempt
+        Client.get client "key" `shouldReturn` Just ("foo", 2, 7)
+
   describe "ElastiCache discovery" $ do
     it "rejects an endpoint that is not a configuration endpoint" $
       isLeft (EC.parseConfigurationEndpoint "memcached://cache.example:11211") `shouldBe` True
@@ -2200,6 +2232,11 @@ main = hspec $ do
     fastFailover = Client.def { Client.optsFailRetryDelay = 10, Client.optsDeadRetryDelay = 60000 }
     -- One attempt per operation, and a server it marks dead is used again at once.
     oneAttempt = Client.def { Client.optsServerRetries = 0, Client.optsDeadRetryDelay = 0 }
+    -- Run a test with a fresh path for a Unix socket, or mark it pending
+    -- where there are no Unix sockets.
+    withUnixSocketPath test
+      | N.isUnixDomainSocketAvailable = withSocketPath test
+      | otherwise = pendingWith "Unix sockets are unavailable"
     -- Long enough to read a stats reply of hundreds of thousands of lines.
     slowStats opts = opts { Client.optsServerTimeout = 10000 }
     -- What @stats conns@ reports for one client connection at its longest,
