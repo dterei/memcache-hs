@@ -27,7 +27,7 @@ import           Control.Concurrent        (forkIO, killThread, myThreadId, newE
                                             tryPutMVar, yield)
 import           Control.Exception         (MaskingState (..), bracket, displayException, finally,
                                             getMaskingState, mask_, try)
-import           Control.Monad             (forM_, void, when, (>=>))
+import           Control.Monad             (forM_, forever, void, when, (>=>))
 import           Data.Either               (isLeft)
 import           Data.Foldable             (toList)
 import           Data.IORef                (atomicModifyIORef', newIORef, readIORef,
@@ -1558,6 +1558,28 @@ main = hspec $ do
           arith client "key" 0 1 0 0 `shouldThrow` isBadLength
           length <$> mockRequests server `shouldReturn` 1
           readIORef (Server.failed s) >>= (`shouldNotBe` 0)
+
+    -- A request counts as sent from when its writing starts, as the server
+    -- may have all of it before the write returns. Here a timeout lands while
+    -- the request is being written: the listener takes connections but never
+    -- reads from them, so a request far larger than the socket buffers can't
+    -- all be written. A retry would open a second connection.
+    it "doesn't send an append again that times out while it is being written" $
+      bracket (N.socket N.AF_INET N.Stream N.defaultProtocol) N.close $ \listener -> do
+        N.bind listener loopbackAddress
+        N.listen listener 10
+        port <- N.socketPort listener
+        accepted <- newIORef []
+        let takeAll = forever $ do
+              (connection, _) <- N.accept listener
+              atomicModifyIORef' accepted (\earlier -> (connection : earlier, ()))
+        bracket (forkIO takeAll) killThread $ \_ -> flip finally (readIORef accepted >>= mapM_ N.close) $ do
+          client <- Client.newClient [ServerSpec "127.0.0.1" (show port) Auth.NoAuth] fastStaysDead
+          Client.append client "key" (C.replicate (32 * 1024 * 1024) 'x') 0
+            `shouldThrow` (== ClientError Timeout)
+          [s] <- toList <$> Cluster.getServers client
+          readIORef (Server.failed s) >>= (`shouldNotBe` 0)
+          length <$> readIORef accepted `shouldReturn` 1
 
     -- Every other request is sent again on a new connection, and the server
     -- isn't marked dead.

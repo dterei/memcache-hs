@@ -56,7 +56,9 @@ We support the following logic for handling failure in operations:
              connection from the pool, we check that the server hasn't
              closed it, as memcached does to idle connections when it
              restarts or after @-o idle_timeout@; if it has, the request is
-             retried on a new connection. Other operations are retried after
+             retried on a new connection if retries are left. With
+             'optsServerRetries' at @0@, that failure is thrown instead, and
+             the server is marked dead. Other operations are retried after
              any server failure, so the server may carry out their request
              twice (see 'optsServerRetries'). Set 'optsServerRetries' to @0@
              for no retries.

@@ -562,9 +562,10 @@ keyedOpExpecting c operation codes = keyedOpWith c Resend (expectReply operation
 --
 -- Before sending, the connection is checked, without waiting, for the server
 -- having closed it, as memcached does to idle connections when it restarts
--- or after @-o idle_timeout@. Such a connection is closed, and the request is
--- retried on another, as after any failure before sending (see
--- 'Database.Memcache.Socket.checkIdle').
+-- or after @-o idle_timeout@. Such a connection is closed, and as after any
+-- failure before sending, the request is retried on another if retries are
+-- left. With 'optsServerRetries' at 0, the failure is thrown instead, and the
+-- server is marked dead (see 'Database.Memcache.Socket.checkIdle').
 keyedOpExpectingOnce :: Cluster -> String -> [ByteString] -> Key -> (WireKey -> ByteString) -> IO Response
 {-# INLINE keyedOpExpectingOnce #-}
 keyedOpExpectingOnce c operation codes = keyedOpWith c SendOnce (expectReply operation codes)
