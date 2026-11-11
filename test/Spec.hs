@@ -1540,6 +1540,25 @@ main = hspec $ do
           length <$> mockRequests server `shouldReturn` 1
           readIORef (Server.failed s) >>= (`shouldNotBe` 0)
 
+    -- Sent again, an append with a version that the first one carried out
+    -- would find the version changed, and return Nothing as if it hadn't
+    -- matched. Sent once, it throws the failure instead.
+    it "doesn't report an append with a version that may have been carried out as a mismatch" $
+      withServerAndClientOpts fastStaysDead [Noop, MR "EX c0\r\n"] $ \server client -> do
+        Client.append client "key" "v" 9 `shouldThrow` (== ClientError Timeout)
+        mockRequests server `shouldReturn` ["ms key 1 MA C9 c\r\nv\r\n"]
+
+    -- A reply that can't be read, such as one whose value length is
+    -- malformed, is a failure after sending too, so the request isn't sent
+    -- again either. A get with such a reply is.
+    forM_ [("an increment", Client.increment), ("a decrement", Client.decrement)] $ \(name, arith) ->
+      it ("doesn't send " <> name <> " again after a reply with a malformed value length") $
+        withServerAndClientOpts fastStaysDead [MR "VA (1) c5\r\n6\r\n", MR "VA 1 c5\r\n6\r\n"] $ \server client -> do
+          [s] <- toList <$> Cluster.getServers client
+          arith client "key" 0 1 0 0 `shouldThrow` isBadLength
+          length <$> mockRequests server `shouldReturn` 1
+          readIORef (Server.failed s) >>= (`shouldNotBe` 0)
+
     -- Every other request is sent again on a new connection, and the server
     -- isn't marked dead.
     forM_ sentAgain $ \(name, reply, run) ->
@@ -2511,6 +2530,8 @@ main = hspec $ do
       , ("a decrement", "VA 1 c5\r\n4\r\n", \c -> void (Client.decrement c "key" 0 1 0 0))
       , ("an append", "HD c5\r\n", \c -> void (Client.append c "key" "v" 0))
       , ("a prepend", "HD c5\r\n", \c -> void (Client.prepend c "key" "v" 0))
+      , ("an append with a version", "HD c5\r\n", \c -> void (Client.append c "key" "v" 9))
+      , ("a prepend with a version", "HD c5\r\n", \c -> void (Client.prepend c "key" "v" 9))
       , ("an add", "HD c5\r\n", \c -> void (Client.add c "key" "v" 0 0))
       , ("a delete", "HD\r\n", \c -> void (Client.delete c "key" 0))
       , ("a cas with a version", "HD c5\r\n", \c -> void (Client.cas c "key" "v" 0 0 9))

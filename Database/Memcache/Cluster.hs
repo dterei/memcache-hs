@@ -189,12 +189,13 @@ data Options = Options {
         -- server has closed the connection. Those are @increment@,
         -- @decrement@, @append@, @prepend@, @add@ and @delete@, and @cas@ and
         -- @replace@ with a version other than 0. Once the request may have
-        -- reached the server, a failure such as a timeout, a network error or
-        -- the server closing the connection is thrown as it is, and the server
-        -- is marked down as if every attempt had failed, whatever retries are
-        -- left. The server may have carried out the request, and a retry
-        -- could apply it twice, or report failure because the first one
-        -- succeeded (see 'keyedOpExpectingOnce').
+        -- reached the server, a failure such as a timeout, a network error,
+        -- the server closing the connection or a reply that can't be read is
+        -- thrown as it is, and the server is marked down as if every attempt
+        -- had failed, whatever retries are left. The server may have carried
+        -- out the request, and a retry could apply it twice, or report
+        -- failure because the first one succeeded (see
+        -- 'keyedOpExpectingOnce').
         --
         -- Every other operation is retried after any failure, so the server
         -- may carry out its request more than once: gets, @touch@, @set@,
@@ -550,14 +551,14 @@ keyedOpExpecting c operation codes = keyedOpWith c Resend (expectReply operation
 -- | Like 'keyedOpExpecting', for a request that mustn't be sent twice, such
 -- as an increment, an @add@, a delete, or a store with a CAS version. Once
 -- the request may have reached the server, a failure, such as a timeout, a
--- network error or the server closing the connection, isn't retried: the
--- server may have carried out the request, and a second one could apply it
--- twice, or report failure because the first one succeeded. The failure is
--- thrown as it is, and still counts against the server: its idle connections
--- are closed, and it is marked dead, as when the last of an operation's
--- attempts fails. A failure before any of the request is sent, such as
--- waiting for a connection, connecting or authenticating, is retried as for
--- 'keyedOpExpecting'.
+-- network error, the server closing the connection or a reply that can't be
+-- read, isn't retried: the server may have carried out the request, and a
+-- second one could apply it twice, or report failure because the first one
+-- succeeded. The failure is thrown as it is, and still counts against the
+-- server: its idle connections are closed, and it is marked dead, as when the
+-- last of an operation's attempts fails. A failure before any of the request
+-- is sent, such as waiting for a connection, connecting or authenticating, is
+-- retried as for 'keyedOpExpecting'.
 --
 -- Before sending, the connection is checked, without waiting, for the server
 -- having closed it, as memcached does to idle connections when it restarts
