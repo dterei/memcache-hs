@@ -1646,9 +1646,12 @@ main = hspec $ do
       -- Its path is percent-decoded to bytes, one Char each, as SockAddrUnix
       -- writes them.
       , ("memcached:///run/caf%C3%A9.sock", "/run/caf\xc3\xa9.sock", "11211", Auth.NoAuth)
-      -- A path of just / is no socket.
+      -- A path of only slashes is no socket: the root directory isn't one.
       , ("memcached:///", "127.0.0.1", "11211", Auth.NoAuth)
       , ("memcached://:11211/", "127.0.0.1", "11211", Auth.NoAuth)
+      , ("memcached:////", "127.0.0.1", "11211", Auth.NoAuth)
+      , ("memcached:///%2F", "127.0.0.1", "11211", Auth.NoAuth)
+      , ("memcached://:11211//", "127.0.0.1", "11211", Auth.NoAuth)
       ]
 
     mapM_ rejects

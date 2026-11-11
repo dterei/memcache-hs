@@ -78,8 +78,9 @@ data ServerSpec = ServerSpec
 -- @%00@. A socket takes no port, so
 -- @memcached:\/\/:11211\/run\/memcached.sock@ is an error, and its 'ssPort'
 -- is @\"11211\"@, which names it by its path alone (see 'ssPort'). A path of
--- just @\/@ is no socket: @memcached:\/\/\/@ and @memcached:\/\/:11211\/@
--- are @127.0.0.1@ on port @11211@, as @memcached:\/\/@ is.
+-- only slashes is no socket: @memcached:\/\/\/@, @memcached:\/\/\/\/@ and
+-- @memcached:\/\/:11211\/@ are @127.0.0.1@ on port @11211@, as
+-- @memcached:\/\/@ is.
 --
 -- Error messages never quote the URI, as it may contain a password.
 parseServerSpec :: String -> Either String ServerSpec
@@ -113,20 +114,24 @@ readAuthentication userInfo = case break (== ':') (takeWhile (/= '@') userInfo) 
 -- @memcached:\/\/\/run\/memcached.sock@. There is none unless the URI has
 -- the @\/\/@ of an authority, so that a URI missing a slash, such as
 -- @memcached:\/user:secret\@cache.example@, never puts its password in
--- 'ssHost', which 'show' prints, and unless the path is more than @\/@, so
--- that @memcached:\/\/\/@ is still the default server.
+-- 'ssHost', which 'show' prints, and unless the path has more than slashes,
+-- so that @memcached:\/\/\/@ is still the default server, and
+-- @memcached:\/\/\/\/@ isn't the root directory.
 --
 -- The path is percent-decoded to bytes, one 'Char' each, as
 -- 'Network.Socket.SockAddrUnix' writes a path one byte per 'Char'. A NUL
 -- would end the path early, so it is an error.
 readSocketPath :: URI -> Either String (Maybe FilePath)
-readSocketPath uri = case (uriAuthority uri, uriPath uri) of
-  (Just a, p@('/' : _ : _)) | null (uriRegName a) -> do
+readSocketPath uri = case uriAuthority uri of
+  Just a | null (uriRegName a), any (/= '/') path -> do
     note "A Unix socket path takes no port" $ guard $ null (uriPort a)
-    let path = C.unpack (unEscapeBytes p)
     note "Unix socket path contains NUL" $ guard $ notElem '\0' path
     pure (Just path)
   _ -> pure Nothing
+  where
+    -- After an authority, a path is empty or begins with a slash, so this
+    -- one begins with a slash whenever it has more than slashes.
+    path = C.unpack (unEscapeBytes (uriPath uri))
 
 -- | Percent-decode a string to the bytes it encodes. Unlike
 -- 'unEscapeString', this doesn't decode them as UTF-8, which would replace
