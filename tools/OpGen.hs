@@ -9,7 +9,7 @@ import           System.Console.GetOpt
 import           System.Environment
 import           System.Exit
 
-import           Database.Memcache.Client   hiding (Options)
+import           Database.Memcache.Client   hiding (Options, defaultOptions)
 import           Network.Socket             (PortNumber)
 
 data Operation = GET | STAT | NOOP deriving (Show, Eq)

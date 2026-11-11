@@ -27,9 +27,9 @@ module Database.Memcache.Socket (
 
         -- * Constructors
         encodeKey, getRequest, getManyRequest, gatRequest, touchRequest,
-        storeRequest, arithmeticRequest, deleteRequest, flushRequest,
-        versionRequest, modifyRequest, statsRequest, quitRequest, authRequest,
-        noOpRequest
+        storeRequest, setManyRequest, arithmeticRequest, deleteRequest,
+        deleteManyRequest, flushRequest, versionRequest, modifyRequest,
+        statsRequest, quitRequest, authRequest, noOpRequest
     ) where
 
 import           Database.Memcache.Errors
@@ -44,6 +44,7 @@ import           Data.ByteString.Builder.Extra (byteStringCopy, smallChunkSize, 
                                                 untrimmedStrategy)
 import qualified Data.ByteString.Char8     as C
 import qualified Data.ByteString.Lazy      as BL
+import           Data.Char                 (toLower)
 import           Data.IORef
 import           Data.List                 (find, isInfixOf)
 import           Data.Maybe                (fromMaybe)
@@ -59,7 +60,9 @@ data Connection = Connection N.Socket (IORef ByteString)
 data Response = Response
   -- | The response code, such as @VA@ or @HD@.
   { responseCode :: ByteString
-  -- | Tokens following the response code.
+  -- | Tokens following the response code. As in memcached, only spaces
+  -- separate tokens, so a token can contain other whitespace bytes, such as
+  -- a tab or 0xa0.
   , responseTokens :: [ByteString]
   -- | The response value, when the response contains one.
   , responseValue :: ByteString
@@ -81,7 +84,7 @@ sendRaw (Connection s _) = N.sendAll s
 recvResponse :: Connection -> IO Response
 recvResponse s = do
   line <- recvLine s
-  case C.words line of
+  case splitTokens line of
     [] -> throwIO $ ProtocolError UnknownPkt { protocolError = "" }
     code:tokens -> case tokens of
       n:_ | code == "VA" -> do
@@ -95,6 +98,13 @@ recvResponse s = do
     parseLength x = case readDecimal x of
       Just n | n <= 128 * 1024 * 1024 -> return n
       _ -> throwIO $ ProtocolError BadLength { protocolError = "invalid value length" }
+
+    -- Split the line as memcached does: on spaces alone, after removing the
+    -- CR that 'recvLine' leaves on it. 'C.words' would also split on tabs
+    -- and on byte 0xa0, which a key the server echoes can contain: it is
+    -- part of many UTF-8 characters, such as U+00E0 (C3 A0).
+    splitTokens line =
+      filter (not . B.null) (C.split ' ' (fromMaybe line (B.stripSuffix "\r" line)))
 
 -- | Convert a response code and tokens to the corresponding status.
 responseStatus :: Response -> IO Status
@@ -121,10 +131,12 @@ responseStatus (Response code tokens _) = case code of
 
     -- Meta Text reports these as free-form error text where the binary
     -- protocol had dedicated status codes; match them back so callers keep
-    -- seeing 'OpError' rather than an opaque protocol failure.
+    -- seeing 'OpError' rather than an opaque protocol failure. memcached
+    -- capitalises some of its out-of-memory errors, such as "Out of memory
+    -- during read", so that match ignores case.
     serverFailure
       | "object too large" `isInfixOf` message = throwStatus ErrValueTooLarge
-      | "out of memory"    `isInfixOf` message = throwStatus ErrOutOfMemory
+      | "out of memory"    `isInfixOf` map toLower message = throwStatus ErrOutOfMemory
       | otherwise = throwIO $ ProtocolError ServerError { protocolError = message }
 
     clientFailure
@@ -195,7 +207,8 @@ recvExact s n
         then writeBuffer s (B.drop takeN buffer) >> go (wanted - takeN) (B.take takeN buffer : acc)
         else readChunk wanted s >> go wanted acc
 
--- | Receive through the first occurrence of a delimiter, including it.
+-- | Receive through the first occurrence of a delimiter, including it. Throws
+-- 'BadLength' once it has read more than 1 MiB without the delimiter.
 recvRawUntil :: ByteString -> Connection -> IO ByteString
 recvRawUntil end s = go B.empty
   where
@@ -206,7 +219,18 @@ recvRawUntil end s = go B.empty
         (before, rest) | not (B.null rest) -> do
           writeBuffer s (B.drop (B.length end) rest)
           return (before <> end)
-        _ -> writeBuffer s B.empty >> readChunk 0 s >> go combined
+        _ | B.length combined > maxRawLength ->
+            throwIO $ ProtocolError BadLength { protocolError = "response too long" }
+          | otherwise -> writeBuffer s B.empty >> readChunk 0 s >> go combined
+
+-- | 'recvRawUntil' gives up once it has read more than this without its
+-- delimiter. ElastiCache discovery reads its cluster configuration with it,
+-- which lists each node as a host name (at most 253 bytes), an IP address and
+-- a port: at most about 300 bytes a node, so this holds over 3,000 nodes.
+-- ElastiCache allows 60 nodes in a Memcached cluster unless that quota is
+-- raised.
+maxRawLength :: Int
+maxRawLength = 1024 * 1024
 
 readChunk :: Int -> Connection -> IO ()
 readChunk n (Connection s ref) = do
@@ -341,9 +365,14 @@ cas n = if n == 0 then mempty else bytes " C" <> word64Dec n
 getRequest :: WireKey -> ByteString
 getRequest key = cmdMetaGet <> " " <> keyArgs key <> " v f c" <> crlf
 
--- | Encode a quiet multi-get request for one key.
-getManyRequest :: WireKey -> ByteString
-getManyRequest key = cmdMetaGet <> " " <> keyArgs key <> " v f c k q" <> crlf
+-- | Encode a get request for a pipelined batch. It is 'getRequest' plus the
+-- @q@ flag, so a miss gets no reply, and the given opaque as the @O@ flag,
+-- which memcached copies into the reply so that it can be matched to its
+-- request.
+getManyRequest :: WireKey -> Int -> ByteString
+getManyRequest key opaque = render (B.length (wireKey key)) $
+  bytes cmdMetaGet <> bytes " " <> bytes (keyArgs key) <> bytes " v f c q O" <> intDec opaque
+  <> bytes crlf
 
 -- | Encode a get-and-touch request.
 gatRequest :: WireKey -> Expiration -> ByteString
@@ -363,6 +392,16 @@ storeRequest mode key value flags expiry version = render (B.length (wireKey key
   bytes cmdMetaSet <> bytes " " <> bytes (wireKey key) <> bytes " " <> intDec (B.length value)
   <> bytes " F" <> word32Dec flags <> bytes " T" <> word32Dec expiry <> cas version
   <> bytes " M" <> bytes (storeMode mode) <> bytes (keyFlag key) <> bytes " c"
+  <> bytes crlf <> byteStringCopy value <> bytes crlf
+
+-- | Encode a set request for a pipelined batch. It is 'storeRequest' in 'Set'
+-- mode without a CAS, plus the given opaque as the @O@ flag, which memcached
+-- copies into the reply so that it can be matched to its request.
+setManyRequest :: WireKey -> Value -> Flags -> Expiration -> Int -> ByteString
+setManyRequest key value flags expiry opaque = render (B.length (wireKey key) + B.length value) $
+  bytes cmdMetaSet <> bytes " " <> bytes (wireKey key) <> bytes " " <> intDec (B.length value)
+  <> bytes " F" <> word32Dec flags <> bytes " T" <> word32Dec expiry
+  <> bytes " M" <> bytes (storeMode Set) <> bytes (keyFlag key) <> bytes " c O" <> intDec opaque
   <> bytes crlf <> byteStringCopy value <> bytes crlf
 
 -- | Encode an increment or decrement request. Unless the expiration is
@@ -389,6 +428,13 @@ deleteRequest :: WireKey -> Version -> ByteString
 deleteRequest key 0 = cmdMetaDelete <> " " <> keyArgs key <> crlf
 deleteRequest key version = render (B.length (wireKey key)) $
   bytes cmdMetaDelete <> bytes " " <> bytes (keyArgs key) <> cas version <> bytes crlf
+
+-- | Encode a delete request for a pipelined batch. It is 'deleteRequest'
+-- without a CAS, plus the given opaque as the @O@ flag, which memcached copies
+-- into the reply so that it can be matched to its request.
+deleteManyRequest :: WireKey -> Int -> ByteString
+deleteManyRequest key opaque = render (B.length (wireKey key)) $
+  bytes cmdMetaDelete <> bytes " " <> bytes (keyArgs key) <> bytes " O" <> intDec opaque <> bytes crlf
 
 -- | Encode a flush request, optionally delayed until the given expiration.
 flushRequest :: Maybe Expiration -> ByteString
