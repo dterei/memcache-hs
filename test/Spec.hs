@@ -20,6 +20,7 @@ import           Test.QuickCheck
 import qualified Data.ByteString           as B
 import qualified Data.ByteString.Base64    as Base64
 import qualified Data.ByteString.Char8     as C
+import           Data.ByteString.Unsafe    (unsafePackMallocCStringLen)
 import           Data.Char                 (isAscii, isPrint)
 import qualified Network.Socket            as N
 import qualified Network.Socket.ByteString as N
@@ -34,6 +35,7 @@ import           Data.Foldable             (toList)
 import           Data.IORef                (atomicModifyIORef', newIORef, readIORef,
                                             writeIORef)
 import           Data.List                 (find, isPrefixOf, nub)
+import           Foreign.Marshal.Alloc     (mallocBytes)
 import           GHC.Clock                 (getMonotonicTime)
 import           GHC.Conc                  (ThreadStatus (..), threadStatus)
 import           System.IO.Error           (isDoesNotExistError)
@@ -1114,6 +1116,41 @@ main = hspec $ do
       withClient [MR "RESET\r\n"] $ \client -> do
         result <- Client.stats client Nothing
         map snd result `shouldBe` [[]]
+
+  -- Each test gets the value of 1 GiB + 1 byte from overLimitValue. hspec's
+  -- beforeAll allocates it when the first of these tests runs, so a run that
+  -- leaves them all out never allocates it. Every connection attempt to the
+  -- client's server is refused, so an operation that tried to send the value
+  -- would throw "Connection refused" instead.
+  describe "oversized values" $ beforeAll overLimitValue $ do
+    forM_
+      [ ("set", \c v -> void (Client.set c "key" v 0 0))
+      , ("add", \c v -> void (Client.add c "key" v 0 0))
+      , ("replace", \c v -> void (Client.replace c "key" v 0 0 0))
+      , ("cas", \c v -> void (Client.cas c "key" v 0 0 1))
+      , ("append", \c v -> void (Client.append c "key" v 0))
+      , ("prepend", \c v -> void (Client.prepend c "key" v 0)) ] $ \(operation, run) ->
+      it ("rejects an over-limit value from " <> operation <> " without sending anything") $ \over ->
+        withRefusingClient Client.def $ \client ->
+          run client over `shouldThrow` (== OpError ErrValueTooLarge)
+
+    it "rejects an over-limit value in setMany without sending anything" $ \over ->
+      withRefusingClient Client.def $ \client ->
+        Client.setMany client [("key", over, 0, 0)] `shouldThrow` (== OpError ErrValueTooLarge)
+
+    it "sends nothing when only one of setMany's values is over the limit" $ \over ->
+      withRefusingClient Client.def $ \client ->
+        Client.setMany client [("one", "v", 0, 0), ("two", over, 0, 0), ("three", "v", 0, 0)]
+          `shouldThrow` (== OpError ErrValueTooLarge)
+
+    -- No key has a server, so a value the client lets through fails with
+    -- NoServersReady, before anything is sent.
+    it "does not reject a value of exactly the limit" $ \over -> do
+      let noServer = Client.def { Client.optsGetServerForKey = \_ _ -> return Nothing }
+      withRefusingClient noServer $ \client -> do
+        Client.set client "key" over 0 0 `shouldThrow` (== OpError ErrValueTooLarge)
+        Client.set client "key" (B.take valueLimit over) 0 0
+          `shouldThrow` (== ClientError NoServersReady)
 
   -- A reply the request cannot get is likely an earlier request's, so the
   -- connection must be closed. Kept, it would answer the next request with
@@ -3381,6 +3418,30 @@ withTwoServerClient as bs action =
   where
     -- Servers compare equal when they are for the same host and port.
     serversFor specs = toList <$> (Cluster.getServers =<< Client.newClient specs Client.def)
+
+-- | Run an action with a client, made with the given options, whose only
+-- server is at a port that is bound but never listened on, so that every
+-- attempt to connect to it is refused.
+withRefusingClient :: Client.Options -> (Client.Client -> IO a) -> IO a
+withRefusingClient opts action =
+  withBoundSocket (N.SockAddrInet 0 (N.tupleToHostAddress (127, 0, 0, 1))) $ \port ->
+    Client.withClient [ServerSpec "127.0.0.1" (show port) Auth.NoAuth] opts action
+
+-- | The longest value the client sends: 1 GiB, the largest item memcached can
+-- store.
+valueLimit :: Int
+valueLimit = 1073741824
+
+-- | A value one byte longer than 'valueLimit'. It is malloc'd outside the GHC
+-- heap and never written, and the code under test reads only its length, so
+-- its pages are never touched and the tests stay small. With glibc's
+-- MALLOC_PERTURB_ set, malloc fills it, and the tests then take over 1 GB.
+-- It is freed once it is garbage.
+overLimitValue :: IO B.ByteString
+overLimitValue = do
+  let len = valueLimit + 1
+  bytes <- mallocBytes len
+  unsafePackMallocCStringLen (bytes, len)
 
 -- | Wait (up to a second) for the mock to have received at least @n@ requests.
 waitForRequests :: MockServer -> Int -> IO [B.ByteString]

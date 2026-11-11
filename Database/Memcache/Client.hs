@@ -291,6 +291,10 @@ touch c k e = do
 
 -- | Store a new (or overwrite existing) key-value pair, returning its @Version@
 -- identifier. Use an expiration value of @0@ to store forever.
+--
+-- A value larger than 1 GiB, the largest item any memcached server can store,
+-- throws 'OpError' 'ErrValueTooLarge' before anything is sent, as it does in
+-- every operation that stores a value.
 set :: Client -> Key -> Value -> Flags -> Expiration -> IO Version
 set c k v f e = store c k v f e 0 Set "SET"
 
@@ -301,15 +305,18 @@ set c k v f e = store c k v f e 0 Set "SET"
 -- once per occurrence, in order, so its last entry in the result is the
 -- version now stored. Use an expiration value of @0@ to store forever.
 --
--- Every key is checked before anything is sent, so an invalid key stores
--- nothing. Each server's pairs are sent in batches of up to 256 that close
--- early once their requests reach 1 MiB (a larger request goes alone), and
--- each batch, like a 'set', must finish within 'optsServerTimeout'. When a
--- server fails part-way through, the requests it was handling are sent again,
--- storing the same values; the versions returned are from the retry. If this
--- throws, some of the pairs may have been stored.
+-- Every key, and the length of every value, is checked before anything is
+-- sent, so an invalid key or a value larger than 1 GiB stores nothing. Every
+-- value is therefore evaluated before the first request is sent. Each
+-- server's pairs are sent in batches of up to 256 that close early once their
+-- requests reach 1 MiB (a larger request goes alone), and each batch, like a
+-- 'set', must finish within 'optsServerTimeout'. When a server fails
+-- part-way through, the requests it was handling are sent again, storing the
+-- same values; the versions returned are from the retry. If this throws,
+-- some of the pairs may have been stored.
 setMany :: Client -> [(Key, Value, Flags, Expiration)] -> IO [(Key, Version)]
 setMany c items = do
+  mapM_ (\(_, v, _, _) -> checkValue v) items
   replies <- keyedBatchOp c [(k, \wire -> setManyRequest wire v f e) | (k, v, f, e) <- items]
   mapM stored replies
   where
@@ -329,6 +336,7 @@ setMany c items = do
 -- with 'set'.
 cas :: Client -> Key -> Value -> Flags -> Expiration -> Version -> IO (Maybe Version)
 cas c k v f e ver = do
+  checkValue v
   response <- resendUnlessVersioned ver c "SET" storeReplies k (\wire -> storeRequest Set wire v f e ver)
   status <- responseStatus response
   case status of
@@ -342,6 +350,7 @@ cas c k v f e ver = do
 -- expiration value of @0@ to store forever.
 add :: Client -> Key -> Value -> Flags -> Expiration -> IO (Maybe Version)
 add c k v f e = do
+  checkValue v
   response <- keyedOpExpectingOnce c "ADD" storeReplies k (\wire -> storeRequest Add wire v f e 0)
   status <- responseStatus response
   case status of
@@ -357,6 +366,7 @@ add c k v f e = do
 -- server, otherwise 'Nothing' is returned. A version of @0@ skips the check.
 replace :: Client -> Key -> Value -> Flags -> Expiration -> Version -> IO (Maybe Version)
 replace c k v f e ver = do
+  checkValue v
   response <- resendUnlessVersioned ver c "REPLACE" storeReplies k (\wire -> storeRequest Replace wire v f e ver)
   status <- responseStatus response
   case status of
@@ -368,11 +378,24 @@ replace c k v f e ver = do
 
 store :: Cluster -> Key -> Value -> Flags -> Expiration -> Version -> StoreMode -> String -> IO Version
 store c k v f e ver mode operation = do
+  checkValue v
   response <- keyedOpExpecting c operation storeReplies k (\wire -> storeRequest mode wire v f e ver)
   status <- responseStatus response
   case status of
     NoError -> return $ responseCas response
     _ -> failResponse response operation
+
+-- | 1 GiB, memcached's @ITEM_SIZE_MAX_UPPER_LIMIT@. No memcached server can
+-- store a larger item, so none can store a longer value.
+maxValueLength :: Int
+maxValueLength = 1073741824
+
+-- | Reject a value longer than @maxValueLength@ before anything is sent.
+-- memcached can't store it, and one longer than 2147483645 bytes would make
+-- it run the rest of the value's bytes as commands. This evaluates the value
+-- before a connection is taken.
+checkValue :: Value -> IO ()
+checkValue value = when (B.length value > maxValueLength) $ throwStatus ErrValueTooLarge
 
 -- | Increment a numeric value stored against a key, returning the incremented
 -- value and the @Version@ identifier of the key-value pair. Throws
@@ -431,6 +454,7 @@ prepend c k v ver = modify c k v ver Prepend "PREPEND"
 
 modify :: Cluster -> Key -> Value -> Version -> StoreMode -> String -> IO (Maybe Version)
 modify c k v ver mode operation = do
+  checkValue v
   response <- keyedOpExpectingOnce c operation storeReplies k (\wire -> modifyRequest mode wire v ver)
   status <- responseStatus response
   case status of
