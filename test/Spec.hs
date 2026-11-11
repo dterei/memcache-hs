@@ -318,6 +318,16 @@ main = hspec $ do
       mapM_ (\n -> recvResponseFrom ("VA " <> n <> "\r\nabc\r\n") `shouldThrow` isBadLength)
         ["(3)", "+3", "-3", "0x3", "3x", "18446744073709551619"]
 
+    -- Reply lines are split on spaces alone, so a token can also hold other
+    -- whitespace, which a lenient parser would skip around a number.
+    it "reads a number that shares its token with other whitespace as invalid" $ do
+      let padded n = [n <> "\t", "\t" <> n, n <> "\v", n <> "\f", n <> "\r", n <> "\xa0"]
+      forM_ (padded "7") $ \n -> do
+        response <- recvResponseFrom ("HD c" <> n <> " f" <> n <> "\r\n")
+        (responseCas response, responseFlags response) `shouldBe` (0, 0)
+      forM_ (padded "3") $ \n ->
+        recvResponseFrom ("VA " <> n <> "\r\nabc\r\n") `shouldThrow` isBadLength
+
   describe "connection buffering" $ do
     it "keeps bytes after a parsed response" $
       bracket
@@ -487,6 +497,14 @@ main = hspec $ do
       withClient [MR "VA 1 f0 c1 O0\r\na\r\n", Noop, MR "VA 1 f0 c1 O2\r\na\r\n", MR "MN\r\n"] $ \client ->
         Client.getMany client ["key", "other", "key"] `shouldReturn` [("key", ("a", 0, 1)), ("key", ("a", 0, 1))]
 
+    it "reads a malformed CAS or flags as zero rather than wrapping them" $
+      withClient [MR "VA 3 f2 c-1 O0\r\nfoo\r\n", MR "VA 3 f4294967298 c7 O1\r\nbar\r\n", MR "MN\r\n"] $ \client ->
+        Client.getMany client ["one", "two"] `shouldReturn` [("one", ("foo", 2, 0)), ("two", ("bar", 0, 7))]
+
+    it "rejects a reply with a malformed value length" $
+      withServerAndClientOpts oneAttempt [MR "VA (3) f2 c7 O0\r\nfoo\r\n", MR "MN\r\n"] $ \_ client ->
+        Client.getMany client ["one"] `shouldThrow` isBadLength
+
     -- memcached sends a bare EN in place of a hit's VA line when reading the
     -- value from extstore misses, and before 1.6.18 for any miss that is not
     -- quiet.
@@ -649,6 +667,10 @@ main = hspec $ do
         [MR "HD c1 O0\r\n", CloseConnection, MR "HD c3 O0\r\n", MR "HD c4 O1\r\n", MR "MN\r\n"] $ \_ client ->
           Client.setMany client [("one", "v", 0, 0), ("two", "v", 0, 0)]
             `shouldReturn` [("one", 3), ("two", 4)]
+
+    it "reads a malformed CAS as zero rather than wrapping it" $
+      withClient [MR "HD c-1 O0\r\n", MR "HD c18446744073709551621 O1\r\n", MR "MN\r\n"] $ \client ->
+        Client.setMany client [("one", "v", 0, 0), ("two", "v", 0, 0)] `shouldReturn` [("one", 0), ("two", 0)]
 
   describe "deleteMany" $ do
     it "deletes present, missing and repeated keys alike" $
