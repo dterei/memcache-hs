@@ -24,8 +24,9 @@ import qualified Network.Socket            as N
 import qualified Network.Socket.ByteString as N
 import           Control.Concurrent        (forkIO, killThread, myThreadId, newEmptyMVar,
                                             putMVar, readMVar, takeMVar, threadDelay,
-                                            tryPutMVar)
-import           Control.Exception         (bracket, displayException, finally, try)
+                                            tryPutMVar, yield)
+import           Control.Exception         (MaskingState (..), bracket, displayException, finally,
+                                            getMaskingState, mask_, try)
 import           Control.Monad             (forM_, void, when, (>=>))
 import           Data.Either               (isLeft)
 import           Data.Foldable             (toList)
@@ -1029,6 +1030,23 @@ main = hspec $ do
               mapM_ (`sendRaw` requests) [a, b, c]
               mapM_ ((`shouldThrow` failure) . recvResponse) [a, b, c]
           finished `shouldBe` Just ()
+        -- An operation for allOp' that sends mn, reads the reply, then runs
+        -- the given action. Against a mock that drops the first connection
+        -- and answers the second with MN, its first attempt fails as a
+        -- server failure, and only the retry runs the action.
+        onRetry action s = Server.withSocket s $ \c -> sendRaw c "mn\r\n" >> recvResponse c >> action
+        -- Work that never blocks, as reading a reply doesn't while a server
+        -- sends it faster than it is read. While asynchronous exceptions are
+        -- masked, nothing can interrupt it: yield lets other threads run,
+        -- but isn't interruptible. It ends by itself after 5 s, so work that
+        -- nothing interrupts fails the test rather than hanging it.
+        neverBlocks = do
+          start <- getMonotonicTime
+          let loop = do
+                yield
+                now <- getMonotonicTime
+                when (now - start < 5) loop
+          loop
 
     it "retries after the server drops the connection" $
       withServerAndClientOpts fast [CloseConnection, MR "VA 3 f2 c7\r\nfoo\r\n"] $ \server client -> do
@@ -1068,6 +1086,52 @@ main = hspec $ do
         Client.get client "key" `shouldThrow` (== ClientError NoServersReady)
         threadDelay 400000
         Client.get client "key" `shouldReturn` Just ("foo", 2, 7)
+
+    -- A retry must be as interruptible as the first attempt: its timeout
+    -- must interrupt it wherever it is, not only once it blocks. Here the
+    -- retry gets its reply, then works without blocking. Its 300 ms must
+    -- still run out, as a server failure that marks the server dead.
+    it "times out a retry that never blocks" $
+      withServerAndClientOpts fastStaysDead [CloseConnection, MR "MN\r\n"] $ \server client -> do
+        [s] <- toList <$> Cluster.getServers client
+        Cluster.allOp' client (onRetry neverBlocks) `shouldThrow` (== ClientError Timeout)
+        mockRequests server `shouldReturn` ["mn\r\n", "mn\r\n"]
+        readIORef (Server.failed s) >>= (`shouldNotBe` 0)
+
+    -- So can the caller's own asynchronous exceptions, such as a cancel.
+    -- The retry has 5 s, so only the caller can interrupt it in time. An
+    -- interrupted operation doesn't count against the server.
+    it "lets the caller interrupt a retry that never blocks" $
+      withServerAndClientOpts dropping [CloseConnection, MR "MN\r\n"] $ \server client -> do
+        [s] <- toList <$> Cluster.getServers client
+        retrying <- newEmptyMVar
+        running <- async $ Cluster.allOp' client (onRetry (putMVar retrying () >> neverBlocks))
+        timeout 5000000 (takeMVar retrying) `shouldReturn` Just ()
+        start <- getMonotonicTime
+        cancel running
+        end <- getMonotonicTime
+        (end - start) `shouldSatisfy` (< 2)
+        mockRequests server `shouldReturn` ["mn\r\n", "mn\r\n"]
+        readIORef (Server.failed s) `shouldReturn` 0
+
+    -- Each attempt runs with asynchronous exceptions as the caller has them:
+    -- a caller that masks them gets every attempt masked, and one that
+    -- doesn't, none. The first attempt fails as the mock drops its
+    -- connection, and the retry gets MN.
+    it "runs every attempt in the caller's masking state" $ do
+      let statesOfAttempts withState =
+            withServerAndClientOpts dropping [CloseConnection, MR "MN\r\n"] $ \_ client -> do
+              states <- newIORef []
+              let record = do
+                    state <- getMaskingState
+                    atomicModifyIORef' states (\earlier -> (earlier ++ [state], ()))
+              _ <- withState $ Cluster.allOp' client $ \s -> Server.withSocket s $ \c ->
+                record >> sendRaw c "mn\r\n" >> recvResponse c
+              readIORef states
+      mapM (\(state, withState) -> (state,) <$> statesOfAttempts withState)
+        [(Unmasked, id), (MaskedInterruptible, mask_)]
+        `shouldReturn`
+          [(Unmasked, [Unmasked, Unmasked]), (MaskedInterruptible, [MaskedInterruptible, MaskedInterruptible])]
 
     -- The first attempt fails on one of the closed connections: it reads
     -- the end of a closed one, and can't send on a reset one. The retry must

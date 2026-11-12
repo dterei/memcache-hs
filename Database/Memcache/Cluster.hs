@@ -160,7 +160,7 @@ import           Data.Time.Clock          (NominalDiffTime)
 import           Data.Time.Clock.POSIX    (getPOSIXTime)
 import qualified Data.Vector              as V
 import           System.Timeout
-import           UnliftIO.Exception       (Exception, SomeException, fromException, handle, throwIO)
+import           UnliftIO.Exception       (Exception, SomeException, fromException, handle, throwIO, try)
 import           Database.Memcache.Socket (Response(..), WireKey, encodeKey, noOpRequest, recvResponse, responseStatus, sendRaw)
 
 -- | Number of times to retry an operation against a server after its first
@@ -685,9 +685,19 @@ retryOp :: forall a. Cluster -> Server -> (Server -> IO a) -> IO a
 {-# INLINE retryOp #-}
 retryOp Cluster{..} s op = go cRetries
   where
+    -- An attempt's exception is handled once 'try' has returned it, rather
+    -- than in a handler. A handler runs with asynchronous exceptions masked,
+    -- and so would the retry it started: nothing could then interrupt the
+    -- retry until it blocked, not even its own timeout. This 'try' is
+    -- unliftio's, which lets asynchronous exceptions through, so that the
+    -- caller can still interrupt the operation.
     go :: Int -> IO a
     {-# INLINE go #-}
-    go !n = handle (handleErrs n) $ do
+    go !n = try attempt >>= either (handleErrs n) return
+
+    -- One attempt at the operation, with its own timeout and @slotTaken@.
+    attempt :: IO a
+    attempt = do
         taken <- newIORef False
         mr <- timeout cTimeout (op s { slotTaken = Just taken })
         case mr of
