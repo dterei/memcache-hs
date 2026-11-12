@@ -319,7 +319,7 @@ setMany c items = do
 -- with 'set'.
 cas :: Client -> Key -> Value -> Flags -> Expiration -> Version -> IO (Maybe Version)
 cas c k v f e ver = do
-  response <- versioned ver c "SET" storeReplies k (\wire -> storeRequest Set wire v f e ver)
+  response <- resendUnlessVersioned ver c "SET" storeReplies k (\wire -> storeRequest Set wire v f e ver)
   status <- responseStatus response
   case status of
     NoError -> return $ Just (responseCas response)
@@ -347,7 +347,7 @@ add c k v f e = do
 -- server, otherwise 'Nothing' is returned. A version of @0@ skips the check.
 replace :: Client -> Key -> Value -> Flags -> Expiration -> Version -> IO (Maybe Version)
 replace c k v f e ver = do
-  response <- versioned ver c "REPLACE" storeReplies k (\wire -> storeRequest Replace wire v f e ver)
+  response <- resendUnlessVersioned ver c "REPLACE" storeReplies k (\wire -> storeRequest Replace wire v f e ver)
   status <- responseStatus response
   case status of
     NoError -> return $ Just (responseCas response)
@@ -568,9 +568,9 @@ deleteReplies = ["HD", "OK", "NF", "EX"]
 -- again: it stores the same value. A store with one is sent once, as
 -- 'keyedOpExpectingOnce' describes: its success changes the item's version,
 -- so a second one would find it changed and report failure.
-versioned :: Version -> Cluster -> String -> [ByteString] -> Key -> (WireKey -> ByteString) -> IO Response
-versioned 0 = keyedOpExpecting
-versioned _ = keyedOpExpectingOnce
+resendUnlessVersioned :: Version -> Cluster -> String -> [ByteString] -> Key -> (WireKey -> ByteString) -> IO Response
+resendUnlessVersioned 0 = keyedOpExpecting
+resendUnlessVersioned _ = keyedOpExpectingOnce
 
 -- | The value, flags and CAS version carried by a @VA@ response.
 valueResult :: Response -> (Value, Flags, Version)
