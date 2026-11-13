@@ -367,16 +367,17 @@ clusterSpecs ports = beforeAll newClusterClient $ do
 restartSpecs :: FilePath -> Spec
 restartSpecs executable = do
   it "isn't marked dead when the pool held several connections" $ do
-    port <- freePort
-    client <- M.newClient [ServerSpec "127.0.0.1" (show port) M.NoAuth]
-      M.def { M.optsServerOptions = M.def { M.soNumResources = 3 } }
-    [server] <- toList <$> Cluster.getServers client
-    withMemcachedOn executable [] port $ do
+    (port, client, server) <- withMemcached executable [] $ \port -> do
+      client <- M.newClient [ServerSpec "127.0.0.1" (show port) M.NoAuth]
+        M.def { M.optsServerOptions = M.def { M.soNumResources = 3 } }
+      [server] <- toList <$> Cluster.getServers client
       _ <- M.set client "integration-restart" "value" 0 0
       -- Hold three connections at once, so that the pool keeps three.
       Server.withSocket server $ \_ -> Server.withSocket server $ \_ ->
         Server.withSocket server $ \_ -> return ()
-    -- That memcached has exited, closing all three. A new one starts empty.
+      return (port, client, server)
+    -- That memcached has exited, closing all three. A new one starts empty,
+    -- on the same port, which another process could take in between.
     withMemcachedOn executable [] port $ do
       M.get client "integration-restart" `shouldReturn` Nothing
       readIORef (Server.failed server) `shouldReturn` 0
@@ -385,11 +386,11 @@ restartSpecs executable = do
   -- client checks the pooled connection before sending it, finds it closed,
   -- and sends the increment once, on a new connection.
   it "sends an increment once, on a new connection, after a restart" $ do
-    port <- freePort
-    client <- M.newClient [ServerSpec "127.0.0.1" (show port) M.NoAuth] M.def
-    [server] <- toList <$> Cluster.getServers client
-    withMemcachedOn executable [] port $
-      void $ M.set client "integration-restart-counter" "0" 0 0
+    (port, client, server) <- withMemcached executable [] $ \port -> do
+      client <- M.newClient [ServerSpec "127.0.0.1" (show port) M.NoAuth] M.def
+      [server] <- toList <$> Cluster.getServers client
+      _ <- M.set client "integration-restart-counter" "0" 0 0
+      return (port, client, server)
     withMemcachedOn executable [] port $ do
       other <- M.newClient [ServerSpec "127.0.0.1" (show port) M.NoAuth] M.def
       _ <- M.set other "integration-restart-counter" "5" 0 0
@@ -419,9 +420,8 @@ pausedSpecs executable = do
   -- requests one higher than before. A retry would have been sent before
   -- memcached continued, on a new connection, so memcached would carry it
   -- out too, whether or not its reply came in time.
-  withPaused key initial stat run expected = do
-    port <- freePort
-    withMemcachedProcessOn executable [] port $ \process -> do
+  withPaused key initial stat run expected =
+    withMemcachedProcess executable [] $ \(port, process) -> do
       let spec = ServerSpec "127.0.0.1" (show port) M.NoAuth
       client <- M.newClient [spec] M.def { M.optsServerTimeout = 300 }
       other <- M.newClient [spec] M.def
@@ -502,8 +502,15 @@ withMemcached
   -> [String]
   -> (Int -> IO a)
   -> IO a
-withMemcached executable args action =
-  bracket (start (5 :: Int)) (stopMemcached . snd) (action . fst)
+withMemcached executable args action = withMemcachedProcess executable args (action . fst)
+
+-- | Like 'withMemcached', giving the action memcached's process too.
+withMemcachedProcess
+  :: FilePath
+  -> [String]
+  -> ((Int, ProcessHandle) -> IO a)
+  -> IO a
+withMemcachedProcess executable args = bracket (start (5 :: Int)) (stopMemcached . snd)
  where
   -- Another process can take the port before memcached listens on it, as
   -- when several runs of these tests share a machine. memcached then exits,
