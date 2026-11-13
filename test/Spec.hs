@@ -319,6 +319,9 @@ main = hspec $ do
       mapM_ (\n -> recvResponseFrom ("VA " <> n <> "\r\nabc\r\n") `shouldThrow` isBadLength)
         ["(3)", "+3", "-3", "0x3", "3x", "18446744073709551619"]
 
+    it "rejects a value reply with no length" $
+      mapM_ (\reply -> recvResponseFrom reply `shouldThrow` isBadLength) ["VA\r\n", "VA \r\n", "VA\r\nabc\r\n"]
+
     -- Reply lines are split on spaces alone, so a token can also hold other
     -- whitespace, which a lenient parser would skip around a number.
     it "reads a number that shares its token with other whitespace as invalid" $ do

@@ -154,6 +154,7 @@ recvResponse s = do
         unless (trailer == "\r") $ throwIO $ ProtocolError BadLength
           { protocolError = "value is not followed by an empty line" }
         return $ Response code tokens value
+      [] | code == "VA" -> throwIO $ ProtocolError BadLength { protocolError = "invalid value length" }
       _ -> return $ Response code tokens B.empty
   where
     parseLength x = case readDecimal x of
