@@ -20,7 +20,7 @@ where
 
 import Control.Concurrent (forkIO, threadDelay)
 import Control.Concurrent.MVar (MVar, modifyMVar_, newMVar)
-import Control.Monad (guard, when, (<=<))
+import Control.Monad (guard, when)
 import Data.Bifunctor (first)
 import Data.ByteString (ByteString)
 import qualified Data.ByteString.Char8 as C
@@ -96,12 +96,15 @@ newtype ConfigurationEndpoint
 -- time. A refresh keeps the 'Server', and so the connections and failure
 -- state, of every node still listed with the same host and port, makes servers
 -- only for new nodes, and closes the connections of nodes no longer listed:
--- idle ones at once, and one in use as soon as its request finishes. Each
--- refresh has the same time and length limits as the first discovery. A
--- refresh that fails, for example because it runs out of time or the reply is
--- an error, is too long, can't be parsed, lists no nodes or lists a Unix
--- socket, leaves the servers as they are, and discovery tries again after the
--- next interval.
+-- idle ones at once, and one in use as soon as its request finishes. It closes
+-- the connections of a node still listed with another IP address the same
+-- way, as ElastiCache lists a node it has replaced, so that its requests
+-- connect again, looking its name up afresh, rather than reach the node that
+-- was replaced. Each refresh has the same time and length limits as the
+-- first discovery. A refresh that fails, for example because it runs out of
+-- time or the reply is an error, is too long, can't be parsed, lists no nodes
+-- or lists a Unix socket, leaves the servers as they are, and discovery tries
+-- again after the next interval.
 --
 -- N.B. The interval is in the same units as 'threadDelay'.
 newClient :: Options -> Int -> ConfigurationEndpoint -> IO Client
@@ -111,7 +114,7 @@ newClient options interval cfgEndpoint = bracket acquireCfgClient releaseCfgClie
     releaseCfgClient = Client.quit
     resolveCluster' cfgClient = do
       serverSpecs <- resolveClusterWithin options cfgClient
-      (nodes, _) <- reuseServers options [] serverSpecs
+      (nodes, _, _) <- reuseServers options [] serverSpecs
 
       -- Prepare MVar
       serversMVar <- newMVar $ nodeServers nodes
@@ -134,38 +137,41 @@ repeatAutoDiscover opts interval cfgEndpoint mVar initialNodes = do
           reuseServers opts nodes serverSpecs
         case result of
           Left _ -> refresh nodes
-          Right (nodes', gone) -> do
+          Right (nodes', gone, moved) -> do
             modifyMVar_ mVar $ \_curServers -> pure $ nodeServers nodes'
-            -- Close the connections of nodes that have gone. A request still
-            -- using one of them finishes normally, and its connection is
-            -- closed then instead of going back to the pool.
-            mapM_ closeAll gone
+            -- Close the connections of nodes that have gone, or whose IP
+            -- address has changed. A request still using one of them finishes
+            -- normally, and its connection is closed then instead of going
+            -- back to the pool.
+            mapM_ closeAll (gone ++ moved)
             refresh nodes'
   refresh initialNodes
 
--- | The nodes found by discovery, by host and port, with the servers made for
--- each.
-type Nodes = [((HostName, ServiceName), [Server])]
+-- | The nodes found by discovery, by host and port, with the IP address listed
+-- for each and the servers made for each.
+type Nodes = [((HostName, ServiceName), (Text, [Server]))]
 
 -- | The servers of the given nodes, in the order they were discovered.
 nodeServers :: Nodes -> V.Vector Server
-nodeServers = V.fromList . concatMap snd
+nodeServers = V.fromList . concatMap (snd . snd)
 
 -- | Pair each discovered node with its servers from the given nodes, making
 -- servers only for nodes not among them. Also returns the servers of the given
--- nodes that were not discovered again.
-reuseServers :: Options -> Nodes -> [ServerSpec] -> IO (Nodes, [Server])
-reuseServers _ old [] = pure ([], concatMap snd old)
-reuseServers opts old (spec : specs) = do
+-- nodes that were not discovered again, and those of nodes discovered again
+-- with another IP address.
+reuseServers :: Options -> Nodes -> [(ServerSpec, Text)] -> IO (Nodes, [Server], [Server])
+reuseServers _ old [] = pure ([], concatMap (snd . snd) old, [])
+reuseServers opts old ((spec, ip) : specs) = do
   let node = (ssHost spec, ssPort spec)
-  (servers, rest) <- case break ((== node) . fst) old of
-    (before, (_, servers) : after) -> pure (servers, before ++ after)
+  (servers, moved, rest) <- case break ((== node) . fst) old of
+    (before, (_, (oldIp, servers)) : after) -> pure (servers, oldIp /= ip, before ++ after)
     (_, []) -> do
       servers <- optsServerSpecsToServers opts (optsServerOptions opts) [spec]
-      pure (servers, old)
-  first ((node, servers) :) <$> reuseServers opts rest specs
+      pure (servers, False, old)
+  (nodes, gone, moved') <- reuseServers opts rest specs
+  pure ((node, (ip, servers)) : nodes, gone, if moved then servers ++ moved' else moved')
 
-resolveCluster :: Client -> IO [ServerSpec]
+resolveCluster :: Client -> IO [(ServerSpec, Text)]
 resolveCluster cfgClient = do
   servers <- getServers cfgClient
 
@@ -193,7 +199,7 @@ resolveCluster cfgClient = do
 -- Run 'resolveCluster', throwing 'ClientError' 'Timeout' unless it finishes,
 -- connecting and both requests included, within the options'
 -- 'optsServerTimeout'.
-resolveClusterWithin :: Options -> Client -> IO [ServerSpec]
+resolveClusterWithin :: Options -> Client -> IO [(ServerSpec, Text)]
 resolveClusterWithin opts cfgClient = do
   found <- timeout serverTimeout $ resolveCluster cfgClient
   maybe (throwIO $ ClientError Timeout) pure found
@@ -217,9 +223,14 @@ handleConfigGetClusterResponse bs = do
 -- Note that we chose to use the CNAME rather than the IP. The IP /may/ be missing. The CNAME will always be present.
 --
 -- See: https://docs.aws.amazon.com/AmazonElastiCache/latest/mem-ug/AutoDiscovery.AddingToYourClientLibrary.html#AutoDiscovery.AddingToYourClientLibrary.OutputFormat
-handleRawNodeInfo :: Text -> Either String [ServerSpec]
-handleRawNodeInfo = mapM (parseNode . T.unpack <=< convertToUri) . T.splitOn " "
+handleRawNodeInfo :: Text -> Either String [(ServerSpec, Text)]
+handleRawNodeInfo = mapM parseEntry . T.splitOn " "
   where
+    parseEntry t = do
+      (uri, ip) <- convertToUri t
+      spec <- parseNode (T.unpack uri)
+      pure (spec, ip)
+
     -- Node addresses come from the server and hold no credentials, so name
     -- the one that failed.
     parseNode :: String -> Either String ServerSpec
@@ -233,10 +244,10 @@ handleRawNodeInfo = mapM (parseNode . T.unpack <=< convertToUri) . T.splitOn " "
         '/' : _ -> Left "Node names a Unix socket"
         _ -> pure spec
 
-    convertToUri :: Text -> Either String Text
+    convertToUri :: Text -> Either String (Text, Text)
     convertToUri t =
       case T.splitOn "|" t of
-        [host, _ip, port] -> pure $ "memcached://" <> host <> ":" <> port
+        [host, ip, port] -> pure ("memcached://" <> host <> ":" <> port, ip)
         xs -> Left $ "Unrecognized components in node info: " <> show xs
 
 -- This is the first version within which the /memcache/ engine on /ElastiCache/ uses the custom /config/ command.
