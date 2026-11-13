@@ -170,7 +170,7 @@ import qualified Data.ByteString.Char8     as C (split, unwords)
 import           Data.Default
 import           Data.Maybe                (fromMaybe, listToMaybe)
 import           Data.Word
-import           UnliftIO.Exception        (bracket, throwIO)
+import           UnliftIO.Exception        (Exception, bracket, handle, throwIO)
 
 -- | A Memcached cluster client.
 type Client = Cluster
@@ -485,12 +485,22 @@ flush c e = do
 -- @"items"@, @"slabs"@ or @"settings"@. A server's reply of more than 262,144
 -- entries, or of more than 16 MiB counting each entry's line as it was sent,
 -- fails with 'BadLength'.
+--
+-- Some groups, such as @cachedump@, list keys as memcached stores them, and a
+-- key can hold any bytes, a line break among them. Such a key ends the reply
+-- early as 'stats' reads it: the entries after it are missing, or the request
+-- fails. So that the rest of such a reply is never read as the reply to a
+-- later request, 'stats' closes each connection it reads a reply from rather
+-- than returning it to the pool.
 stats :: Client -> Maybe Key -> IO [(Server, StatResults)]
 stats c key = validateStatsArgs key >> allOp' c (runStats key)
   where
-    runStats statsArgs server = withSocket server $ \socket -> do
-      sendRaw socket (statsRequest statsArgs)
-      collect socket 0 0 []
+    -- 'withSocket' closes the connection when the function throws, so the
+    -- entries leave it as an exception, which is caught straight away.
+    runStats statsArgs server = handle (\(StatsRead values) -> return values) $
+      withSocket server $ \socket -> do
+        sendRaw socket (statsRequest statsArgs)
+        collect socket 0 0 [] >>= throwIO . StatsRead
 
     -- Arguments may contain spaces (@stats cachedump 1 100@), but control
     -- bytes would let a caller inject a second command line.
@@ -523,6 +533,13 @@ stats c key = validateStatsArgs key >> allOp' c (runStats key)
       case filter (not . B.null) (C.split ' ' (fromMaybe line (B.stripSuffix "\r" line))) of
         [] -> throwIO $ ProtocolError UnknownPkt { protocolError = "" }
         code:tokens -> return (Response code tokens B.empty)
+
+-- | A server's 'stats' entries, thrown out of 'withSocket' so that it closes
+-- the connection they were read from.
+newtype StatsRead = StatsRead StatResults
+  deriving Show
+
+instance Exception StatsRead
 
 -- | Most entries 'stats' accepts in one server's reply. Memcached sends four
 -- lines for each open connection in @stats conns@, and three for each
