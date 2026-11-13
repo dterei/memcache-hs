@@ -319,6 +319,9 @@ main = hspec $ do
       mapM_ (\n -> recvResponseFrom ("VA " <> n <> "\r\nabc\r\n") `shouldThrow` isBadLength)
         ["(3)", "+3", "-3", "0x3", "3x", "18446744073709551619"]
 
+    it "rejects a value reply with no length" $
+      mapM_ (\reply -> recvResponseFrom reply `shouldThrow` isBadLength) ["VA\r\n", "VA \r\n", "VA\r\nabc\r\n"]
+
     -- Reply lines are split on spaces alone, so a token can also hold other
     -- whitespace, which a lenient parser would skip around a number.
     it "reads a number that shares its token with other whitespace as invalid" $ do
@@ -812,6 +815,17 @@ main = hspec $ do
       withClient [MR "ITEM key [3 b; 0 s]\r\nEND\r\n"] $ \client -> do
         result <- Client.stats client (Just "cachedump 1 1")
         map snd result `shouldBe` [[("ITEM", "key [3 b; 0 s]")]]
+
+    -- memcached lists some keys in cachedump as they are stored, and a key
+    -- can hold a line break, here followed by END and a forged reply. The
+    -- reply as stats reads it ends at that END, so stats must close the
+    -- connection rather than leave the rest to be read as the next reply.
+    it "closes its connection, so a dump cut short by a key can't answer a later request" $
+      withServerAndClient
+        [MR "ITEM k\nEND\r\nVA 4 f0 c0\r\nevil\r\n [1 b; 0 s]\r\nEND\r\n", MR "EN\r\n"] $ \server client -> do
+          map snd <$> Client.stats client (Just "cachedump 1 0") `shouldReturn` [[("ITEM", "k")]]
+          Client.get client "victim" `shouldReturn` Nothing
+          mockRequests server `shouldReturn` ["stats cachedump 1 0\r\n", "mg victim v f c\r\n"]
 
     -- stats reads its reply a line at a time: a line that starts with VA is
     -- an entry like any other, and each line is split as other replies are.

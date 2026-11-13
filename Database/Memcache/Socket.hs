@@ -89,9 +89,10 @@ closeConnection (Connection s _) = N.close s
 -- | Check, without waiting, that the connection is as a finished exchange
 -- leaves it: everything the server sent has been read, and the server hasn't
 -- closed the connection. Throws as reading from it would, if the server has
--- closed it ('UnexpectedEOF') or reset it (an 'IOException'), and throws
--- 'UnexpectedResponse' if bytes are waiting to be read, which would be taken
--- as the reply to the next request.
+-- closed it ('UnexpectedEOF') or reset it (an
+-- t'Control.Exception.IOException'), and throws 'UnexpectedResponse' if bytes
+-- are waiting to be read, which would be taken as the reply to the next
+-- request.
 --
 -- Use it on a connection taken from a pool before sending a request that
 -- mustn't be sent twice. memcached closes idle connections when it restarts
@@ -154,6 +155,7 @@ recvResponse s = do
         unless (trailer == "\r") $ throwIO $ ProtocolError BadLength
           { protocolError = "value is not followed by an empty line" }
         return $ Response code tokens value
+      [] | code == "VA" -> throwIO $ ProtocolError BadLength { protocolError = "invalid value length" }
       _ -> return $ Response code tokens B.empty
   where
     parseLength x = case readDecimal x of
