@@ -153,18 +153,21 @@ withSocket svr act = mask $ \restore -> do
 
 -- | Close the connections that are idle in the pool. Connections in use stay
 -- open and go back to the pool when their request finishes; 'closeAll' closes
--- those too. A later request re-establishes connections as needed.
+-- those too. A later request re-establishes connections as needed. An
+-- asynchronous exception can't cut 'close' short: it is delivered once every
+-- idle connection is closed.
 close :: Server -> IO ()
 {-# INLINE close #-}
-close srv = P.destroyAllResources $ pool srv
+close srv = uninterruptibleMask_ $ P.destroyAllResources $ pool srv
 
 -- | Close every connection to the server: idle connections now, and each
 -- connection in use as soon as the request using it finishes, instead of
 -- returning it to the pool. It doesn't wait for those requests or interrupt
 -- them, and it never connects or throws. Requests that start later never use
--- a connection opened before 'closeAll'; they open new ones.
+-- a connection opened before 'closeAll'; they open new ones. Like 'close', it
+-- can't be cut short by an asynchronous exception.
 closeAll :: Server -> IO ()
-closeAll srv = do
+closeAll srv = uninterruptibleMask_ $ do
     atomicModifyIORef' (generation srv) (\g -> (g + 1, ()))
     P.destroyAllResources (pool srv)
 

@@ -27,8 +27,9 @@ import           Control.Concurrent        (forkIO, killThread, myThreadId, newE
                                             tryPutMVar, yield)
 import           Control.Exception         (MaskingState (..), bracket, displayException, finally,
                                             getMaskingState, mask_, try)
-import           Control.Monad             (forM_, forever, void, when, (>=>))
-import           Data.Either               (isLeft)
+import           Control.Monad             (forM_, forever, replicateM, replicateM_, void, when,
+                                            (>=>))
+import           Data.Either               (isLeft, isRight)
 import           Data.Foldable             (toList)
 import           Data.IORef                (atomicModifyIORef', newIORef, readIORef,
                                             writeIORef)
@@ -37,8 +38,8 @@ import           GHC.Clock                 (getMonotonicTime)
 import           GHC.Conc                  (ThreadStatus (..), threadStatus)
 import           System.IO.Error           (isDoesNotExistError)
 import           System.Timeout            (timeout)
-import           UnliftIO.Async            (Async, async, asyncThreadId, cancel,
-                                            mapConcurrently, wait)
+import           UnliftIO.Async            (Async, AsyncCancelled (..), async, asyncThreadId,
+                                            cancel, mapConcurrently, wait)
 import           UnliftIO.Exception        (StringException (..), tryIO)
 
 main :: IO ()
@@ -1769,6 +1770,59 @@ main = hspec $ do
         cancel interrupted
         Client.get client "key" `shouldReturn` Just ("foo", 2, 7)
 
+    -- A failed attempt closes the server's idle connections. A cancel that
+    -- arrives meanwhile must end the operation, not be lost so that it
+    -- retries, and must not leave any of them open. Here a listener takes
+    -- connections and never answers, 500 of them are idle in the pool, and
+    -- the get is cancelled as soon as the first idle one is closed. Only
+    -- resource-pool 0.2.3.2 closes them unmasked, so only it could fail this.
+    it "lets the caller interrupt a failed request while it closes the idle connections" $
+      withOpenFiles 1100 $ bracket (N.socket N.AF_INET N.Stream N.defaultProtocol) N.close $ \listener -> do
+        let idle = 500
+        N.bind listener loopbackAddress
+        N.listen listener (2 * idle)
+        port <- N.socketPort listener
+        accepted <- newIORef []
+        idleClosed <- newIORef (0 :: Int)
+        firstClosed <- newEmptyMVar
+        let serve connection = do
+              -- The client closes an idle connection without sending anything.
+              request <- N.recv connection 4096
+              when (B.null request) $ do
+                atomicModifyIORef' idleClosed (\n -> (n + 1, ()))
+                void $ tryPutMVar firstClosed ()
+            takeAll = forever $ do
+              (connection, _) <- N.accept listener
+              atomicModifyIORef' accepted (\earlier -> (connection : earlier, ()))
+              forkIO (serve connection)
+        bracket (forkIO takeAll) killThread $ \_ -> flip finally (readIORef accepted >>= mapM_ N.close) $ do
+          let opts = Client.def
+                { Client.optsServerTimeout = 200
+                , Client.optsFailRetryDelay = 3000
+                , Client.optsServerOptions = Client.defaultServerOptions { Client.soNumResources = idle + 1 } }
+          client <- Client.newClient [ServerSpec "127.0.0.1" (show port) Auth.NoAuth] opts
+          [s] <- toList <$> Cluster.getServers client
+          -- Open idle + 1 connections at once, then give them all back.
+          arrived <- newIORef (0 :: Int)
+          release <- newEmptyMVar
+          holders <- replicateM (idle + 1) $ async $ Server.withSocket s $ \_ ->
+            atomicModifyIORef' arrived (\n -> (n + 1, ())) >> readMVar release
+          waitFor (idle + 1) (readIORef arrived) `shouldReturn` idle + 1
+          putMVar release ()
+          mapM_ wait holders
+          running <- async $ Client.get client "key"
+          timeout 5000000 (takeMVar firstClosed) `shouldReturn` Just ()
+          start <- getMonotonicTime
+          cancel running
+          end <- getMonotonicTime
+          -- A lost cancel would let the get retry, 3 s later.
+          (end - start) `shouldSatisfy` (< 1)
+          wait running `shouldThrow` (== AsyncCancelled)
+          -- Each close reaches the listener within moments, whereas a
+          -- connection left open would be closed only by a later garbage
+          -- collection.
+          timeout 1000000 (waitFor idle (readIORef idleClosed)) `shouldReturn` Just idle
+
     it "withClient returns the action's result and closes the connection" $
       withMockServer [MR "VA 3 f2 c7\r\nfoo\r\n", MR "VA 3 f2 c7\r\nbar\r\n"] $ \server -> do
         (client, result) <- Client.withClient [mockServerSpec server] Client.def $ \client ->
@@ -2759,6 +2813,17 @@ withLocalhostAddresses test = do
     Right addresses -> pendingWith $ "localhost resolves to a single address: " ++ show addresses
   where
     hints = N.defaultHints { N.addrSocketType = N.Stream }
+
+-- | Run a test that has up to @n@ sockets open at once, or mark it pending
+-- where the process can't open that many files, as under macOS's default
+-- limit of 256.
+withOpenFiles :: Int -> Expectation -> Expectation
+withOpenFiles n test = do
+  opened <- newIORef []
+  let open = N.socket N.AF_INET N.Stream N.defaultProtocol
+        >>= \socket -> atomicModifyIORef' opened (\sockets -> (socket : sockets, ()))
+  enough <- isRight <$> tryIO (replicateM_ n open) `finally` (readIORef opened >>= mapM_ N.close)
+  if enough then test else pendingWith $ "cannot have " ++ show n ++ " files open at once"
 
 -- | The given address with its port replaced.
 atPort :: N.PortNumber -> N.SockAddr -> N.SockAddr

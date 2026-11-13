@@ -199,7 +199,8 @@ newClient scs = newCluster $ if null scs then [defaultServerSpec] else scs
 -- finishes, instead of going back to the pool; 'quit' doesn't wait for those
 -- requests or interrupt them. Requests that start after 'quit', including
 -- later requests of an operation that was already running, never use those
--- connections: they open new ones, which stay open as usual.
+-- connections: they open new ones, which stay open as usual. So does a request
+-- that is still waiting for a connection, or opening one, when 'quit' runs.
 --
 -- This doesn't send Memcached's @quit@ command: closing the connection has the
 -- same effect, while sending the command would mean first connecting to any
@@ -224,9 +225,10 @@ quit c = getServers c >>= mapM_ closeAll
 --
 -- Don't use the client after 'withClient' returns, or from threads that
 -- outlive the action. A request such a thread is making when the action ends
--- completes, and its connection is then closed; requests it starts afterwards
--- open new connections, which stay open until they have been idle for
--- 'soKeepAlive'.
+-- completes. If it already has a connection, that connection is then closed.
+-- If it is still waiting for a connection, or opening one, it opens a new one,
+-- which, like those of the requests the thread starts afterwards, stays open
+-- until it has been idle for 'soKeepAlive'.
 withClient :: [ServerSpec] -> Options -> (Client -> IO a) -> IO a
 withClient specs opts = bracket (newClient specs opts) quit
 
