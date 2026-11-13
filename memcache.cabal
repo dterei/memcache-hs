@@ -95,6 +95,7 @@ library
     Database.Memcache.Util
 
   other-extensions:
+    CApiFFI
     CPP
     OverloadedStrings
     RecordWildCards

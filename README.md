@@ -92,6 +92,13 @@ An attempt that runs out of time afterwards, while opening, authenticating or
 using its connection, counts as a server failure, however long it waited
 first.
 
+A failed operation is retried, except that a request that mustn't be sent
+twice (`increment`, `decrement`, `append`, `prepend`, `add`, `delete`, and
+`cas` or `replace` with a version) isn't sent again once it may have reached
+the server: the failure is thrown, and the server is marked dead. Other
+operations are retried after any failure, so the server may carry out their
+request twice. Set `optsServerRetries` to 0 for no retries.
+
 ### Servers and authentication
 
 `newClient` takes one `ServerSpec` per server, and routes each key to one of
