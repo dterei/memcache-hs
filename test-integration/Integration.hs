@@ -21,8 +21,9 @@ import           Network.Socket           (Family (AF_INET), SocketOption (Reuse
                                            setSocketOption, socket, socketPort,
                                            tupleToHostAddress)
 import qualified Network.Socket           as N
-import           System.Directory         (doesFileExist, findExecutable, getTemporaryDirectory,
-                                           removeFile, removePathForcibly)
+import           System.Directory         (doesDirectoryExist, doesFileExist, findExecutable,
+                                           getTemporaryDirectory, listDirectory, removeFile,
+                                           removePathForcibly)
 import           System.Exit              (ExitCode)
 import           System.IO                (hClose, hPutStr, openTempFile,
                                            openTempFileWithDefaultPermissions)
@@ -434,6 +435,7 @@ pausedSpecs executable = do
       -- waits for memcached.
       _ <- M.get client key
       signal "STOP" process
+      waitStopped process
       result <- (Async.async (run client key) >>= \running -> threadDelay 650000 >> try (Async.wait running))
         `finally` signal "CONT" process
       result `shouldBe` Left (M.ClientError M.Timeout)
@@ -543,6 +545,24 @@ signal :: String -> ProcessHandle -> IO ()
 signal name process = do
   pid <- getPid process
   mapM_ (\p -> callProcess "kill" ["-" <> name, show p]) pid
+
+-- | Wait until every thread of a process sent @STOP@ has stopped. kill(1)
+-- returns once the signal is pending: on Linux one thread takes it and only
+-- then stops the others, which until then can still read and answer a
+-- request. Where there is no @\/proc@ to check, wait a moment instead.
+waitStopped :: ProcessHandle -> IO ()
+waitStopped process = getPid process >>= mapM_ (go (500 :: Int))
+  where
+    go 0 pid = fail $ "process " <> show pid <> " did not stop within 5 s of SIGSTOP"
+    go attempts pid = do
+      let dir = "/proc/" <> show pid <> "/task/"
+      checkable <- doesDirectoryExist dir
+      if not checkable then threadDelay 100000 else do
+        threads <- listDirectory dir
+        -- A thread's state follows its name, which is in parentheses.
+        states <- forM threads $ \thread ->
+          B.take 1 . B.drop 1 . snd . B.breakEnd (== ')') <$> B.readFile (dir <> thread <> "/stat")
+        if all (== "T") states then return () else threadDelay 10000 >> go (attempts - 1) pid
 
 -- | Run an action against @n@ memcached servers.
 withMemcacheds :: FilePath -> Int -> ([Int] -> IO a) -> IO a
