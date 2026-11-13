@@ -1938,6 +1938,7 @@ main = hspec $ do
       -- Its path is percent-decoded to bytes, one Char each, as SockAddrUnix
       -- writes them.
       , ("memcached:///run/caf%C3%A9.sock", "/run/caf\xc3\xa9.sock", "11211", Auth.NoAuth)
+      , ("memcached:///run/a%40b.sock", "/run/a@b.sock", "11211", Auth.NoAuth)
       -- A path of only slashes is no socket: the root directory isn't one.
       , ("memcached:///", "127.0.0.1", "11211", Auth.NoAuth)
       , ("memcached://:11211/", "127.0.0.1", "11211", Auth.NoAuth)
@@ -1962,6 +1963,11 @@ main = hspec $ do
       -- A Unix socket takes no port, and its path no NUL, which would end it.
       , ("memcached://:1234/run/memcached.sock", "A Unix socket path takes no port")
       , ("memcached:///run/mc%00d.sock", "Unix socket path contains NUL")
+      -- Nor a raw @, as a URI with one slash too many has: as a socket path,
+      -- its password would be in ssHost, which show prints.
+      , ("memcached:///user:secret@cache.example", "Unix socket path contains @; write it as %40")
+      , ("memcached:///user:secret@/run/memcached.sock", "Unix socket path contains @; write it as %40")
+      , ("memcached:////user:secret@cache.example", "Unix socket path contains @; write it as %40")
       ]
 
     -- Without the "//", the URI has no host, not even an empty one, so its

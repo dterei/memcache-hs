@@ -142,7 +142,10 @@ user connect.
 
 As a URI, the path follows an empty host, and there is no port:
 `memcached:///run/memcached/memcached.sock`, or
-`memcached://user:secret@/run/memcached/memcached.sock` with credentials.
+`memcached://user:secret@/run/memcached/memcached.sock` with credentials. An
+`@` in the path is written `%40`; a raw one is an error, so that a URI with one
+slash too many, such as `memcached:///user:secret@cache.example`, is never
+taken for a socket path holding the password.
 
 The client doesn't use a socket's port to connect, but the port still names
 the server, along with the path, when keys are routed, so changing it moves
