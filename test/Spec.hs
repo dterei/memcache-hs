@@ -2396,6 +2396,24 @@ main = hspec $ do
         -- open, both flushes went over it.
         mockClosed a `shouldReturn` 0
 
+    -- ElastiCache lists a node it has replaced with the same host and port
+    -- and a new IP address. The node's connections may lead to the node it
+    -- replaced, so they must be closed, though the node keeps its server.
+    it "closes the connections of a node whose IP address changes" $
+      withMockServer [MR "OK\r\n", MR "OK\r\n"] $ \a ->
+      withMockServer (refreshTo [a] ++ refreshToAt "10.0.0.2" [a] ++ noReplies) $ \cfg ->
+      withDiscovery Client.def $ \opts start _ -> do
+        client <- EC.newClient opts tenMs (endpoint cfg)
+        [original] <- toList <$> Cluster.getServers client
+        Client.flush client Nothing
+        start
+        waitFor 1 (mockClosed a) `shouldReturn` 1
+        [kept] <- toList <$> Cluster.getServers client
+        -- The same server, so the same failure state.
+        (Server.failed kept == Server.failed original) `shouldBe` True
+        Client.flush client Nothing
+        mockRequests a `shouldReturn` ["flush_all\r\n", "flush_all\r\n"]
+
     -- The order breaks ties on the ketama ring. Discovery used to sort the
     -- servers by sid, so both the first discovery and the refresh list the
     -- node with the higher sid first.
@@ -2606,14 +2624,17 @@ main = hspec $ do
       EC.parseConfigurationEndpoint ("memcached://127.0.0.1:" <> show (mockPort cfg) <> "/x.cfg")
     -- A config reply body listing the given nodes, from its length line
     -- onwards.
-    nodeList nodes =
-      let node n = "127.0.0.1|127.0.0.1|" <> C.pack (show (mockPort n))
+    nodeList = nodeListAt "127.0.0.1"
+    -- The same, giving each node the IP address @ip@.
+    nodeListAt ip nodes =
+      let node n = "127.0.0.1|" <> ip <> "|" <> C.pack (show (mockPort n))
           body = "1\n" <> C.unwords (map node nodes) <> "\n"
       in C.pack (show (B.length body)) <> "\r\n" <> body <> "\r\n"
     -- The config endpoint's replies to one discovery of the given nodes,
     -- whether it creates a client or refreshes one.
-    refreshTo nodes =
-      [MR "VERSION 1.6.12\r\n", MR ("CONFIG cluster 0 " <> nodeList nodes <> "END\r\n")]
+    refreshTo = refreshToAt "127.0.0.1"
+    refreshToAt ip nodes =
+      [MR "VERSION 1.6.12\r\n", MR ("CONFIG cluster 0 " <> nodeListAt ip nodes <> "END\r\n")]
     -- What the endpoint does once a test's script is done: it reads requests
     -- and never answers. A mock that stopped listening instead would give
     -- its port back while the refresh thread, which runs until the test
