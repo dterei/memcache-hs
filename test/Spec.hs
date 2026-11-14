@@ -652,6 +652,18 @@ main = hspec $ do
           Client.get client "two" `shouldThrow` (== ClientError NoServersReady)
           length <$> mockRequests server `shouldReturn` 4
 
+    -- A SERVER_ERROR whose text names no status counts against the server
+    -- in a batch too. Each answers the batch's mn, so the mock has recorded
+    -- both requests of each attempt before the client sees it.
+    it "marks the server dead once every attempt at a batch gets a server error" $
+      withServerAndClientOpts fastFailover
+        [Noop, MR "SERVER_ERROR backend failure\r\nMN\r\n", Noop, MR "SERVER_ERROR backend failure\r\nMN\r\n"] $
+        \server client -> do
+          Client.getMany client ["key"] `shouldThrow` (== ProtocolError (E.ServerError "backend failure"))
+          length <$> mockRequests server `shouldReturn` 4
+          [s] <- toList <$> Cluster.getServers client
+          readIORef (Server.failed s) >>= (`shouldNotBe` 0)
+
   describe "setMany" $ do
     it "stores each pair and returns its version" $
       withServerAndClient [MR "HD c1 O0\r\n", MR "HD c2 O1\r\n", MR "MN\r\n"] $ \server client -> do
@@ -1145,6 +1157,19 @@ main = hspec $ do
       withServerAndClientOpts fast [MR "SERVER_ERROR busy\r\n", MR "VA 3 f2 c7\r\nfoo\r\n"] $ \server client -> do
         Client.get client "key" `shouldReturn` Just ("foo", 2, 7)
         length <$> mockRequests server `shouldReturn` 2
+
+    -- A SERVER_ERROR whose text names no status counts against the server
+    -- for a request that can be repeated too: once every attempt has got
+    -- one, it is thrown and the server is marked dead. Behind memcached's
+    -- proxy, a get for a key on a failed backend marks the whole proxy dead
+    -- this way.
+    it "marks the server dead once every attempt gets a server error" $
+      withServerAndClientOpts fastFailover
+        [MR "SERVER_ERROR backend failure\r\n", MR "SERVER_ERROR backend failure\r\n"] $ \server client -> do
+          Client.get client "key" `shouldThrow` (== ProtocolError (E.ServerError "backend failure"))
+          length <$> mockRequests server `shouldReturn` 2
+          [s] <- toList <$> Cluster.getServers client
+          readIORef (Server.failed s) >>= (`shouldNotBe` 0)
 
     it "retries after an operation times out" $
       withServerAndClientOpts fast [DelayMS 350 Noop, MR "VA 3 f2 c7\r\nfoo\r\n"] $ \_ client ->
