@@ -556,7 +556,8 @@ signal name process = do
 -- | Wait until every thread of a process sent @STOP@ has stopped. kill(1)
 -- returns once the signal is pending: on Linux one thread takes it and only
 -- then stops the others, which until then can still read and answer a
--- request. Where there is no @\/proc@ to check, wait a moment instead.
+-- request. A stopped thread is in state T, or t if the process is traced, as
+-- under strace. Where there is no @\/proc@ to check, wait a moment instead.
 waitStopped :: ProcessHandle -> IO ()
 waitStopped process = getPid process >>= mapM_ (go (500 :: Int))
   where
@@ -569,7 +570,7 @@ waitStopped process = getPid process >>= mapM_ (go (500 :: Int))
         -- A thread's state follows its name, which is in parentheses.
         states <- forM threads $ \thread ->
           B.take 1 . B.drop 1 . snd . B.breakEnd (== ')') <$> B.readFile (dir <> thread <> "/stat")
-        if all (== "T") states then return () else threadDelay 10000 >> go (attempts - 1) pid
+        if all (`elem` ["T", "t"]) states then return () else threadDelay 10000 >> go (attempts - 1) pid
 
 -- | Run an action against @n@ memcached servers.
 withMemcacheds :: FilePath -> Int -> ([Int] -> IO a) -> IO a
