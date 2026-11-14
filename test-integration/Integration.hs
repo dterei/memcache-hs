@@ -435,12 +435,14 @@ pausedSpecs executable = do
       -- waits for memcached.
       _ <- M.get client key
       -- Whatever fails from the STOP on, continue memcached: it acts on the
-      -- SIGTERM that ends it after the test only once it continues.
+      -- SIGTERM that ends it after the test only once it continues. An
+      -- operation the client failed to time out would wait for memcached for
+      -- ever, so give it 5 s, and cancel it if it is still running then.
       result <- (signal "STOP" process >> waitStopped process
-                  >> Async.async (run client key)
-                  >>= \running -> threadDelay 650000 >> try (Async.wait running))
+                  >> Async.withAsync (run client key) (\running ->
+                       threadDelay 650000 >> timeout 5000000 (try (Async.wait running))))
         `finally` signal "CONT" process
-      result `shouldBe` Left (M.ClientError M.Timeout)
+      result `shouldBe` Just (Left (M.ClientError M.Timeout))
       readIORef (Server.failed server) >>= (`shouldNotBe` 0)
       threadDelay 300000
       fmap first <$> M.get other key `shouldReturn` expected
