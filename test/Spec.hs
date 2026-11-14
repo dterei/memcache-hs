@@ -2264,8 +2264,8 @@ main = hspec $ do
     -- node a Unix socket on this machine, of the endpoint's choosing. The
     -- third gives its URI an empty port, which a socket can't have.
     forM_
-      [ ("/var/run/docker.sock?", "Node names a Unix socket: memcached:///var/run/docker.sock?:11211")
-      , ("u:p@/x.sock?", "Node names a Unix socket: memcached://u:p@/x.sock?:11211")
+      [ ("/var/run/docker.sock?", "Node is not a plain host and port: memcached:///var/run/docker.sock?:11211")
+      , ("u:p@/x.sock?", "Node is not a plain host and port: memcached://u:p@/x.sock?:11211")
       , (":/x.sock?", "A Unix socket path takes no port: memcached://:/x.sock?:11211")
       ] $ \(host, expected) ->
       it ("won't take the node " <> C.unpack host <> " for a Unix socket") $ do
@@ -2275,6 +2275,18 @@ main = hspec $ do
         withMockServer [MR "VERSION 1.6.12\r\n", MR config, Noop] $ \cfg ->
           EC.newClient Client.def hour (endpoint cfg) `shouldThrow`
             \(StringException message _) -> message == expected
+
+    -- Other hosts change the node in other ways: "/" or "?" ends the host,
+    -- so the port is lost, and "@" makes credentials of what comes before
+    -- it. An empty host would be 127.0.0.1, and an empty port would fail
+    -- only at the first request.
+    forM_ [("h/x", "22122"), ("h?x", "22122"), ("u@h", "22122"), ("u:p@h", "22122"), ("", "11211"), ("h", "")] $
+      \(host, port) -> do
+        let node = host <> "|10.0.0.1|" <> port
+        it ("won't take the node " <> show node) $
+          withMockServer [MR "VERSION 1.6.12\r\n", MR (configListing [node]), Noop] $ \cfg ->
+            EC.newClient Client.def hour (endpoint cfg) `shouldThrow` \(StringException message _) ->
+              message == "Node is not a plain host and port: memcached://" <> C.unpack host <> ":" <> C.unpack port
 
     -- An error reply is one line with no END line after it, and memcached
     -- keeps the connection open, as the Noop does: discovery must not wait

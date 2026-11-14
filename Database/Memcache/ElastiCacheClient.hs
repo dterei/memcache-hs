@@ -36,6 +36,7 @@ import Database.Memcache.Cluster (Options, getServers, setServers)
 import Database.Memcache.Errors (ClientError (Timeout), MemcacheError (ClientError))
 import Database.Memcache.Server (Server, closeAll, withSocket)
 import Database.Memcache.Socket (Connection, crlf, recvRawUntil, sendRaw, versionRequest)
+import Database.Memcache.Types.Authentication (Authentication (NoAuth))
 import Database.Memcache.Types.ServerSpec (ServerSpec (..), parseServerSpec)
 import Database.Memcache.Util (note)
 import Network.Socket (HostName, ServiceName)
@@ -106,10 +107,12 @@ newtype ConfigurationEndpoint
 -- throws v'ClientError' 'Timeout'. If the endpoint sends an error reply, such
 -- as the @ERROR@ that plain memcached sends as it has no @config@ command,
 -- this throws a @StringException@ from "UnliftIO.Exception", as it does for a
--- reply that can't be parsed, or that lists a node whose host is a path,
--- which would make it a Unix socket on this machine. If a reply goes on for
--- more than 1 MiB without the line end or the @END@ line that discovery is
--- waiting for, this throws v'Database.Memcache.Errors.ProtocolError'
+-- reply that can't be parsed, or that lists a node that isn't a plain host
+-- and port: one whose host or port is empty, or whose host has a character,
+-- such as @\/@, @?@ or @\@@, that would change the port, add credentials or
+-- make the node a Unix socket on this machine. If a reply goes on for more
+-- than 1 MiB without the line end or the @END@ line that discovery is waiting
+-- for, this throws v'Database.Memcache.Errors.ProtocolError'
 -- 'Database.Memcache.Errors.BadLength'.
 --
 -- Servers are made by calling 'optsServerSpecsToServers' with one node at a
@@ -130,9 +133,9 @@ newtype ConfigurationEndpoint
 -- could lead to a node that ElastiCache has since replaced, and get no reply.
 -- Each refresh has the same time and length limits as the first discovery. A
 -- refresh that fails, for example because it runs out of time or the reply is
--- an error, is too long, can't be parsed, lists no nodes or lists a Unix
--- socket, leaves the servers as they are, and discovery tries again after the
--- next interval.
+-- an error, is too long, can't be parsed, lists no nodes or lists a node that
+-- isn't a plain host and port, leaves the servers as they are, and discovery
+-- tries again after the next interval.
 --
 -- N.B. The interval is in the same units as 'threadDelay'.
 newClient :: Options -> Int -> ConfigurationEndpoint -> IO Client
@@ -266,29 +269,32 @@ handleConfigGetClusterResponse bs = do
 handleRawNodeInfo :: Text -> Either String [(ServerSpec, Text)]
 handleRawNodeInfo = mapM parseEntry . T.splitOn " "
   where
-    parseEntry t = do
-      (uri, ip) <- convertToUri t
-      spec <- parseNode (T.unpack uri)
-      pure (spec, ip)
+    parseEntry t =
+      case T.splitOn "|" t of
+        [host, ip, port] -> do
+          spec <- parseNode (T.unpack host) (T.unpack port)
+          pure (spec, ip)
+        _ -> Left $ "Unrecognized components in node info" `withDetail` T.unpack t
 
     -- Node addresses come from the server and hold no credentials, so name
     -- the one that failed.
-    parseNode :: String -> Either String ServerSpec
-    parseNode uri = first (`withDetail` uri) $ do
+    parseNode :: HostName -> ServiceName -> Either String ServerSpec
+    parseNode host port = first (`withDetail` uri) $ do
       spec <- parseServerSpec uri
-      -- A node is a host to reach over the network. A host such as
-      -- "/var/run/docker.sock?" makes a URI whose path is a Unix socket,
-      -- with the port in its query, so without this the endpoint, or anyone
-      -- who can change its reply, could point the client at any local socket.
-      case ssHost spec of
-        '/' : _ -> Left "Node names a Unix socket"
-        _ -> pure spec
-
-    convertToUri :: Text -> Either String (Text, Text)
-    convertToUri t =
-      case T.splitOn "|" t of
-        [host, ip, port] -> pure ("memcached://" <> host <> ":" <> port, ip)
-        _ -> Left $ "Unrecognized components in node info" `withDetail` T.unpack t
+      -- A node is a host to reach over the network, on the port listed. The
+      -- URI pastes the two together, so a host such as "h/x" or "h?x" would
+      -- lose the port, one such as "u:p@h" would give the node credentials
+      -- of the endpoint's choosing, and one such as "/var/run/docker.sock?",
+      -- whose "?" puts the port in the URI's query, would make the node a
+      -- Unix socket on this machine. An empty host would be 127.0.0.1, and
+      -- an empty port would fail only at the first request. So the URI must
+      -- give back the host and port listed, neither of them empty, and no
+      -- credentials.
+      note "Node is not a plain host and port" $
+        guard $ not (null host || null port) && spec == ServerSpec host port NoAuth
+      pure spec
+      where
+        uri = "memcached://" <> host <> ":" <> port
 
 -- This is the first version within which the /memcache/ engine on /ElastiCache/ uses the custom /config/ command.
 --
