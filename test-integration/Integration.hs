@@ -243,9 +243,9 @@ integrationSpecs port = beforeAll (newClient port) $ do
     stats `shouldSatisfy` not . all (null . snd)
 
   -- Count connections over one socket kept open for the whole test, rather
-  -- than through stats: stats now closes the connection it used, which
-  -- memcached notices only asynchronously, so a stats call to count
-  -- connections left one of its own that the next count might still see.
+  -- than through stats: stats closes the connection it used, which memcached
+  -- notices only asynchronously, so each count through stats would leave a
+  -- connection of its own that the next count might still see.
   it "closes the connection withClient opened" $ \_ ->
     withConnectionCount port $ \count -> do
       let -- memcached notices a closed connection asynchronously.
@@ -506,18 +506,23 @@ first (value, _, _) = value
 -- | Run an action that can read memcached's @curr_connections@ over a single
 -- socket, opened before the action and closed after it. Counting connections
 -- this way keeps the counting itself from opening and closing connections,
--- which memcached notices only asynchronously.
+-- which memcached notices only asynchronously. A count that takes more than
+-- 5 s fails, so that a memcached that stops answering fails the test rather
+-- than hanging it.
 withConnectionCount :: Int -> (IO Int -> IO a) -> IO a
 withConnectionCount port action = bracket open close $ \sock -> action (currConnections sock)
  where
   open = do
     sock <- socket AF_INET Stream defaultProtocol
     N.connect sock (N.SockAddrInet (fromIntegral port) (tupleToHostAddress (127, 0, 0, 1)))
+      `onException` close sock
     return sock
   -- Send a plain stats request and read its reply up to the END line.
   currConnections sock = do
-    NB.sendAll sock "stats\r\n"
-    fromReply <$> recvToEnd sock ""
+    reply <- timeout 5000000 (NB.sendAll sock "stats\r\n" >> recvToEnd sock "")
+    case reply of
+      Just r  -> return (fromReply r)
+      Nothing -> fail "memcached didn't answer a stats request within 5 s"
   recvToEnd sock acc = do
     chunk <- NB.recv sock 4096
     if B.null chunk
