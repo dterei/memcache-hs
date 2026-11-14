@@ -65,7 +65,8 @@ data ServerOptions
   -- | Number of pool stripes. With resource-pool 0.3, a pool has a stripe for
   -- each capability instead, and each stripe holds up to 'soNumResources'
   -- times 'soNumStripes' connections divided by the number of capabilities,
-  -- rounded up.
+  -- rounded up. A thread then takes connections from its own capability's
+  -- stripe, so a request can wait for one while other stripes have room.
   , soNumStripes :: Int
 #if MIN_VERSION_resource_pool(0,4,0)
   -- | Connection keep-alive duration.
