@@ -2319,9 +2319,9 @@ main = hspec $ do
         mockRequests b `shouldReturn` ["flush_all\r\n"]
 
     -- Each connection to the endpoint gets its own replies. The first refresh
-    -- gets its reply only after the limit. Had the client waited for it, it
-    -- would have moved to b alone, and the next refresh, on the same
-    -- connection, would have got no reply at all.
+    -- gets its reply, which lists b alone, only after the limit. Had the
+    -- client waited for it, it would have dropped a, and the next refresh,
+    -- which connects again, would have made a's server again.
     it "abandons a refresh slower than optsServerTimeout and runs the next one" $
       withMockServer [MR "OK\r\n"] $ \a ->
       withMockServer [MR "OK\r\n"] $ \b ->
@@ -2332,7 +2332,7 @@ main = hspec $ do
             : noReplies )
           : refreshTo [a, b]
           : repeat noReplies ) $ \cfg ->
-      withDiscovery Client.def { Client.optsServerTimeout = 1000 } $ \opts start _ -> do
+      withDiscovery Client.def { Client.optsServerTimeout = 1000 } $ \opts start made -> do
         client <- EC.newClient opts tenMs (endpoint cfg)
         begin <- getMonotonicTime
         start
@@ -2344,6 +2344,10 @@ main = hspec $ do
         Client.flush client Nothing
         mockRequests a `shouldReturn` ["flush_all\r\n"]
         mockRequests b `shouldReturn` ["flush_all\r\n"]
+        -- Servers were made for a when the client was created and for b at
+        -- the second refresh, and never again: a was never dropped.
+        filter (/= [mockServerSpec cfg]) <$> made
+          `shouldReturn` [[mockServerSpec a], [mockServerSpec b]]
 
     it "keeps discovering after a refresh gets no reply" $
       withMockServer [MR "OK\r\n"] $ \a ->
