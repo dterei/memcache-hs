@@ -42,7 +42,7 @@ import Database.Memcache.Util (note)
 import Network.Socket (HostName, ServiceName)
 import System.Timeout (timeout)
 import Text.ParserCombinators.ReadP (readP_to_S)
-import UnliftIO.Exception (bracket, throwIO, throwString, tryAny)
+import UnliftIO.Exception (bracket, throwIO, throwString, tryAny, uninterruptibleMask_)
 
 -- | Parse an ElastiCache configuration endpoint.
 --
@@ -156,8 +156,10 @@ repeatAutoDiscover opts interval cfgEndpoint mVar initialNodes = do
             -- Close the connections of nodes that have gone, or whose IP
             -- address has changed. A request still using one of them finishes
             -- normally, and its connection is closed then instead of going
-            -- back to the pool.
-            mapM_ closeAll (gone ++ moved)
+            -- back to the pool. Mask the whole loop, so that an asynchronous
+            -- exception can't stop it part way and leave the other nodes'
+            -- connections open; 'closeAll' only ever waits briefly.
+            uninterruptibleMask_ $ mapM_ closeAll (gone ++ moved)
             refresh nodes'
   refresh initialNodes
 
