@@ -56,13 +56,13 @@ data ClientError
     = NoServersReady
     -- | The attempt that ended an operation ran out of time
     -- ('Database.Memcache.Cluster.optsServerTimeout'): the last attempt, or,
-    -- for a request that is sent at most once, the attempt that had started
+    -- for a request that mustn't be sent twice, the attempt that had started
     -- sending it. The attempt may have been waiting for a free connection to
     -- the server, connecting, authenticating, sending a request or reading a
     -- reply; the error doesn't say which. An attempt that only waited for its
     -- first connection sent nothing, but for an operation that is retried
     -- after any failure, an earlier attempt may have sent the request. The
-    -- server may have carried out any request that was sent.
+    -- server may have carried out any request that was sent. ElastiCache's
     -- 'Database.Memcache.ElastiCacheClient.newClient' also throws it when its
     -- first discovery takes longer than the timeout.
     | Timeout
