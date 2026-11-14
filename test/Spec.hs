@@ -2402,7 +2402,9 @@ main = hspec $ do
     it "closes the connections of a node whose IP address changes" $
       withMockServer [MR "OK\r\n", MR "OK\r\n"] $ \a ->
       withMockServer (refreshTo [a] ++ refreshToAt "10.0.0.2" [a] ++ noReplies) $ \cfg ->
-      withDiscovery Client.def $ \opts start _ -> do
+      -- With this time limit no refresh runs out of time on a slow machine,
+      -- which would shift the replies.
+      withDiscovery Client.def { Client.optsServerTimeout = 10000 } $ \opts start _ -> do
         client <- EC.newClient opts tenMs (endpoint cfg)
         [original] <- toList <$> Cluster.getServers client
         Client.flush client Nothing
@@ -2413,6 +2415,26 @@ main = hspec $ do
         (Server.failed kept == Server.failed original) `shouldBe` True
         Client.flush client Nothing
         mockRequests a `shouldReturn` ["flush_all\r\n", "flush_all\r\n"]
+
+    -- a answers the flush late, so the refresh that lists a with a new IP
+    -- address runs while the flush is still using a's connection. With a
+    -- reply left, a's mock then waits on that connection until it closes.
+    it "closes a connection in use by a node whose IP address changes once its request finishes" $
+      withMockServer [DelayMS 300 (MR "OK\r\n"), MR "OK\r\n"] $ \a ->
+      withMockServer (refreshTo [a] ++ refreshToAt "10.0.0.2" [a] ++ noReplies) $ \cfg ->
+      -- With this time limit no refresh runs out of time on a slow machine,
+      -- which would shift the replies.
+      withDiscovery Client.def { Client.optsServerTimeout = 10000 } $ \opts start _ -> do
+        client <- EC.newClient opts tenMs (endpoint cfg)
+        flushing <- async $ Client.flush client Nothing
+        waitForRequests a 1 `shouldReturn` ["flush_all\r\n"]
+        start
+        -- The refresh after the one that lists the new IP address has sent
+        -- its request, so that one has been handled.
+        waitFor 5 (length <$> mockRequests cfg) `shouldReturn` 5
+        -- The flush isn't interrupted: it gets a's reply.
+        wait flushing
+        waitFor 1 (mockClosed a) `shouldReturn` 1
 
     -- The order breaks ties on the ketama ring. Discovery used to sort the
     -- servers by sid, so both the first discovery and the refresh list the
