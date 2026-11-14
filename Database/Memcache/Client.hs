@@ -170,7 +170,7 @@ import qualified Data.ByteString.Char8     as C (split, unwords)
 import           Data.Default
 import           Data.Maybe                (fromMaybe, listToMaybe)
 import           Data.Word
-import           UnliftIO.Exception        (Exception, bracket, handle, throwIO, try)
+import           UnliftIO.Exception        (Exception, bracket, handle, throwIO)
 
 -- | A Memcached cluster client.
 type Client = Cluster
@@ -493,17 +493,27 @@ flush c e = do
 -- reply early (so the entries after them are missing), or make the request
 -- fail. So that the rest of such a reply is never read as the reply to a later
 -- request, 'stats' closes each connection it reads a reply from rather than
--- returning it to the pool. A failure a listed key's bytes cause is thrown at
--- once, without resending the request or marking the server dead, since a
--- resend would read the same key and fail again.
+-- returning it to the pool.
+--
+-- memcached sends an error only as a reply's first line, and never an empty
+-- line. So after the first line, an empty line, or one that starts with
+-- @ERROR@, @CLIENT_ERROR@ or @SERVER_ERROR@, can only be a listed key's bytes.
+-- 'stats' throws the error such a line raises once every server has answered,
+-- without sending the request again or marking the server dead, since a resend
+-- would read the same key and fail again. The entries that keys' bytes add
+-- still count towards the limit of 262,144 entries, and a reply they take over
+-- it fails as any other reply that is too long does: the request is sent
+-- again, and the server is marked dead if every attempt fails.
 stats :: Client -> Maybe Key -> IO [(Server, StatResults)]
 stats c key = validateStatsArgs key >> allOp' c (runStats key) >>= mapM rethrow
   where
     -- 'withSocket' closes the connection when the function throws, so the
     -- outcome of reading the reply leaves it as an exception, caught at once.
-    -- 'retryOp' then sees a success: a failure from a listed key's bytes
-    -- neither resends the request nor marks the server dead, and is rethrown
-    -- below once every server has answered.
+    -- 'retryOp' then sees a success: the error of an empty or error line from
+    -- a listed key's bytes neither resends the request nor marks the server
+    -- dead, and is rethrown below once every server has answered. Any other
+    -- failure, such as a reply too long or an error on the first line, leaves
+    -- 'withSocket' as itself, for 'retryOp' to handle as usual.
     runStats statsArgs server = handle (\(StatsRead result) -> return result) $
       withSocket server $ \socket -> do
         sendRaw socket (statsRequest statsArgs)
@@ -531,9 +541,10 @@ stats c key = validateStatsArgs key >> allOp' c (runStats key) >>= mapM rethrow
       -- the CR that 'recvLine' leaves on it.
       let tokens = filter (not . B.null) (C.split ' ' (fromMaybe line (B.stripSuffix "\r" line)))
           keep entry = collect socket (count + 1) (size + B.length line + 1) (entry : values)
-          -- Only a reply's first line is a reply from the server. A later
-          -- empty or error line can only be a listed key's bytes carried past
-          -- its line break, so report it rather than fail the server over it.
+          -- memcached sends an error only as a reply's first line, and never
+          -- an empty line, so after the first line either can only be a
+          -- listed key's bytes carried past its line break: return its error
+          -- rather than fail the server over it.
           keyBytes err
             | count > 0 = return (Left err)
             | otherwise = throwIO err
@@ -547,14 +558,16 @@ stats c key = validateStatsArgs key >> allOp' c (runStats key) >>= mapM rethrow
               ("STAT", field:value) -> keep (field, C.unwords value)
               _                     -> keep (code, C.unwords rest)
 
-    -- The error 'responseStatus' raises for an error reply line, captured so a
-    -- key's bytes can be reported rather than thrown straight away.
-    statsError response = either return rejected =<< try (responseStatus response)
-      where rejected _ = failResponse response "STATS"
+    -- The error an error line raises, caught so that a key's bytes can be
+    -- returned rather than thrown. 'responseStatus' throws for each code that
+    -- gets here, and 'failResponse' would for any it didn't.
+    statsError response =
+      handle return (responseStatus response >> failResponse response "STATS")
 
 -- | The outcome of reading a server's 'stats' reply: its entries, or the
--- failure a listed key's bytes caused. It is thrown out of 'withSocket' so
--- that the connection it was read from is closed, and unwrapped afterwards.
+-- error of an empty or error line that a listed key's bytes caused. It is
+-- thrown out of 'withSocket' so that the connection it was read from is
+-- closed, and unwrapped afterwards.
 newtype StatsRead = StatsRead (Either MemcacheError StatResults)
   deriving Show
 

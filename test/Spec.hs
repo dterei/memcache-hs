@@ -858,14 +858,27 @@ main = hspec $ do
         mockRequests server `shouldReturn` ["stats cachedump 1 0\r\n", "mg victim v f c\r\n"]
         mockClosed server `shouldReturn` 1
 
-    -- An error on the reply's first line is a genuine reply from the server,
-    -- so it stays a server failure: out of retries it marks the server dead,
-    -- and a later request to it finds no server ready.
-    it "fails the server over an error on the stats reply's first line" $
+    -- A SERVER_ERROR on the reply's first line is the server's own reply, and
+    -- one that names no status, as here, is a server failure: out of retries
+    -- it marks the server dead, and a later request to it finds no server
+    -- ready.
+    it "fails the server over a SERVER_ERROR on the stats reply's first line" $
       withServerAndClientOpts
         Client.def { Client.optsServerRetries = 0, Client.optsDeadRetryDelay = 60000 }
         [MR "SERVER_ERROR x\r\n"] $ \_ client -> do
         Client.stats client Nothing `shouldThrow` isServerError
+        Client.get client "key" `shouldThrow` (== ClientError NoServersReady)
+
+    -- The entries that keys' line breaks add count towards the limit of
+    -- 262,144 entries like any others, so a dump they take over it fails the
+    -- server over, as any reply that is too long does. Here 2,900 keys of 181
+    -- bytes each hold 90 line breaks, so 2,900 items give 263,900 entries.
+    it "fails the server over a dump that keys' line breaks take over the entry limit" $ do
+      let item = "ITEM k" <> B.concat (replicate 90 "\nx") <> " [1 b; 0 s]\r\n"
+      withServerAndClientOpts
+        (slowStats Client.def { Client.optsServerRetries = 0, Client.optsDeadRetryDelay = 60000 })
+        [MR (B.concat (replicate 2900 item) <> "END\r\n")] $ \_ client -> do
+        Client.stats client (Just "cachedump 1 0") `shouldThrow` isBadLength
         Client.get client "key" `shouldThrow` (== ClientError NoServersReady)
 
     -- stats reads its reply a line at a time: a line that starts with VA is
