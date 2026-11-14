@@ -2384,7 +2384,9 @@ main = hspec $ do
       withMockServer [MR "OK\r\n"] $ \b ->
       -- Listing b first checks that servers are matched by host and port.
       withMockServer (refreshTo [a] ++ refreshTo [b, a] ++ noReplies) $ \cfg ->
-      withDiscovery Client.def $ \opts start _ -> do
+      -- With this time limit no refresh runs out of time on a slow machine,
+      -- which would shift the replies.
+      withDiscovery Client.def { Client.optsServerTimeout = 10000 } $ \opts start _ -> do
         client <- EC.newClient opts tenMs (endpoint cfg)
         Client.flush client Nothing
         start
@@ -2518,7 +2520,9 @@ main = hspec $ do
       -- With a reply left, b's mock waits on its connection until it closes.
       withMockServer [MR "OK\r\n", MR "OK\r\n"] $ \b ->
       withMockServer (refreshTo [a, b] ++ refreshTo [a] ++ noReplies) $ \cfg ->
-      withDiscovery Client.def $ \opts start made -> do
+      -- With this time limit no refresh runs out of time on a slow machine,
+      -- which would shift the replies.
+      withDiscovery Client.def { Client.optsServerTimeout = 10000 } $ \opts start made -> do
         client <- EC.newClient opts tenMs (endpoint cfg)
         Client.flush client Nothing
         initial <- Cluster.getServers client
@@ -2545,7 +2549,9 @@ main = hspec $ do
       withMockServer [MR "OK\r\n"] $ \a ->
       withMockServer [DelayMS 300 (MR "OK\r\n"), MR "OK\r\n"] $ \b ->
       withMockServer (refreshTo [a, b] ++ refreshTo [a] ++ noReplies) $ \cfg ->
-      withDiscovery Client.def $ \opts start _ -> do
+      -- With this time limit no refresh runs out of time on a slow machine,
+      -- which would shift the replies.
+      withDiscovery Client.def { Client.optsServerTimeout = 10000 } $ \opts start _ -> do
         client <- EC.newClient opts tenMs (endpoint cfg)
         initial <- Cluster.getServers client
         flushing <- async $ Client.flush client Nothing
