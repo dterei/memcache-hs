@@ -84,14 +84,13 @@ server it uses (and authenticates, if credentials are set) every time.
 around your whole program, a worker or a test, not around single requests.
 Each server's pool holds one connection by default (with resource-pool 0.3,
 one for each capability), so concurrent requests to the same server wait for
-each other; see
-[Architecture Notes](#architecture-notes) to allow more. The wait counts
-towards each attempt's `optsServerTimeout`. An attempt that runs out of time
-while still waiting is retried like any failed attempt, but if it was the last
-attempt, the operation fails with `Timeout` and the server isn't marked dead.
-An attempt that runs out of time afterwards, while opening, authenticating or
-using its connection, counts as a server failure, however long it waited
-first.
+each other; see [Architecture Notes](#architecture-notes) to allow more. The
+wait counts towards each attempt's `optsServerTimeout`. An attempt that runs
+out of time while still waiting is retried like any failed attempt, but if it
+was the last attempt, the operation fails with `Timeout` and the server isn't
+marked dead. An attempt that runs out of time afterwards, while opening,
+authenticating or using its connection, counts as a server failure, however
+long it waited first.
 
 A failed operation is retried, except that a request that mustn't be sent
 twice (`increment`, `decrement`, `append`, `prepend`, `add`, `delete`, and
@@ -231,9 +230,9 @@ to each server in batches, each batch over one pooled connection.
 
 By default each server's pool holds a single connection (`soNumResources = 1`;
 with resource-pool 0.3, one for each capability), so concurrent operations
-against the same server wait for each other. Raising
-`soNumResources` in the `ServerOptions` set through `optsServerOptions` allows
-concurrent operations without requiring a separate pool implementation.
+against the same server wait for each other. Raising `soNumResources` in the
+`ServerOptions` set through `optsServerOptions` allows concurrent operations
+without requiring a separate pool implementation.
 
 Either way, a pool is fine for now.
 
