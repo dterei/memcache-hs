@@ -1827,6 +1827,36 @@ main = hspec $ do
         timeout 1000000 (waitFor idle idleClosed) `shouldReturn` Just idle
         keepReachable client
 
+    -- quit closes each server's idle connections in turn, and a cancel that
+    -- arrives meanwhile must wait until every server's are closed. Here 450
+    -- connections to one listener and 50 to another are idle, and quit is
+    -- cancelled as soon as the first one to the first server is closed: most
+    -- are to that one, so that the cancel lands while quit closes those. As
+    -- in closeAll's test, the thread waits after quit. Without the mask in
+    -- 'Client.quit', the cancel ended quit before it got to the second
+    -- server, with any resource-pool version.
+    it "lets the caller interrupt quit while it closes every server's idle connections" $
+      withOpenFiles 1100 $ replicateM_ 3 $
+        withSilentListener $ \port1 idleClosed1 firstClosed ->
+        withSilentListener $ \port2 idleClosed2 _ -> do
+          let spec port = ServerSpec "127.0.0.1" (show port) Auth.NoAuth
+              opts = Client.def
+                { Client.optsServerOptions = Client.defaultServerOptions { Client.soNumResources = 450 } }
+          client <- Client.newClient [spec port1, spec port2] opts
+          [s1, s2] <- toList <$> Cluster.getServers client
+          fillPool s1 450
+          fillPool s2 50
+          running <- async $ Client.quit client >> threadDelay 3000000
+          timeout 5000000 (takeMVar firstClosed) `shouldReturn` Just ()
+          start <- getMonotonicTime
+          cancel running
+          end <- getMonotonicTime
+          (end - start) `shouldSatisfy` (< 1)
+          wait running `shouldThrow` (== AsyncCancelled)
+          timeout 1000000 (waitFor (450, 50) ((,) <$> idleClosed1 <*> idleClosed2))
+            `shouldReturn` Just (450, 50)
+          keepReachable client
+
     it "withClient returns the action's result and closes the connection" $
       withMockServer [MR "VA 3 f2 c7\r\nfoo\r\n", MR "VA 3 f2 c7\r\nbar\r\n"] $ \server -> do
         (client, result) <- Client.withClient [mockServerSpec server] Client.def $ \client ->

@@ -170,7 +170,7 @@ import qualified Data.ByteString.Char8     as C (split, unwords)
 import           Data.Default
 import           Data.Maybe                (fromMaybe, listToMaybe)
 import           Data.Word
-import           UnliftIO.Exception        (bracket, throwIO)
+import           UnliftIO.Exception        (bracket, throwIO, uninterruptibleMask_)
 
 -- | A Memcached cluster client.
 type Client = Cluster
@@ -206,8 +206,11 @@ newClient scs = newCluster $ if null scs then [defaultServerSpec] else scs
 -- same effect, while sending the command would mean first connecting to any
 -- server the client has no connection to. So 'quit' never connects to a
 -- server, returns promptly and doesn't throw, even when a server is down.
+-- Like 'closeAll', it can't be cut short by an asynchronous exception: one
+-- that arrives while it closes connections is delivered once every server's
+-- idle connections are closed.
 quit :: Client -> IO ()
-quit c = getServers c >>= mapM_ closeAll
+quit c = getServers c >>= uninterruptibleMask_ . mapM_ closeAll
 
 -- | Create a client with 'newClient', run an action with it, and close the
 -- client's connections with 'quit' when the action returns or throws.
