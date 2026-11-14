@@ -2,6 +2,7 @@
 
 module Main where
 
+import           FileLimit
 import           MockServer
 import           RoutingSpec
 import qualified Database.Memcache.Auth    as Auth
@@ -2815,10 +2816,12 @@ withLocalhostAddresses test = do
     hints = N.defaultHints { N.addrSocketType = N.Stream }
 
 -- | Run a test that has up to @n@ sockets open at once, or mark it pending
--- where the process can't open that many files, as under macOS's default
--- limit of 256.
+-- where the process can't open that many files. The soft limit on open files
+-- is raised first, by @n@ or as far as the hard limit allows: the usual ones,
+-- 1024 on Linux and 256 on macOS, are too low for these tests.
 withOpenFiles :: Int -> Expectation -> Expectation
 withOpenFiles n test = do
+  raiseFileLimit n
   opened <- newIORef []
   let open = N.socket N.AF_INET N.Stream N.defaultProtocol
         >>= \socket -> atomicModifyIORef' opened (\sockets -> (socket : sockets, ()))
