@@ -62,7 +62,10 @@ data ServerOptions
   = ServerOptions
   -- | Maximum number of pooled connections per stripe.
   { soNumResources :: Int
-  -- | Number of pool stripes.
+  -- | Number of pool stripes. With resource-pool 0.3, a pool has a stripe for
+  -- each capability instead, and each stripe holds up to 'soNumResources'
+  -- times 'soNumStripes' connections divided by the number of capabilities,
+  -- rounded up.
   , soNumStripes :: Int
 #if MIN_VERSION_resource_pool(0,4,0)
   -- | Connection keep-alive duration.
@@ -79,8 +82,8 @@ data ServerOptions
 -- * 'soNumStripes': 1
 -- * 'soKeepAlive': 300 seconds
 --
--- That is, at most one connection to each server, closed once it has been
--- idle for 300 seconds.
+-- That is, at most one connection to each server (with resource-pool 0.3, one
+-- for each capability), closed once it has been idle for 300 seconds.
 defaultServerOptions :: ServerOptions
 defaultServerOptions = ServerOptions
       { soNumResources = 1
