@@ -21,6 +21,7 @@ import           Network.Socket           (Family (AF_INET), SocketOption (Reuse
                                            setSocketOption, socket, socketPort,
                                            tupleToHostAddress)
 import qualified Network.Socket           as N
+import qualified Network.Socket.ByteString as NB
 import           System.Directory         (doesFileExist, findExecutable, getTemporaryDirectory,
                                            removeFile, removePathForcibly)
 import           System.Exit              (ExitCode)
@@ -241,25 +242,34 @@ integrationSpecs port = beforeAll (newClient port) $ do
     stats <- M.stats client Nothing
     stats `shouldSatisfy` not . all (null . snd)
 
-  it "closes the connection withClient opened" $ \client -> do
-    let connections = do
-          stats <- M.stats client Nothing
-          return [maybe 0 (read @Int . B.unpack) (lookup "curr_connections" s) | (_, s) <- stats]
-        -- memcached notices a closed connection asynchronously.
-        waitFor expected attempts = do
-          current <- connections
-          if current == expected || attempts <= (0 :: Int)
-            then current `shouldBe` expected
-            else threadDelay 10000 >> waitFor expected (attempts - 1)
-    initial <- connections
-    other <- M.withClient [ServerSpec "127.0.0.1" (show port) M.NoAuth] M.def $ \c -> do
-      _ <- M.version c
-      waitFor (map (+ 1) initial) 100
-      return c
-    waitFor initial 100
-    -- Using the client afterwards keeps it reachable, so the garbage collector
-    -- can't be what closed its connection.
-    M.quit other
+  -- Count connections over one socket kept open for the whole test, rather
+  -- than through stats: stats now closes the connection it used, which
+  -- memcached notices only asynchronously, so a stats call to count
+  -- connections left one of its own that the next count might still see.
+  it "closes the connection withClient opened" $ \_ ->
+    withConnectionCount port $ \count -> do
+      let -- memcached notices a closed connection asynchronously.
+          waitFor expected attempts = do
+            current <- count
+            if current == expected || attempts <= (0 :: Int)
+              then current `shouldBe` expected
+              else threadDelay 10000 >> waitFor expected (attempts - 1)
+          -- The count a previous test's closed connection leaves behind takes a
+          -- moment to clear, so read the baseline only once two readings agree.
+          settle attempts = do
+            a <- count
+            threadDelay 50000
+            b <- count
+            if a == b || attempts <= (0 :: Int) then return b else settle (attempts - 1)
+      initial <- settle 100
+      other <- M.withClient [ServerSpec "127.0.0.1" (show port) M.NoAuth] M.def $ \c -> do
+        _ <- M.version c
+        waitFor (initial + 1) 100
+        return c
+      waitFor initial 100
+      -- Using the client afterwards keeps it reachable, so the garbage
+      -- collector can't be what closed its connection.
+      M.quit other
 
   it "roundtrips a large value" $ \client -> do
     let value = B.replicate 100000 'x'
@@ -492,6 +502,32 @@ newClient port = do
 
 first :: (a, b, c) -> a
 first (value, _, _) = value
+
+-- | Run an action that can read memcached's @curr_connections@ over a single
+-- socket, opened before the action and closed after it. Counting connections
+-- this way keeps the counting itself from opening and closing connections,
+-- which memcached notices only asynchronously.
+withConnectionCount :: Int -> (IO Int -> IO a) -> IO a
+withConnectionCount port action = bracket open close $ \sock -> action (currConnections sock)
+ where
+  open = do
+    sock <- socket AF_INET Stream defaultProtocol
+    N.connect sock (N.SockAddrInet (fromIntegral port) (tupleToHostAddress (127, 0, 0, 1)))
+    return sock
+  -- Send a plain stats request and read its reply up to the END line.
+  currConnections sock = do
+    NB.sendAll sock "stats\r\n"
+    fromReply <$> recvToEnd sock ""
+  recvToEnd sock acc = do
+    chunk <- NB.recv sock 4096
+    if B.null chunk
+      then fail "memcached closed the stats connection"
+      else let reply = acc <> chunk
+           in if "END\r\n" `B.isSuffixOf` reply then return reply else recvToEnd sock reply
+  fromReply reply =
+    case [n | line <- B.lines reply, ["STAT", "curr_connections", n] <- [B.words line]] of
+      value:_ -> read (B.unpack value)
+      []      -> 0
 
 -- | Run an action against a memcached started with the given extra
 -- arguments on a free port.
