@@ -2825,7 +2825,9 @@ withSilentListener :: (N.PortNumber -> IO Int -> MVar () -> IO a) -> IO a
 withSilentListener action =
   bracket (N.socket N.AF_INET N.Stream N.defaultProtocol) N.close $ \listener -> do
     N.bind listener (N.SockAddrInet 0 (N.tupleToHostAddress (127, 0, 0, 1)))
-    N.listen listener N.maxListenQueue
+    -- Room in the queue for all the connections a test opens at once:
+    -- 'N.maxListenQueue' is only 128 on some systems.
+    N.listen listener 1024
     port <- N.socketPort listener
     accepted <- newIORef []
     idleClosed <- newIORef (0 :: Int)
