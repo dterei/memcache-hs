@@ -25,6 +25,7 @@ import Data.Bifunctor (first)
 import Data.ByteString (ByteString)
 import qualified Data.ByteString.Char8 as C
 import Data.Char (digitToInt, isAlphaNum, isAscii, isDigit, isPrint, showLitChar)
+import Data.List (sort)
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as T
@@ -107,13 +108,13 @@ newtype ConfigurationEndpoint
 -- throws v'ClientError' 'Timeout'. If the endpoint sends an error reply, such
 -- as the @ERROR@ that plain memcached sends as it has no @config@ command,
 -- this throws a @StringException@ from "UnliftIO.Exception", as it does for a
--- reply that can't be parsed, that lists more than 1,000 nodes, or that lists
--- a node that isn't a plain host and port: one whose host or port is empty,
--- or whose host has a character, such as @\/@, @?@ or @\@@, that would
--- change the port, add credentials or make the node a Unix socket on this
--- machine. If a reply goes on for more than 1 MiB without the line end or the
--- @END@ line that discovery is waiting for, this throws
--- v'Database.Memcache.Errors.ProtocolError'
+-- reply that can't be parsed, that lists more than 1,000 nodes or the same
+-- host and port twice, or that lists a node that isn't a plain host and port:
+-- one whose host or port is empty, or whose host has a character, such as
+-- @\/@, @?@ or @\@@, that would change the port, add credentials or make the
+-- node a Unix socket on this machine. If a reply goes on for more than 1 MiB
+-- without the line end or the @END@ line that discovery is waiting for, this
+-- throws v'Database.Memcache.Errors.ProtocolError'
 -- 'Database.Memcache.Errors.BadLength'.
 --
 -- Servers are made by calling 'optsServerSpecsToServers' with one node at a
@@ -134,9 +135,9 @@ newtype ConfigurationEndpoint
 -- could lead to a node that ElastiCache has since replaced, and get no reply.
 -- Each refresh has the same time and length limits as the first discovery. A
 -- refresh that fails, for example because it runs out of time or the reply is
--- an error, is too long, can't be parsed, lists no nodes or more than 1,000,
--- or lists a node that isn't a plain host and port, leaves the servers as
--- they are, and discovery tries again after the next interval.
+-- an error, is too long, can't be parsed, lists no nodes, more than 1,000 or
+-- one twice, or lists a node that isn't a plain host and port, leaves the
+-- servers as they are, and discovery tries again after the next interval.
 --
 -- N.B. The interval is in the same units as 'threadDelay'.
 newClient :: Options -> Int -> ConfigurationEndpoint -> IO Client
@@ -273,8 +274,16 @@ handleRawNodeInfo nodeInfo = do
   let count = T.count " " nodeInfo + 1
   when (count > maxNodes) $
     Left $ "Configuration lists " <> show count <> " nodes, over the limit of " <> show maxNodes
-  mapM parseEntry (T.splitOn " " nodeInfo)
+  nodes <- mapM parseEntry (T.splitOn " " nodeInfo)
+  -- A node listed twice would get a second server, at the same points on the
+  -- ring as the first, so that when the first is marked failed, its keys
+  -- would fall back to the same node rather than to another.
+  case listedTwice (sort [(ssHost spec, ssPort spec) | (spec, _) <- nodes]) of
+    (host, port) : _ -> Left $ "Node listed twice" `withDetail` (host <> ":" <> port)
+    [] -> pure nodes
   where
+    listedTwice sorted = [node | (node, next) <- zip sorted (drop 1 sorted), node == next]
+
     parseEntry t =
       case T.splitOn "|" t of
         [host, ip, port] -> do

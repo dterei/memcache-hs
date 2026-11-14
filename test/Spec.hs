@@ -2346,6 +2346,20 @@ main = hspec $ do
             \(StringException message _) -> message == "Configuration lists 1001 nodes, over the limit of 1000"
           filter (/= [mockServerSpec cfg]) <$> made `shouldReturn` []
 
+    -- A node listed twice would get a second server, which its keys would
+    -- fall back to when the first is marked failed. Nodes are told apart by
+    -- host and port, as a refresh does, whatever their IP addresses.
+    it "rejects a config that lists a node twice" $
+      withMockServer [MR "OK\r\n"] $ \a ->
+      withMockServer [MR "OK\r\n"] $ \b -> do
+        let node m ip = "127.0.0.1|" <> ip <> "|" <> C.pack (show (mockPort m))
+            config = configListing [node a "127.0.0.1", node b "127.0.0.1", node a "10.0.0.2"]
+        withMockServer [MR "VERSION 1.6.12\r\n", MR config, Noop] $ \cfg ->
+          withDiscovery Client.def $ \opts _ made -> do
+            EC.newClient opts hour (endpoint cfg) `shouldThrow`
+              \(StringException message _) -> message == "Node listed twice: 127.0.0.1:" <> show (mockPort a)
+            filter (/= [mockServerSpec cfg]) <$> made `shouldReturn` []
+
     -- When a request is never answered, discovery gives up once
     -- optsServerTimeout has passed. The limit is above the 750 ms default, so
     -- giving up no sooner than 1 s shows that the default was not used. The
@@ -2484,9 +2498,12 @@ main = hspec $ do
         Client.flush client Nothing
         mockRequests a `shouldReturn` ["flush_all\r\n"]
 
-    -- A refresh whose reply lists too many nodes fails before making a
-    -- server for any of them, and keeps the servers.
-    forM_ [("more than 1,000 nodes", manyNodes 1001)] $ \(problem, nodes) ->
+    -- A refresh whose reply lists too many nodes, or a node twice, fails
+    -- before making a server for any of them, and keeps the servers.
+    forM_
+      [ ("more than 1,000 nodes", manyNodes 1001)
+      , ("a node twice", ["dup.example|10.0.0.1|11211", "dup.example|10.0.0.2|11211"])
+      ] $ \(problem, nodes) ->
       it ("keeps the servers when a refresh lists " <> problem) $
         withMockServer [MR "OK\r\n"] $ \a ->
         withMockServer [MR "OK\r\n"] $ \b ->
