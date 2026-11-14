@@ -205,8 +205,9 @@ data Options = Options {
         -- retries are left. The server may have carried out the request, and
         -- a retry could apply it twice, or report failure because the first
         -- one succeeded (see 'keyedOpExpectingOnce'). So behind memcached's
-        -- proxy, one such request for a key on a failed backend marks the
-        -- whole proxy down.
+        -- proxy, a request for a key on a failed backend marks the whole
+        -- proxy down: at once if it mustn't be sent twice, and otherwise once
+        -- every attempt gets that reply.
         --
         -- Every other operation is retried after any failure, so the server
         -- may carry out its request more than once: gets, @touch@, @set@,
