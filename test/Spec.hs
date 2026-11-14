@@ -400,6 +400,31 @@ main = hspec $ do
     it "rejects an unterminated response line" $
       recvResponseFrom (C.replicate (16 * 1024) 'x') `shouldThrow` isBadLength
 
+  describe "idle check" $ do
+    -- A read can take more than the reply it is for. The rest then waits in
+    -- the connection's buffer, where the socket doesn't show it.
+    it "rejects bytes waiting in the connection's buffer" $
+      bracket (N.socketPair N.AF_UNIX N.Stream 0) closePair $ \(left, right) -> do
+        connection <- newConnection left
+        N.sendAll right "MN\r\nMN\r\n"
+        recvResponse connection `shouldReturn` Response "MN" [] ""
+        checkIdle connection `shouldThrow` isUnexpectedResponse
+        recvResponse connection `shouldReturn` Response "MN" [] ""
+        checkIdle connection
+
+    -- The check fails on a reset that nothing has read with the error that
+    -- reading would get, not as on a connection the server closed. The mock
+    -- answers the mn, then resets the connection.
+    it "reports a reset that nothing has read as an IOException" $ do
+      reset <- newEmptyMVar
+      withServerAndClient [ReplyThenReset "MN\r\n" reset] $ \_ client -> do
+        [s] <- toList <$> Cluster.getServers client
+        Server.withSocket s $ \c -> do
+          sendRaw c "mn\r\n"
+          recvResponse c `shouldReturn` Response "MN" [] ""
+          timeout 5000000 (takeMVar reset) `shouldReturn` Just ()
+          checkIdle c `shouldThrow` anyIOException
+
   describe "error messages" $ do
     let everyError detail =
           map OpError
@@ -1684,12 +1709,16 @@ main = hspec $ do
     -- memcached's idle_timeout leaves them, is closed instead, and that
     -- failure, before sending, is retried: the request is sent once, on a new
     -- connection, and the server isn't marked dead. Sent on the old one, it
-    -- would fail after it may have reached the server.
+    -- would fail after it may have reached the server. leaveThreeClosed reads
+    -- each connection, and a read that reports a reset leaves the connection
+    -- reading as closed, so here the check finds all three closed. The test
+    -- after this one leaves a reset that nothing has read.
     forM_
-      [ ("closed", \s -> leaveThreeClosed s "mn\r\n" isUnexpectedEOF)
-      , ("reset", \s -> leaveThreeClosed s "mn\r\nmn\r\n" anyIOException)
+      [ ("closed the idle ones", \s -> leaveThreeClosed s "mn\r\n" isUnexpectedEOF)
+      , ("reset the idle ones and the client has read the resets"
+        , \s -> leaveThreeClosed s "mn\r\nmn\r\n" anyIOException)
       ] $ \(ended, leaveThree) ->
-      it ("sends an increment once, on a new connection, when the server has " <> ended <> " the idle ones") $
+      it ("sends an increment once, on a new connection, when the server has " <> ended) $
         withServerAndClientOpts (threeConnections fast)
           [CloseConnection, CloseConnection, CloseConnection, MR "VA 1 c5\r\n6\r\n"] $ \server client -> do
             [s] <- toList <$> Cluster.getServers client
@@ -1697,6 +1726,22 @@ main = hspec $ do
             Client.increment client "key" 0 1 0 0 `shouldReturn` Just (6, 5)
             readIORef (Server.failed s) `shouldReturn` 0
             mockRequests server `shouldReturn` replicate 3 "mn\r\n" ++ ["ma key D1 MI v c N0 J0\r\n"]
+
+    -- Here the mock answers an mn on the connection and then resets it, as a
+    -- firewall or a load balancer may reset an idle connection, and the
+    -- connection goes back to the pool with the reset unread. Sent on it, the
+    -- increment would fail once it counts as sent, so it would be thrown and
+    -- the server marked dead. The increment must start only once the mock has
+    -- reset the connection, or it could be sent before the reset.
+    it "sends an increment once, on a new connection, when an unread reset is waiting on the idle one" $ do
+      reset <- newEmptyMVar
+      withServerAndClientOpts fast [ReplyThenReset "MN\r\n" reset, MR "VA 1 c5\r\n6\r\n"] $ \server client -> do
+        [s] <- toList <$> Cluster.getServers client
+        Server.withSocket s $ \c -> sendRaw c "mn\r\n" >> void (recvResponse c)
+        timeout 5000000 (takeMVar reset) `shouldReturn` Just ()
+        Client.increment client "key" 0 1 0 0 `shouldReturn` Just (6, 5)
+        readIORef (Server.failed s) `shouldReturn` 0
+        mockRequests server `shouldReturn` ["mn\r\n", "ma key D1 MI v c N0 J0\r\n"]
 
     -- Bytes waiting on an idle connection would be read as the reply to the
     -- next request, so that connection is closed too, before the request is
@@ -1711,6 +1756,20 @@ main = hspec $ do
         threadDelay 100000
         Client.increment client "key" 0 1 0 0 `shouldReturn` Just (6, 5)
         readIORef (Server.failed s) `shouldReturn` 0
+        mockRequests server `shouldReturn` ["mn\r\n", "ma key D1 MI v c N0 J0\r\n"]
+
+    -- Bytes can also wait in the connection's own buffer, where the socket
+    -- doesn't show them: an earlier read took them with the reply before
+    -- them. Here the mock answers one mn with two MNs, which the client reads
+    -- at once, and takes one as the reply. The mock sees the connection
+    -- closed before the increment reaches it, on a new one.
+    it "sends an increment once, on a new connection, when a reply is waiting in the idle one's buffer" $
+      withServerAndClientOpts fast [MR "MN\r\nMN\r\n", MR "VA 1 c5\r\n6\r\n"] $ \server client -> do
+        [s] <- toList <$> Cluster.getServers client
+        Server.withSocket s $ \c -> sendRaw c "mn\r\n" >> void (recvResponse c)
+        Client.increment client "key" 0 1 0 0 `shouldReturn` Just (6, 5)
+        readIORef (Server.failed s) `shouldReturn` 0
+        mockClosed server `shouldReturn` 1
         mockRequests server `shouldReturn` ["mn\r\n", "ma key D1 MI v c N0 J0\r\n"]
 
     -- A failure after sending that ends the operation still closes the
