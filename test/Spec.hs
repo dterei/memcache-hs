@@ -2287,11 +2287,15 @@ main = hspec $ do
           EC.newClient Client.def hour (endpoint cfg) `shouldThrow`
             \(StringException message _) -> message == expected
 
-    -- Other hosts change the node in other ways: "/" or "?" ends the host,
-    -- so the port is lost, and "@" makes credentials of what comes before
-    -- it. An empty host would be 127.0.0.1, and an empty port would fail
-    -- only at the first request.
-    forM_ [("h/x", "22122"), ("h?x", "22122"), ("u@h", "22122"), ("u:p@h", "22122"), ("", "11211"), ("h", "")] $
+    -- Other hosts change the node in other ways. "/" or "?" ends the host,
+    -- so the port is lost. The host is what follows "@", and what comes
+    -- before it is taken as credentials if it holds a user and a password.
+    -- An IPv6 address loses its brackets. An empty host would be 127.0.0.1,
+    -- and an empty port would fail only at the first request.
+    forM_
+      [ ("h/x", "22122"), ("h?x", "22122"), ("u@h", "22122"), ("u:p@h", "22122"), ("[::1]", "22122")
+      , ("", "11211"), ("h", "")
+      ] $
       \(host, port) -> do
         let node = host <> "|10.0.0.1|" <> port
         it ("won't take the node " <> show node) $

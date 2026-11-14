@@ -108,13 +108,15 @@ newtype ConfigurationEndpoint
 -- throws v'ClientError' 'Timeout'. If the endpoint sends an error reply, such
 -- as the @ERROR@ that plain memcached sends as it has no @config@ command,
 -- this throws a @StringException@ from "UnliftIO.Exception", as it does for a
--- reply that can't be parsed, that lists more than 1,000 nodes or the same
--- host and port twice, or that lists a node that isn't a plain host and port:
--- one whose host or port is empty, or whose host has a character, such as
--- @\/@, @?@ or @\@@, that would change the port, add credentials or make the
--- node a Unix socket on this machine. If a reply goes on for more than 1 MiB
--- without the line end or the @END@ line that discovery is waiting for, this
--- throws v'Database.Memcache.Errors.ProtocolError'
+-- reply that can't be parsed, a version of more than 64 bytes, and a
+-- configuration that lists more than 1,000 nodes, the same host and port
+-- twice, or a node that isn't a plain host and port: one whose host or port
+-- is empty, or whose host has a character, such as @\/@, @?@ or @\@@, that
+-- would change the host or port, add credentials or make the node a Unix
+-- socket on this machine. A host given as an IPv6 address in brackets is
+-- rejected too. If a reply goes on for more than 1 MiB without the line end
+-- or the @END@ line that discovery is waiting for, this throws
+-- v'Database.Memcache.Errors.ProtocolError'
 -- 'Database.Memcache.Errors.BadLength'.
 --
 -- Servers are made by calling 'optsServerSpecsToServers' with one node at a

@@ -289,7 +289,10 @@ recvRawUntil end s = go B.empty
 -- which lists each node as a host name (at most 253 bytes), an IP address and
 -- a port: at most about 300 bytes a node, so this holds over 3,000 nodes.
 -- ElastiCache allows 60 nodes in a Memcached cluster unless that quota is
--- raised.
+-- raised. A node can take as little as a few bytes, though, so discovery also
+-- refuses a configuration that lists more than 1,000 nodes (@maxNodes@ in
+-- "Database.Memcache.ElastiCacheClient"): that limit, not this one, bounds
+-- the servers it makes.
 maxRawLength :: Int
 maxRawLength = 1024 * 1024
 
