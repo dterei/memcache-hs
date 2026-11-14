@@ -194,7 +194,8 @@ data Options = Options {
         -- A request that mustn't be sent twice is retried only after a
         -- failure before any of it was sent: while waiting for a free
         -- connection, connecting or authenticating, or on finding that the
-        -- server has closed the connection. Those are @increment@,
+        -- server has closed or reset the connection, or that bytes from the
+        -- server are already waiting on it. Those are @increment@,
         -- @decrement@, @append@, @prepend@, @add@ and @delete@, and @cas@ and
         -- @replace@ with a version other than 0. Once the request may have
         -- reached the server, a failure such as a timeout, a network error,
@@ -575,10 +576,11 @@ keyedOpExpecting c operation codes = keyedOpWith c Resend (expectReply operation
 -- 'keyedOpExpecting'.
 --
 -- Before sending, the connection is checked, without waiting, for the server
--- having closed it, as memcached does to idle connections when it restarts
--- or after @-o idle_timeout@. Such a connection is closed, and as after any
--- failure before sending, the request is retried on another if retries are
--- left. With 'optsServerRetries' at 0, the failure is thrown instead, and the
+-- having closed or reset it, as memcached closes idle connections when it
+-- restarts or after @-o idle_timeout@, and for bytes from the server already
+-- waiting on it. Such a connection is closed, and as after any failure
+-- before sending, the request is retried on another if retries are left.
+-- With 'optsServerRetries' at 0, the failure is thrown instead, and the
 -- server is marked dead (see 'Database.Memcache.Socket.checkIdle').
 keyedOpExpectingOnce :: Cluster -> String -> [ByteString] -> Key -> (WireKey -> ByteString) -> IO Response
 {-# INLINE keyedOpExpectingOnce #-}
