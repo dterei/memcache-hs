@@ -305,7 +305,6 @@ handleRawNodeInfo nodeInfo = do
     -- the one that failed.
     parseNode :: HostName -> ServiceName -> Either String ServerSpec
     parseNode host port = first (`withDetail` uri) $ do
-      spec <- parseServerSpec uri
       -- A node is a host to reach over the network, on the port listed. The
       -- URI pastes the two together, so a host such as "h/x" or "h?x" would
       -- lose the port, one such as "u:p@h" would give the node credentials
@@ -315,11 +314,20 @@ handleRawNodeInfo nodeInfo = do
       -- an empty port would fail only at the first request. So the URI must
       -- give back the host and port listed, neither of them empty, and no
       -- credentials.
-      note "Node is not a plain host and port" $
+      --
+      -- No plain host or port holds an "@", so a node whose host or port
+      -- does is turned down before the URI is parsed, whatever
+      -- 'parseServerSpec' would make of the "@": its errors, such as those
+      -- about credentials, are for someone who wrote the URI, which no one
+      -- did here.
+      note notPlain $ guard $ notElem '@' (host <> port)
+      spec <- parseServerSpec uri
+      note notPlain $
         guard $ not (null host || null port) && spec == ServerSpec host port NoAuth
       pure spec
       where
         uri = "memcached://" <> host <> ":" <> port
+        notPlain = "Node is not a plain host and port"
 
 -- | The most nodes a configuration can list. ElastiCache allows 60 nodes in a
 -- Memcached cluster unless that quota is raised, so a reply that lists more

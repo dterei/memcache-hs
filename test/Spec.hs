@@ -2273,11 +2273,14 @@ main = hspec $ do
     -- Discovery makes memcached://<host>:<port> of each node line, so hosts
     -- such as these, whose "?" puts the port in the query, would make the
     -- node a Unix socket on this machine, of the endpoint's choosing. The
-    -- third gives its URI an empty port, which a socket can't have.
+    -- third gives its URI an empty port, which a socket can't have. The
+    -- fourth puts an "@" in the socket's path, and whatever parseServerSpec
+    -- makes of that, the error is that the node isn't a plain host and port.
     forM_
       [ ("/var/run/docker.sock?", "Node is not a plain host and port: memcached:///var/run/docker.sock?:11211")
       , ("u:p@/x.sock?", "Node is not a plain host and port: memcached://u:p@/x.sock?:11211")
       , (":/x.sock?", "A Unix socket path takes no port: memcached://:/x.sock?:11211")
+      , ("/a@b?", "Node is not a plain host and port: memcached:///a@b?:11211")
       ] $ \(host, expected) ->
       it ("won't take the node " <> C.unpack host <> " for a Unix socket") $ do
         let body = "1\n" <> host <> "|127.0.0.1|11211\n"
@@ -2291,10 +2294,13 @@ main = hspec $ do
     -- so the port is lost. The host is what follows "@", and what comes
     -- before it is taken as credentials if it holds a user and a password.
     -- An IPv6 address loses its brackets. An empty host would be 127.0.0.1,
-    -- and an empty port would fail only at the first request.
+    -- and an empty port would fail only at the first request. A host or port
+    -- with an "@" gets this error even where parseServerSpec would turn down
+    -- the credentials before the "@", as it does a user or password holding
+    -- a space, written %20.
     forM_
       [ ("h/x", "22122"), ("h?x", "22122"), ("u@h", "22122"), ("u:p@h", "22122"), ("[::1]", "22122")
-      , ("", "11211"), ("h", "")
+      , ("", "11211"), ("h", ""), ("u%20:p@h", "22122"), ("u", "p%20@h")
       ] $
       \(host, port) -> do
         let node = host <> "|10.0.0.1|" <> port
