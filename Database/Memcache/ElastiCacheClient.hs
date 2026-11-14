@@ -93,18 +93,22 @@ newtype ConfigurationEndpoint
 -- 'Database.Memcache.Errors.BadLength'.
 --
 -- Servers are made by calling 'optsServerSpecsToServers' with one node at a
--- time. A refresh keeps the 'Server', and so the connections and failure
--- state, of every node still listed with the same host and port, makes servers
--- only for new nodes, and closes the connections of nodes no longer listed:
--- idle ones at once, and one in use as soon as its request finishes. It closes
--- the connections of a node still listed with another IP address the same
--- way, as ElastiCache lists a node it has replaced, so that its requests
--- connect again, looking its name up afresh, rather than reach the node that
--- was replaced. Each refresh has the same time and length limits as the
--- first discovery. A refresh that fails, for example because it runs out of
--- time or the reply is an error, is too long, can't be parsed, lists no nodes
--- or lists a Unix socket, leaves the servers as they are, and discovery tries
--- again after the next interval.
+-- time. A refresh keeps the 'Server', and so the failure state, of every node
+-- still listed with the same host and port, and its connections too unless the
+-- node is listed with another IP address. It makes servers only for new nodes,
+-- and closes the connections of nodes no longer listed: idle ones at once, and
+-- one in use as soon as its request finishes. It closes the connections of a
+-- node listed with another IP address the same way, as ElastiCache lists a
+-- node it has replaced, so that its requests connect again, looking its name
+-- up afresh. If the name still resolves to the replaced node's address then,
+-- they connect to it, and later refreshes don't close those connections, as
+-- the listed address no longer changes.
+--
+-- Each refresh has the same time and length limits as the first discovery. A
+-- refresh that fails, for example because it runs out of time or the reply is
+-- an error, is too long, can't be parsed, lists no nodes or lists a Unix
+-- socket, leaves the servers as they are, and discovery tries again after the
+-- next interval.
 --
 -- N.B. The interval is in the same units as 'threadDelay'.
 newClient :: Options -> Int -> ConfigurationEndpoint -> IO Client
@@ -221,6 +225,7 @@ handleConfigGetClusterResponse bs = do
 -- Handle node information
 --
 -- Note that we chose to use the CNAME rather than the IP. The IP /may/ be missing. The CNAME will always be present.
+-- The IP is returned only to notice a node that ElastiCache has replaced.
 --
 -- See: https://docs.aws.amazon.com/AmazonElastiCache/latest/mem-ug/AutoDiscovery.AddingToYourClientLibrary.html#AutoDiscovery.AddingToYourClientLibrary.OutputFormat
 handleRawNodeInfo :: Text -> Either String [(ServerSpec, Text)]
