@@ -1776,9 +1776,10 @@ main = hspec $ do
     -- connections and never answers, 500 of them are idle in the pool, and
     -- the get is cancelled as soon as the first idle one is closed. Without
     -- the mask in 'Server.close', this fails with resource-pool 0.2, which
-    -- closes them unmasked, and with 0.3, which lets an exception in between
-    -- two stripes and has one for each capability. Now and then the cancel
-    -- lands only once they are all closed, so the test runs three times.
+    -- closes them unmasked, and with 0.3 on more than one capability: 0.3
+    -- has a stripe for each capability, and lets an exception in between two
+    -- of them. Now and then the cancel lands only once they are all closed,
+    -- so the test runs three times.
     it "lets the caller interrupt a failed request while it closes the idle connections" $
       withOpenFiles 1100 $ replicateM_ 3 $ withSilentListener $ \port idleClosed firstClosed -> do
         let idle = 500
@@ -1808,7 +1809,8 @@ main = hspec $ do
     -- The thread waits after closeAll, so that a cancel that lands once
     -- closeAll has returned still ends it at once, as one that closeAll lost
     -- wouldn't. Without the mask in 'Server.closeAll', this fails with
-    -- resource-pool 0.2 and 0.3, as the get's test does.
+    -- resource-pool 0.2, and with 0.3 on more than one capability, as the
+    -- get's test does.
     it "lets the caller interrupt closeAll while it closes the idle connections" $
       withOpenFiles 1100 $ replicateM_ 3 $ withSilentListener $ \port idleClosed firstClosed -> do
         let idle = 500
