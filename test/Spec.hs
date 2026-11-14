@@ -23,9 +23,9 @@ import qualified Data.ByteString.Char8     as C
 import           Data.Char                 (isAscii, isPrint)
 import qualified Network.Socket            as N
 import qualified Network.Socket.ByteString as N
-import           Control.Concurrent        (forkIO, getNumCapabilities, killThread, myThreadId,
-                                            newEmptyMVar, putMVar, readMVar, takeMVar,
-                                            threadDelay, tryPutMVar, yield)
+import           Control.Concurrent        (MVar, forkIO, getNumCapabilities, killThread,
+                                            myThreadId, newEmptyMVar, putMVar, readMVar,
+                                            takeMVar, threadDelay, tryPutMVar, yield)
 import           Control.Exception         (MaskingState (..), bracket, displayException, finally,
                                             getMaskingState, mask_, try)
 import           Control.Monad             (forM_, forever, replicateM_, void, when, (>=>))
@@ -1777,47 +1777,31 @@ main = hspec $ do
     -- the get is cancelled as soon as the first idle one is closed. Without
     -- the mask in 'Server.close', this fails with resource-pool 0.2, which
     -- closes them unmasked, and with 0.3, which lets an exception in between
-    -- two stripes and has one for each capability.
+    -- two stripes and has one for each capability. Now and then the cancel
+    -- lands only once they are all closed, so the test runs three times.
     it "lets the caller interrupt a failed request while it closes the idle connections" $
-      withOpenFiles 1100 $ bracket (N.socket N.AF_INET N.Stream N.defaultProtocol) N.close $ \listener -> do
+      withOpenFiles 1100 $ replicateM_ 3 $ withSilentListener $ \port idleClosed firstClosed -> do
         let idle = 500
-        N.bind listener loopbackAddress
-        N.listen listener (2 * idle)
-        port <- N.socketPort listener
-        accepted <- newIORef []
-        idleClosed <- newIORef (0 :: Int)
-        firstClosed <- newEmptyMVar
-        let serve connection = do
-              -- The client closes an idle connection without sending anything.
-              request <- N.recv connection 4096
-              when (B.null request) $ do
-                atomicModifyIORef' idleClosed (\n -> (n + 1, ()))
-                void $ tryPutMVar firstClosed ()
-            takeAll = forever $ do
-              (connection, _) <- N.accept listener
-              atomicModifyIORef' accepted (\earlier -> (connection : earlier, ()))
-              forkIO (serve connection)
-        bracket (forkIO takeAll) killThread $ \_ -> flip finally (readIORef accepted >>= mapM_ N.close) $ do
-          let opts = Client.def
-                { Client.optsServerTimeout = 200
-                , Client.optsFailRetryDelay = 3000
-                , Client.optsServerOptions = Client.defaultServerOptions { Client.soNumResources = idle + 1 } }
-          client <- Client.newClient [ServerSpec "127.0.0.1" (show port) Auth.NoAuth] opts
-          [s] <- toList <$> Cluster.getServers client
-          fillPool s (idle + 1)
-          running <- async $ Client.get client "key"
-          timeout 5000000 (takeMVar firstClosed) `shouldReturn` Just ()
-          start <- getMonotonicTime
-          cancel running
-          end <- getMonotonicTime
-          -- A lost cancel would let the get retry, 3 s later.
-          (end - start) `shouldSatisfy` (< 1)
-          wait running `shouldThrow` (== AsyncCancelled)
-          -- Each close reaches the listener within moments, whereas a
-          -- connection left open would be closed only by a later garbage
-          -- collection.
-          timeout 1000000 (waitFor idle (readIORef idleClosed)) `shouldReturn` Just idle
-          keepReachable client
+            opts = Client.def
+              { Client.optsServerTimeout = 200
+              , Client.optsFailRetryDelay = 3000
+              , Client.optsServerOptions = Client.defaultServerOptions { Client.soNumResources = idle + 1 } }
+        client <- Client.newClient [ServerSpec "127.0.0.1" (show port) Auth.NoAuth] opts
+        [s] <- toList <$> Cluster.getServers client
+        fillPool s (idle + 1)
+        running <- async $ Client.get client "key"
+        timeout 5000000 (takeMVar firstClosed) `shouldReturn` Just ()
+        start <- getMonotonicTime
+        cancel running
+        end <- getMonotonicTime
+        -- A lost cancel would let the get retry, 3 s later.
+        (end - start) `shouldSatisfy` (< 1)
+        wait running `shouldThrow` (== AsyncCancelled)
+        -- Each close reaches the listener within moments, whereas a
+        -- connection left open would be closed only by a later garbage
+        -- collection.
+        timeout 1000000 (waitFor idle idleClosed) `shouldReturn` Just idle
+        keepReachable client
 
     it "withClient returns the action's result and closes the connection" $
       withMockServer [MR "VA 3 f2 c7\r\nfoo\r\n", MR "VA 3 f2 c7\r\nbar\r\n"] $ \server -> do
@@ -2771,6 +2755,33 @@ withDiscovery opts test = do
   return result
   where
     ended status = status == ThreadFinished || status == ThreadDied
+
+-- | Run an action with a listener on 127.0.0.1 that takes every connection
+-- and never answers. The action is passed the listener's port, an action that
+-- counts the connections closed without sending anything, as the client
+-- closes an idle one, and an 'MVar' that is filled once the first of them is.
+-- The connections are closed when the action ends.
+withSilentListener :: (N.PortNumber -> IO Int -> MVar () -> IO a) -> IO a
+withSilentListener action =
+  bracket (N.socket N.AF_INET N.Stream N.defaultProtocol) N.close $ \listener -> do
+    N.bind listener (N.SockAddrInet 0 (N.tupleToHostAddress (127, 0, 0, 1)))
+    N.listen listener N.maxListenQueue
+    port <- N.socketPort listener
+    accepted <- newIORef []
+    idleClosed <- newIORef (0 :: Int)
+    firstClosed <- newEmptyMVar
+    let serve connection = do
+          -- The client closes an idle connection without sending anything.
+          request <- N.recv connection 4096
+          when (B.null request) $ do
+            atomicModifyIORef' idleClosed (\n -> (n + 1, ()))
+            void $ tryPutMVar firstClosed ()
+        takeAll = forever $ do
+          (connection, _) <- N.accept listener
+          atomicModifyIORef' accepted (\earlier -> (connection : earlier, ()))
+          forkIO (serve connection)
+    bracket (forkIO takeAll) killThread $ \_ ->
+      action port (readIORef idleClosed) firstClosed `finally` (readIORef accepted >>= mapM_ N.close)
 
 -- | Open @n@ connections to the server at once, then give them all back, so
 -- that they are idle in its pool. The threads that open them are spread over
