@@ -54,11 +54,17 @@ data ClientError
     -- failed, or the router ('Database.Memcache.Cluster.optsGetServerForKey')
     -- chose none.
     = NoServersReady
-    -- | An operation's last attempt ran out of time
-    -- ('Database.Memcache.Cluster.optsServerTimeout'): while waiting for a
-    -- free connection to the server, in which case that attempt sent nothing,
-    -- or while connecting, authenticating, sending the request or reading its
-    -- reply. ElastiCache discovery throws it too, when it runs out of time.
+    -- | The attempt that ended an operation ran out of time
+    -- ('Database.Memcache.Cluster.optsServerTimeout'): the last attempt, or,
+    -- for a request that is sent at most once, the attempt that had started
+    -- sending it. The attempt may have been waiting for a free connection to
+    -- the server, connecting, authenticating, sending a request or reading a
+    -- reply; the error doesn't say which. An attempt that only waited for its
+    -- first connection sent nothing, but for an operation that is retried
+    -- after any failure, an earlier attempt may have sent the request. The
+    -- server may have carried out any request that was sent.
+    -- 'Database.Memcache.ElastiCacheClient.newClient' also throws it when its
+    -- first discovery takes longer than the timeout.
     | Timeout
     -- | Credentials were rejected before being sent: they contain a
     -- forbidden delimiter, or the server is not in auth-file mode.
