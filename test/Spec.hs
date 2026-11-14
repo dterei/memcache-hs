@@ -2997,7 +2997,8 @@ waitFor expected action = do
 -- until the test runs the action it is passed. The test is also passed an
 -- action that lists the specs given to each call of the constructor, oldest
 -- first. The thread is killed when the test ends, as nothing else stops it,
--- and a test that passed then checks that the thread has ended.
+-- if it has called the constructor by then, and a test that passed then
+-- checks that the thread has ended.
 withDiscovery
   :: Client.Options -> (Client.Options -> IO () -> IO [[ServerSpec]] -> IO a) -> IO a
 withDiscovery opts test = do
@@ -3006,11 +3007,13 @@ withDiscovery opts test = do
   threads <- newIORef []
   calls <- newIORef []
   let makeServers serverOptions specs = do
-        atomicModifyIORef' calls (\earlier -> (specs : earlier, ()))
         thread <- myThreadId
-        when (thread /= me) $ do
-          atomicModifyIORef' threads (\ts -> (thread : ts, ()))
-          readMVar started
+        let discovery = thread /= me
+        -- Record the thread before its call, so that once a test has seen
+        -- the call, the thread is killed when the test ends.
+        when discovery $ atomicModifyIORef' threads (\ts -> (thread : ts, ()))
+        atomicModifyIORef' calls (\earlier -> (specs : earlier, ()))
+        when discovery $ readMVar started
         Client.optsServerSpecsToServers opts serverOptions specs
       -- The thread is recorded at each call it makes, but killed only once.
       discoveryThreads = nub <$> readIORef threads
