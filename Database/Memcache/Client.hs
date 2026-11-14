@@ -163,6 +163,7 @@ import           Database.Memcache.Server
 import           Database.Memcache.Socket
 import           Database.Memcache.Types
 
+import           Control.Exception         (uninterruptibleMask_)
 import           Control.Monad             (foldM, forM_, when)
 import           Data.ByteString           (ByteString)
 import qualified Data.ByteString           as B (any, empty, length, null, stripSuffix)
@@ -170,7 +171,7 @@ import qualified Data.ByteString.Char8     as C (split, unwords)
 import           Data.Default
 import           Data.Maybe                (fromMaybe, listToMaybe)
 import           Data.Word
-import           UnliftIO.Exception        (bracket, throwIO, uninterruptibleMask_)
+import           UnliftIO.Exception        (bracket, throwIO)
 
 -- | A Memcached cluster client.
 type Client = Cluster
