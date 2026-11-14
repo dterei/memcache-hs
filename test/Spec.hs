@@ -498,6 +498,18 @@ main = hspec $ do
       withClient [MR "VA 1 f0 c1 O0\r\na\r\n", Noop, MR "VA 1 f0 c1 O2\r\na\r\n", MR "MN\r\n"] $ \client ->
         Client.getMany client ["key", "other", "key"] `shouldReturn` [("key", ("a", 0, 1)), ("key", ("a", 0, 1))]
 
+    -- A batch is written whole before its replies are read, so it must be
+    -- small enough that the replies can't fill the socket buffers first,
+    -- which would leave both ends blocked until the attempt runs out of
+    -- time. A server's requests go in batches of at most 256, each ended by
+    -- an mn, and the opaques count on from one batch to the next.
+    it "closes a batch once it holds 256 requests" $
+      withServerAndClient
+        (replicate 256 Noop ++ [MR "MN\r\n"] ++ replicate 43 Noop ++ [MR "VA 1 f0 c1 O299\r\nv\r\n", MR "MN\r\n"]) $
+        \server client -> do
+          Client.getMany client batchKeys `shouldReturn` [("key299", ("v", 0, 1))]
+          batchEnds <$> mockRequests server `shouldReturn` [256, 301]
+
     it "reads a malformed CAS or flags as zero rather than wrapping them" $
       withClient [MR "VA 3 f2 c-1 O0\r\nfoo\r\n", MR "VA 3 f4294967298 c7 O1\r\nbar\r\n", MR "MN\r\n"] $ \client ->
         Client.getMany client ["one", "two"] `shouldReturn` [("one", ("foo", 2, 0)), ("two", ("bar", 0, 7))]
@@ -652,6 +664,16 @@ main = hspec $ do
             `shouldReturn` [("one", 1), ("two", 2), ("three", 3), ("four", 4)]
           map (== "mn\r\n") <$> mockRequests server `shouldReturn` [False, False, True, False, True, False, True]
 
+    -- As for getMany, a batch holds at most 256 requests, and the opaques
+    -- count on from one batch to the next.
+    it "closes a batch once it holds 256 requests" $ do
+      let stored i = MR ("HD c" <> asDecimal (i + 1) <> " O" <> asDecimal i <> "\r\n")
+      withServerAndClient
+        (map stored [0 .. 255 :: Int] ++ [MR "MN\r\n"] ++ map stored [256 .. 299 :: Int] ++ [MR "MN\r\n"]) $
+        \server client -> do
+          Client.setMany client [(key, "v", 0, 0) | key <- batchKeys] `shouldReturn` zip batchKeys [1 ..]
+          batchEnds <$> mockRequests server `shouldReturn` [256, 301]
+
     it "throws a reply other than stored, after reading the whole batch" $
       withMockServer
         [ MR "CLIENT_ERROR unauthenticated\r\n", MR "STORED\r\n"
@@ -684,6 +706,15 @@ main = hspec $ do
         Client.deleteMany client ["a1", "b1"] `shouldReturn` ()
         mockRequests a `shouldReturn` ["md a1 O0\r\n", "mn\r\n"]
         mockRequests b `shouldReturn` ["md b1 O1\r\n", "mn\r\n"]
+
+    -- As for getMany, a batch holds at most 256 requests.
+    it "closes a batch once it holds 256 requests" $ do
+      let deleted i = MR ("HD O" <> asDecimal i <> "\r\n")
+      withServerAndClient
+        (map deleted [0 .. 255 :: Int] ++ [MR "MN\r\n"] ++ map deleted [256 .. 299 :: Int] ++ [MR "MN\r\n"]) $
+        \server client -> do
+          Client.deleteMany client batchKeys `shouldReturn` ()
+          batchEnds <$> mockRequests server `shouldReturn` [256, 301]
 
     it "checks every key before sending anything" $
       withServerAndClient [MR "HD O0\r\n", MR "MN\r\n"] $ \server client -> do
@@ -2570,6 +2601,11 @@ main = hspec $ do
     fastFailover = Client.def { Client.optsFailRetryDelay = 10, Client.optsDeadRetryDelay = 60000 }
     -- One attempt per operation, and a server it marks dead is used again at once.
     oneAttempt = Client.def { Client.optsServerRetries = 0, Client.optsDeadRetryDelay = 0 }
+    -- 300 keys, more than a batch holds: a batch of 256, then one of 44.
+    batchKeys = [C.pack ("key" <> show i) | i <- [0 .. 299 :: Int]]
+    -- Where each batch ended among the requests the mock received: the
+    -- positions of the mn requests.
+    batchEnds requests = [i | (i, "mn\r\n") <- zip [0 :: Int ..] requests]
     -- The operations whose request mustn't be sent twice, each with a
     -- successful reply the mock would give a retry.
     sentOnce :: [(String, B.ByteString, Client.Client -> IO ())]
