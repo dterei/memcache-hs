@@ -2461,6 +2461,32 @@ main = hspec $ do
         -- done, rather than leave them open.
         waitFor 2 (mockClosed cfg) `shouldReturn` 2
 
+    -- Making b's server fails, so the first refresh fails after it has read
+    -- the endpoint's reply, with the connection back in the pool. The
+    -- refresh must close it all the same. Each connection to the endpoint
+    -- gets its own replies, and that one gets no more, so a refresh that
+    -- took it again would wait on it for longer than waitFor waits.
+    it "closes its connection to the endpoint when a refresh fails to make a server" $
+      withMockServer [MR "OK\r\n"] $ \a ->
+      withMockServer [MR "OK\r\n"] $ \b ->
+      withConcurrentMockServer
+          ( refreshTo [a]
+          : (refreshTo [a, b] ++ noReplies)
+          : repeat noReplies ) $ \cfg -> do
+        let failForB serverOptions specs
+              | specs == [mockServerSpec b] = ioError (userError "no server for b")
+              | otherwise = Client.optsServerSpecsToServers Client.def serverOptions specs
+            failing = Client.def
+              { Client.optsServerTimeout = 10000, Client.optsServerSpecsToServers = failForB }
+        withDiscovery failing $ \opts start made -> do
+          client <- EC.newClient opts tenMs (endpoint cfg)
+          start
+          waitFor 1 (mockClosed cfg) `shouldReturn` 1
+          -- The refresh failed at b's server, and kept a's.
+          filter (/= [mockServerSpec cfg]) <$> made
+            `shouldReturn` [[mockServerSpec a], [mockServerSpec b]]
+          length <$> Cluster.getServers client `shouldReturn` 1
+
     -- The order breaks ties on the ketama ring. Discovery used to sort the
     -- servers by sid, so both the first discovery and the refresh list the
     -- node with the higher sid first.
