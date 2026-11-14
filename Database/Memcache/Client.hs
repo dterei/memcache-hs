@@ -170,7 +170,7 @@ import qualified Data.ByteString.Char8     as C (split, unwords)
 import           Data.Default
 import           Data.Maybe                (fromMaybe, listToMaybe)
 import           Data.Word
-import           UnliftIO.Exception        (Exception, bracket, handle, throwIO)
+import           UnliftIO.Exception        (Exception, bracket, handle, throwIO, try)
 
 -- | A Memcached cluster client.
 type Client = Cluster
@@ -487,20 +487,29 @@ flush c e = do
 -- fails with 'BadLength'.
 --
 -- Some groups, such as @cachedump@, list keys as memcached stores them, and a
--- key can hold any bytes, a line break among them. Such a key ends the reply
--- early as 'stats' reads it: the entries after it are missing, or the request
--- fails. So that the rest of such a reply is never read as the reply to a
--- later request, 'stats' closes each connection it reads a reply from rather
--- than returning it to the pool.
+-- key can hold any bytes, a line break among them. 'stats' reads the reply a
+-- line at a time, so the bytes after a key's line break are read as a line of
+-- their own. Those bytes can split into entries the server never sent, end the
+-- reply early (so the entries after them are missing), or make the request
+-- fail. So that the rest of such a reply is never read as the reply to a later
+-- request, 'stats' closes each connection it reads a reply from rather than
+-- returning it to the pool. A failure a listed key's bytes cause is thrown at
+-- once, without resending the request or marking the server dead, since a
+-- resend would read the same key and fail again.
 stats :: Client -> Maybe Key -> IO [(Server, StatResults)]
-stats c key = validateStatsArgs key >> allOp' c (runStats key)
+stats c key = validateStatsArgs key >> allOp' c (runStats key) >>= mapM rethrow
   where
     -- 'withSocket' closes the connection when the function throws, so the
-    -- entries leave it as an exception, which is caught straight away.
-    runStats statsArgs server = handle (\(StatsRead values) -> return values) $
+    -- outcome of reading the reply leaves it as an exception, caught at once.
+    -- 'retryOp' then sees a success: a failure from a listed key's bytes
+    -- neither resends the request nor marks the server dead, and is rethrown
+    -- below once every server has answered.
+    runStats statsArgs server = handle (\(StatsRead result) -> return result) $
       withSocket server $ \socket -> do
         sendRaw socket (statsRequest statsArgs)
         collect socket 0 0 [] >>= throwIO . StatsRead
+
+    rethrow (server, result) = (,) server <$> either throwIO return result
 
     -- Arguments may contain spaces (@stats cachedump 1 100@), but control
     -- bytes would let a caller inject a second command line.
@@ -518,25 +527,35 @@ stats c key = validateStatsArgs key >> allOp' c (runStats key)
       when (count > maxStatsEntries || size > maxStatsBytes) $
         throwIO $ ProtocolError BadLength { protocolError = "stats reply too long" }
       line <- recvLine socket
-      response <- statsResponse line
-      let keep entry = collect socket (count + 1) (size + B.length line + 1) (entry : values)
-      case (responseCode response, responseTokens response) of
-        (code, _) | code `elem` ["ERROR", "CLIENT_ERROR", "SERVER_ERROR"] ->
-          responseStatus response >> failResponse response "STATS"
-        (code, _) | code `elem` ["END", "RESET", "OK"] -> return (reverse values)
-        ("STAT", field:value) -> keep (field, C.unwords value)
-        (code, tokens) -> keep (code, C.unwords tokens)
+      -- Split the line as 'recvResponse' does: on spaces alone, after removing
+      -- the CR that 'recvLine' leaves on it.
+      let tokens = filter (not . B.null) (C.split ' ' (fromMaybe line (B.stripSuffix "\r" line)))
+          keep entry = collect socket (count + 1) (size + B.length line + 1) (entry : values)
+          -- Only a reply's first line is a reply from the server. A later
+          -- empty or error line can only be a listed key's bytes carried past
+          -- its line break, so report it rather than fail the server over it.
+          keyBytes err
+            | count > 0 = return (Left err)
+            | otherwise = throwIO err
+      case tokens of
+        [] -> keyBytes (ProtocolError UnknownPkt { protocolError = "" })
+        code:rest
+          | code `elem` ["ERROR", "CLIENT_ERROR", "SERVER_ERROR"] ->
+              statsError (Response code rest B.empty) >>= keyBytes
+          | code `elem` ["END", "RESET", "OK"] -> return (Right (reverse values))
+          | otherwise -> case (code, rest) of
+              ("STAT", field:value) -> keep (field, C.unwords value)
+              _                     -> keep (code, C.unwords rest)
 
-    -- Split the line as 'recvResponse' does: on spaces alone, after removing
-    -- the CR that 'recvLine' leaves on it.
-    statsResponse line =
-      case filter (not . B.null) (C.split ' ' (fromMaybe line (B.stripSuffix "\r" line))) of
-        [] -> throwIO $ ProtocolError UnknownPkt { protocolError = "" }
-        code:tokens -> return (Response code tokens B.empty)
+    -- The error 'responseStatus' raises for an error reply line, captured so a
+    -- key's bytes can be reported rather than thrown straight away.
+    statsError response = either return rejected =<< try (responseStatus response)
+      where rejected _ = failResponse response "STATS"
 
--- | A server's 'stats' entries, thrown out of 'withSocket' so that it closes
--- the connection they were read from.
-newtype StatsRead = StatsRead StatResults
+-- | The outcome of reading a server's 'stats' reply: its entries, or the
+-- failure a listed key's bytes caused. It is thrown out of 'withSocket' so
+-- that the connection it was read from is closed, and unwrapped afterwards.
+newtype StatsRead = StatsRead (Either MemcacheError StatResults)
   deriving Show
 
 instance Exception StatsRead

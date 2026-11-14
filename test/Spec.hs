@@ -826,6 +826,47 @@ main = hspec $ do
           map snd <$> Client.stats client (Just "cachedump 1 0") `shouldReturn` [[("ITEM", "k")]]
           Client.get client "victim" `shouldReturn` Nothing
           mockRequests server `shouldReturn` ["stats cachedump 1 0\r\n", "mg victim v f c\r\n"]
+          mockClosed server `shouldReturn` 1
+
+    -- A cachedump key's bytes read as a line of their own after the key's line
+    -- break, so a key holding "k\nITEM forged [9 b; 0 s]" splits into two
+    -- entries, the second one the server never sent as an entry.
+    it "reads the bytes after a key's line break as further entries" $
+      withServerAndClient [MR "ITEM k\nITEM forged [9 b; 0 s] [1 b; 0 s]\r\nEND\r\n"] $ \_ client ->
+        map snd <$> Client.stats client (Just "cachedump 1 0")
+          `shouldReturn` [[("ITEM", "k"), ("ITEM", "forged [9 b; 0 s] [1 b; 0 s]")]]
+
+    -- A cachedump key whose bytes hold an empty line (here "k\n\ny") makes
+    -- stats read an empty line after the first entry. That can only be a key's
+    -- bytes, not a reply, so stats throws it at once: the request isn't sent
+    -- again and the server isn't marked dead, so a later request still reaches
+    -- it. The connection is closed all the same.
+    it "throws a cachedump key's empty line without a retry or a dead mark" $
+      withServerAndClient [MR "ITEM k\n\ny [1 b; 0 s]\r\nEND\r\n", MR "EN\r\n"] $ \server client -> do
+        Client.stats client (Just "cachedump 1 0") `shouldThrow` isUnknownPkt
+        Client.get client "victim" `shouldReturn` Nothing
+        mockRequests server `shouldReturn` ["stats cachedump 1 0\r\n", "mg victim v f c\r\n"]
+        mockClosed server `shouldReturn` 1
+
+    -- The same for a key whose bytes hold a SERVER_ERROR line: memcached never
+    -- sends one in the middle of a stats reply, so after the first entry it
+    -- can only be a key's bytes, thrown at once rather than failed over.
+    it "throws a cachedump key's SERVER_ERROR line without a retry or a dead mark" $
+      withServerAndClient [MR "ITEM k\nSERVER_ERROR x [1 b; 0 s]\r\nEND\r\n", MR "EN\r\n"] $ \server client -> do
+        Client.stats client (Just "cachedump 1 0") `shouldThrow` isServerError
+        Client.get client "victim" `shouldReturn` Nothing
+        mockRequests server `shouldReturn` ["stats cachedump 1 0\r\n", "mg victim v f c\r\n"]
+        mockClosed server `shouldReturn` 1
+
+    -- An error on the reply's first line is a genuine reply from the server,
+    -- so it stays a server failure: out of retries it marks the server dead,
+    -- and a later request to it finds no server ready.
+    it "fails the server over an error on the stats reply's first line" $
+      withServerAndClientOpts
+        Client.def { Client.optsServerRetries = 0, Client.optsDeadRetryDelay = 60000 }
+        [MR "SERVER_ERROR x\r\n"] $ \_ client -> do
+        Client.stats client Nothing `shouldThrow` isServerError
+        Client.get client "key" `shouldThrow` (== ClientError NoServersReady)
 
     -- stats reads its reply a line at a time: a line that starts with VA is
     -- an entry like any other, and each line is split as other replies are.
