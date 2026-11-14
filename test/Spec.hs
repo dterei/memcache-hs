@@ -1776,10 +1776,13 @@ main = hspec $ do
     -- connections and never answers, 500 of them are idle in the pool, and
     -- the get is cancelled as soon as the first idle one is closed. Without
     -- the mask in 'Server.close', this fails with resource-pool 0.2, which
-    -- closes them unmasked, and with 0.3 on more than one capability: 0.3
-    -- has a stripe for each capability, and lets an exception in between two
-    -- of them. Now and then the cancel lands only once they are all closed,
-    -- so the test runs three times.
+    -- closes them unmasked, and with 0.3, which has a stripe for each
+    -- capability and lets an exception in between two of them. It fails
+    -- reliably only on more than one capability, which the suite's +RTS -N
+    -- gives on a multi-core machine. On one, the get's thread nearly always
+    -- keeps the capability until it has closed them all, so the cancel lands
+    -- only then, whatever the version. On several, it still lands that late
+    -- now and then, so the test runs three times.
     it "lets the caller interrupt a failed request while it closes the idle connections" $
       withOpenFiles 1100 $ replicateM_ 3 $ withSilentListener $ \port idleClosed firstClosed -> do
         let idle = 500
@@ -1809,8 +1812,8 @@ main = hspec $ do
     -- The thread waits after closeAll, so that a cancel that lands once
     -- closeAll has returned still ends it at once, as one that closeAll lost
     -- wouldn't. Without the mask in 'Server.closeAll', this fails with
-    -- resource-pool 0.2, and with 0.3 on more than one capability, as the
-    -- get's test does.
+    -- resource-pool 0.2 and 0.3, but, like the get's test, reliably only on
+    -- more than one capability.
     it "lets the caller interrupt closeAll while it closes the idle connections" $
       withOpenFiles 1100 $ replicateM_ 3 $ withSilentListener $ \port idleClosed firstClosed -> do
         let idle = 500
@@ -1836,7 +1839,8 @@ main = hspec $ do
     -- are to that one, so that the cancel lands while quit closes those. As
     -- in closeAll's test, the thread waits after quit. Without the mask in
     -- 'Client.quit', the cancel ended quit before it got to the second
-    -- server, with any resource-pool version.
+    -- server, with any resource-pool version. Like the get's test, this one
+    -- catches that reliably only on more than one capability.
     it "lets the caller interrupt quit while it closes every server's idle connections" $
       withOpenFiles 1100 $ replicateM_ 3 $
         withSilentListener $ \port1 idleClosed1 firstClosed ->
