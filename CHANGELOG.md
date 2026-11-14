@@ -1,3 +1,44 @@
+# 0.4.2.1 - November 18th, 2026
+
+No API changes from 0.4.2.0.
+
+- `set`, `add`, `replace`, `cas`, `append` and `prepend` reject a value
+  larger than 1GiB, memcached's largest possible item size, with
+  `OpError ErrValueTooLarge` before sending anything. A value of about 2GiB
+  or more (longer than 2147483645 bytes) previously made memcached run the
+  value's bytes as commands, so storing untrusted data could run commands on
+  the server, and a value over 1GiB could time out, be sent again and mark
+  the server dead. Such a value no longer reaches the server, so it no
+  longer makes memcached delete the key's existing value, as memcached does
+  whenever it rejects a store as too large; a value within 1GiB but over the
+  server's own limit (`-I`, 1MiB by default) still does. Every operation
+  that sends a value now evaluates it first, before its timeout starts: an
+  exception it throws is no longer retried and no longer marks the server
+  dead, and time spent computing it no longer counts towards
+  `optsServerTimeout`. The request encoders in `Database.Memcache.Socket`
+  still encode a value of any length; don't send one longer than 1GiB.
+- memcached 1.6.10 or later is now required (previously documented as
+  1.6.0). memcached before 1.6.10 rejects the meta set command this library
+  stores values with, without reading the value that follows it, and then
+  runs the value's bytes as commands, so storing untrusted data could run
+  commands on the server. Each new connection now asks the server for its
+  version before it is used: until that check passes, the only requests sent
+  are the authentication exchange, when credentials are set, and `version`.
+  A server older than 1.6.10, or any other reply that is neither an error
+  nor a readable version, is refused with `ProtocolError (UnknownOp ...)`,
+  whose message quotes the reply; the connection is closed, and the refusal
+  is not retried and doesn't mark the server dead. An error reply, such as
+  `CLIENT_ERROR unauthenticated`, throws what it throws for any request, and
+  so does a reply that can't be parsed, such as an empty line or an overlong
+  one, which counts against the server. This covers ElastiCache discovery,
+  which now fails for a cluster running a memcached older than 1.6.10.
+  Through a proxy, the check sees only the proxy's version, so every
+  memcached behind it must be 1.6.10 or later too. Each new connection that
+  an operation opens takes one more round trip, which counts towards
+  `optsServerTimeout`. Connections made directly with
+  `Database.Memcache.Socket.newConnection` are not checked; send
+  `storeRequest` and `modifyRequest` only to 1.6.10 or later.
+
 # 0.4.2.0 - October 20th, 2026
 
 No API changes from 0.4.0.0. This is the first Hackage release since 0.4.0.0,
