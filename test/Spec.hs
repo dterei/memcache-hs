@@ -2436,6 +2436,29 @@ main = hspec $ do
         wait flushing
         waitFor 1 (mockClosed a) `shouldReturn` 1
 
+    -- The endpoint's name leads to one of the nodes, so once ElastiCache
+    -- replaces that node, a connection to the endpoint made before then may
+    -- get no reply. Each connection to the endpoint gets its own replies: the
+    -- first refresh's connection stops answering once that refresh is done,
+    -- and the next connection lists a with a new IP address. The time limit
+    -- is longer than waitFor waits, so a refresh that took the first
+    -- refresh's connection again would close a's connection too late.
+    it "connects to the endpoint afresh for each refresh" $
+      withMockServer [MR "OK\r\n", MR "OK\r\n"] $ \a ->
+      withConcurrentMockServer
+          ( refreshTo [a]
+          : (refreshTo [a] ++ noReplies)
+          : (refreshToAt "10.0.0.2" [a] ++ noReplies)
+          : repeat noReplies ) $ \cfg ->
+      withDiscovery Client.def { Client.optsServerTimeout = 10000 } $ \opts start _ -> do
+        client <- EC.newClient opts tenMs (endpoint cfg)
+        Client.flush client Nothing
+        start
+        waitFor 1 (mockClosed a) `shouldReturn` 1
+        -- The client closed the connections of both refreshes once they were
+        -- done, rather than leave them open.
+        waitFor 2 (mockClosed cfg) `shouldReturn` 2
+
     -- The order breaks ties on the ketama ring. Discovery used to sort the
     -- servers by sid, so both the first discovery and the refresh list the
     -- node with the higher sid first.

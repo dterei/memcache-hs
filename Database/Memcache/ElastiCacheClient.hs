@@ -104,6 +104,10 @@ newtype ConfigurationEndpoint
 -- they connect to it, and later refreshes don't close those connections, as
 -- the listed address no longer changes.
 --
+-- Each refresh connects to the endpoint afresh, looking its name up again, and
+-- closes that connection when it is done, whether it worked or not: the name
+-- leads to one of the nodes, so a connection kept from an earlier refresh
+-- could lead to a node that ElastiCache has since replaced, and get no reply.
 -- Each refresh has the same time and length limits as the first discovery. A
 -- refresh that fails, for example because it runs out of time or the reply is
 -- an error, is too long, can't be parsed, lists no nodes or lists a Unix
@@ -139,6 +143,12 @@ repeatAutoDiscover opts interval cfgEndpoint mVar initialNodes = do
         result <- tryAny $ do
           serverSpecs <- resolveClusterWithin opts cfgClient
           reuseServers opts nodes serverSpecs
+        -- Close the connection to the endpoint, whether the refresh worked or
+        -- not, so that the next refresh connects again, looking the
+        -- endpoint's name up afresh. The name leads to one of the nodes, and
+        -- once ElastiCache replaces that node, a connection made before then
+        -- may get no reply, so the next refresh would run out of time on it.
+        Client.quit cfgClient
         case result of
           Left _ -> refresh nodes
           Right (nodes', gone, moved) -> do
