@@ -23,13 +23,12 @@ import qualified Data.ByteString.Char8     as C
 import           Data.Char                 (isAscii, isPrint)
 import qualified Network.Socket            as N
 import qualified Network.Socket.ByteString as N
-import           Control.Concurrent        (forkIO, killThread, myThreadId, newEmptyMVar,
-                                            putMVar, readMVar, takeMVar, threadDelay,
-                                            tryPutMVar, yield)
+import           Control.Concurrent        (forkIO, getNumCapabilities, killThread, myThreadId,
+                                            newEmptyMVar, putMVar, readMVar, takeMVar,
+                                            threadDelay, tryPutMVar, yield)
 import           Control.Exception         (MaskingState (..), bracket, displayException, finally,
                                             getMaskingState, mask_, try)
-import           Control.Monad             (forM_, forever, replicateM, replicateM_, void, when,
-                                            (>=>))
+import           Control.Monad             (forM_, forever, replicateM_, void, when, (>=>))
 import           Data.Either               (isLeft, isRight)
 import           Data.Foldable             (toList)
 import           Data.IORef                (atomicModifyIORef', newIORef, readIORef,
@@ -39,8 +38,8 @@ import           GHC.Clock                 (getMonotonicTime)
 import           GHC.Conc                  (ThreadStatus (..), threadStatus)
 import           System.IO.Error           (isDoesNotExistError)
 import           System.Timeout            (timeout)
-import           UnliftIO.Async            (Async, AsyncCancelled (..), async, asyncThreadId,
-                                            cancel, mapConcurrently, wait)
+import           UnliftIO.Async            (Async, AsyncCancelled (..), async, asyncOn,
+                                            asyncThreadId, cancel, mapConcurrently, wait)
 import           UnliftIO.Exception        (StringException (..), tryIO)
 
 main :: IO ()
@@ -1775,8 +1774,10 @@ main = hspec $ do
     -- arrives meanwhile must end the operation, not be lost so that it
     -- retries, and must not leave any of them open. Here a listener takes
     -- connections and never answers, 500 of them are idle in the pool, and
-    -- the get is cancelled as soon as the first idle one is closed. Only
-    -- resource-pool 0.2.3.2 closes them unmasked, so only it could fail this.
+    -- the get is cancelled as soon as the first idle one is closed. Without
+    -- the mask in 'Server.close', this fails with resource-pool 0.2, which
+    -- closes them unmasked, and with 0.3, which lets an exception in between
+    -- two stripes and has one for each capability.
     it "lets the caller interrupt a failed request while it closes the idle connections" $
       withOpenFiles 1100 $ bracket (N.socket N.AF_INET N.Stream N.defaultProtocol) N.close $ \listener -> do
         let idle = 500
@@ -1803,14 +1804,7 @@ main = hspec $ do
                 , Client.optsServerOptions = Client.defaultServerOptions { Client.soNumResources = idle + 1 } }
           client <- Client.newClient [ServerSpec "127.0.0.1" (show port) Auth.NoAuth] opts
           [s] <- toList <$> Cluster.getServers client
-          -- Open idle + 1 connections at once, then give them all back.
-          arrived <- newIORef (0 :: Int)
-          release <- newEmptyMVar
-          holders <- replicateM (idle + 1) $ async $ Server.withSocket s $ \_ ->
-            atomicModifyIORef' arrived (\n -> (n + 1, ())) >> readMVar release
-          waitFor (idle + 1) (readIORef arrived) `shouldReturn` idle + 1
-          putMVar release ()
-          mapM_ wait holders
+          fillPool s (idle + 1)
           running <- async $ Client.get client "key"
           timeout 5000000 (takeMVar firstClosed) `shouldReturn` Just ()
           start <- getMonotonicTime
@@ -1823,6 +1817,7 @@ main = hspec $ do
           -- connection left open would be closed only by a later garbage
           -- collection.
           timeout 1000000 (waitFor idle (readIORef idleClosed)) `shouldReturn` Just idle
+          keepReachable client
 
     it "withClient returns the action's result and closes the connection" $
       withMockServer [MR "VA 3 f2 c7\r\nfoo\r\n", MR "VA 3 f2 c7\r\nbar\r\n"] $ \server -> do
@@ -2776,6 +2771,23 @@ withDiscovery opts test = do
   return result
   where
     ended status = status == ThreadFinished || status == ThreadDied
+
+-- | Open @n@ connections to the server at once, then give them all back, so
+-- that they are idle in its pool. The threads that open them are spread over
+-- the capabilities: with resource-pool 0.3, a pool has a stripe for each
+-- capability, whatever 'Client.soNumStripes' says, each holding an even share
+-- of the connections, and a thread uses its capability's stripe.
+fillPool :: Server.Server -> Int -> IO ()
+fillPool s n = do
+  capabilities <- getNumCapabilities
+  arrived <- newIORef (0 :: Int)
+  release <- newEmptyMVar
+  let hold = Server.withSocket s $ \_ ->
+        atomicModifyIORef' arrived (\k -> (k + 1, ())) >> readMVar release
+  holders <- mapM (\i -> asyncOn (i `mod` capabilities) hold) [1 .. n]
+  waitFor n (readIORef arrived) `shouldReturn` n
+  putMVar release ()
+  mapM_ wait holders
 
 -- | Wait until the thread is blocked, as when it waits for the pool. A thread
 -- that ends instead fails the test rather than hanging it.
