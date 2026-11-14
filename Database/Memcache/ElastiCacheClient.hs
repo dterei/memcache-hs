@@ -107,12 +107,13 @@ newtype ConfigurationEndpoint
 -- throws v'ClientError' 'Timeout'. If the endpoint sends an error reply, such
 -- as the @ERROR@ that plain memcached sends as it has no @config@ command,
 -- this throws a @StringException@ from "UnliftIO.Exception", as it does for a
--- reply that can't be parsed, or that lists a node that isn't a plain host
--- and port: one whose host or port is empty, or whose host has a character,
--- such as @\/@, @?@ or @\@@, that would change the port, add credentials or
--- make the node a Unix socket on this machine. If a reply goes on for more
--- than 1 MiB without the line end or the @END@ line that discovery is waiting
--- for, this throws v'Database.Memcache.Errors.ProtocolError'
+-- reply that can't be parsed, that lists more than 1,000 nodes, or that lists
+-- a node that isn't a plain host and port: one whose host or port is empty,
+-- or whose host has a character, such as @\/@, @?@ or @\@@, that would
+-- change the port, add credentials or make the node a Unix socket on this
+-- machine. If a reply goes on for more than 1 MiB without the line end or the
+-- @END@ line that discovery is waiting for, this throws
+-- v'Database.Memcache.Errors.ProtocolError'
 -- 'Database.Memcache.Errors.BadLength'.
 --
 -- Servers are made by calling 'optsServerSpecsToServers' with one node at a
@@ -133,9 +134,9 @@ newtype ConfigurationEndpoint
 -- could lead to a node that ElastiCache has since replaced, and get no reply.
 -- Each refresh has the same time and length limits as the first discovery. A
 -- refresh that fails, for example because it runs out of time or the reply is
--- an error, is too long, can't be parsed, lists no nodes or lists a node that
--- isn't a plain host and port, leaves the servers as they are, and discovery
--- tries again after the next interval.
+-- an error, is too long, can't be parsed, lists no nodes or more than 1,000,
+-- or lists a node that isn't a plain host and port, leaves the servers as
+-- they are, and discovery tries again after the next interval.
 --
 -- N.B. The interval is in the same units as 'threadDelay'.
 newClient :: Options -> Int -> ConfigurationEndpoint -> IO Client
@@ -267,7 +268,12 @@ handleConfigGetClusterResponse bs = do
 --
 -- See: https://docs.aws.amazon.com/AmazonElastiCache/latest/mem-ug/AutoDiscovery.AddingToYourClientLibrary.html#AutoDiscovery.AddingToYourClientLibrary.OutputFormat
 handleRawNodeInfo :: Text -> Either String [(ServerSpec, Text)]
-handleRawNodeInfo = mapM parseEntry . T.splitOn " "
+handleRawNodeInfo nodeInfo = do
+  -- Count the nodes before parsing any of them.
+  let count = T.count " " nodeInfo + 1
+  when (count > maxNodes) $
+    Left $ "Configuration lists " <> show count <> " nodes, over the limit of " <> show maxNodes
+  mapM parseEntry (T.splitOn " " nodeInfo)
   where
     parseEntry t =
       case T.splitOn "|" t of
@@ -295,6 +301,16 @@ handleRawNodeInfo = mapM parseEntry . T.splitOn " "
       pure spec
       where
         uri = "memcached://" <> host <> ":" <> port
+
+-- | The most nodes a configuration can list. ElastiCache allows 60 nodes in a
+-- Memcached cluster unless that quota is raised, so a reply that lists more
+-- than this comes from a broken or hostile endpoint. Without a limit, a reply
+-- well inside the 1 MiB that discovery reads could list over 100,000 nodes of
+-- a few bytes each, and discovery would make a server, with its pool of
+-- connections, for each one, and the first request would wait while the ring
+-- that routes keys was built, with 160 points for each node.
+maxNodes :: Int
+maxNodes = 1000
 
 -- This is the first version within which the /memcache/ engine on /ElastiCache/ uses the custom /config/ command.
 --

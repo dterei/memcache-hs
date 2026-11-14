@@ -2332,6 +2332,20 @@ main = hspec $ do
           timeout 5000000 (EC.newClient Client.def hour (endpoint cfg)) `shouldThrow`
             \(StringException message _) -> message == expected
 
+    -- ElastiCache allows far fewer nodes in a cluster. A config reply of
+    -- 300 KB can list 10,000, and discovery would make a server for each,
+    -- and then the first request would wait seconds for the ring that routes
+    -- keys. Discovery counts the nodes before it makes any server.
+    it "takes a config listing 1,000 nodes, but not 1,001" $ do
+      withMockServer [MR "VERSION 1.6.12\r\n", MR (configListing (manyNodes 1000))] $ \cfg -> do
+        client <- EC.newClient Client.def hour (endpoint cfg)
+        length <$> Cluster.getServers client `shouldReturn` 1000
+      withMockServer [MR "VERSION 1.6.12\r\n", MR (configListing (manyNodes 1001)), Noop] $ \cfg ->
+        withDiscovery Client.def $ \opts _ made -> do
+          EC.newClient opts hour (endpoint cfg) `shouldThrow`
+            \(StringException message _) -> message == "Configuration lists 1001 nodes, over the limit of 1000"
+          filter (/= [mockServerSpec cfg]) <$> made `shouldReturn` []
+
     -- When a request is never answered, discovery gives up once
     -- optsServerTimeout has passed. The limit is above the 750 ms default, so
     -- giving up no sooner than 1 s shows that the default was not used. The
@@ -2469,6 +2483,27 @@ main = hspec $ do
         length <$> Cluster.getServers client `shouldReturn` 1
         Client.flush client Nothing
         mockRequests a `shouldReturn` ["flush_all\r\n"]
+
+    -- A refresh whose reply lists too many nodes fails before making a
+    -- server for any of them, and keeps the servers.
+    forM_ [("more than 1,000 nodes", manyNodes 1001)] $ \(problem, nodes) ->
+      it ("keeps the servers when a refresh lists " <> problem) $
+        withMockServer [MR "OK\r\n"] $ \a ->
+        withMockServer [MR "OK\r\n"] $ \b ->
+        withMockServer (refreshTo [a]
+            ++ [MR "VERSION 1.6.12\r\n", MR (configListing nodes)]
+            ++ refreshTo [a, b]
+            ++ noReplies) $ \cfg ->
+        -- With this time limit no refresh runs out of time on a slow machine,
+        -- which would shift the replies.
+        withDiscovery Client.def { Client.optsServerTimeout = 10000 } $ \opts start made -> do
+          client <- EC.newClient opts tenMs (endpoint cfg)
+          start
+          waitFor 2 (length <$> Cluster.getServers client) `shouldReturn` 2
+          -- Servers were made for a when the client was created and for b at
+          -- the last refresh, and for no node of the refresh between them.
+          filter (/= [mockServerSpec cfg]) <$> made
+            `shouldReturn` [[mockServerSpec a], [mockServerSpec b]]
 
     it "keeps the connections of nodes still listed" $
       withMockServer [MR "OK\r\n", MR "OK\r\n"] $ \a ->
@@ -2800,6 +2835,8 @@ main = hspec $ do
       in C.pack (show (B.length body)) <> "\r\n" <> body <> "\r\n"
     -- A version reply of 32,000 numbers, 64,009 bytes long.
     longVersion = "VERSION " <> C.intercalate "." (replicate 32000 "1") <> "\r\n"
+    -- Node entries for n nodes, each with a name of its own.
+    manyNodes n = ["node" <> C.pack (show i) <> ".example|10.0.0.1|11211" | i <- [1 .. n :: Int]]
     -- A config reply listing the given node entries, each host|IP|port.
     configListing entries =
       let body = "1\n" <> C.unwords entries <> "\n"
