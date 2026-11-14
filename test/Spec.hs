@@ -1803,6 +1803,30 @@ main = hspec $ do
         timeout 1000000 (waitFor idle idleClosed) `shouldReturn` Just idle
         keepReachable client
 
+    -- closeAll closes the idle connections the same way, and a cancel that
+    -- arrives meanwhile mustn't be lost or leave any of them open either.
+    -- The thread waits after closeAll, so that a cancel that lands once
+    -- closeAll has returned still ends it at once, as one that closeAll lost
+    -- wouldn't. Without the mask in 'Server.closeAll', this fails with
+    -- resource-pool 0.2 and 0.3, as the get's test does.
+    it "lets the caller interrupt closeAll while it closes the idle connections" $
+      withOpenFiles 1100 $ replicateM_ 3 $ withSilentListener $ \port idleClosed firstClosed -> do
+        let idle = 500
+            opts = Client.def
+              { Client.optsServerOptions = Client.defaultServerOptions { Client.soNumResources = idle } }
+        client <- Client.newClient [ServerSpec "127.0.0.1" (show port) Auth.NoAuth] opts
+        [s] <- toList <$> Cluster.getServers client
+        fillPool s idle
+        running <- async $ Server.closeAll s >> threadDelay 3000000
+        timeout 5000000 (takeMVar firstClosed) `shouldReturn` Just ()
+        start <- getMonotonicTime
+        cancel running
+        end <- getMonotonicTime
+        (end - start) `shouldSatisfy` (< 1)
+        wait running `shouldThrow` (== AsyncCancelled)
+        timeout 1000000 (waitFor idle idleClosed) `shouldReturn` Just idle
+        keepReachable client
+
     it "withClient returns the action's result and closes the connection" $
       withMockServer [MR "VA 3 f2 c7\r\nfoo\r\n", MR "VA 3 f2 c7\r\nbar\r\n"] $ \server -> do
         (client, result) <- Client.withClient [mockServerSpec server] Client.def $ \client ->
