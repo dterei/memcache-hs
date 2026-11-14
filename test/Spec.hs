@@ -2245,6 +2245,24 @@ main = hspec $ do
         timeout 5000000 (EC.newClient Client.def hour (endpoint cfg)) `shouldThrow`
           \(StringException message _) -> message == "Unrecognized number of lines: 1"
 
+    -- The endpoint's text goes into these errors escaped, and cut to its
+    -- first 200 characters, as displayException does for a MemcacheError, so
+    -- that it can't break the lines of a log.
+    forM_
+      [ ("an error reply", MR "SERVER_ERROR x\ESC[2J\nforged log line\r\n",
+          "Configuration endpoint replied: SERVER_ERROR x\\ESC[2J\\nforged log line")
+      , ("a long error reply", MR ("SERVER_ERROR " <> C.replicate 1000 'x' <> "\r\n"),
+          "Configuration endpoint replied: SERVER_ERROR " <> replicate 187 'x' <> "...")
+      , ("a malformed node", MR (configListing ["a\ESCb|127.0.0.1|11211"]),
+          "Not a valid URI: memcached://a\\ESCb:11211")
+      , ("node info it can't split", MR (configListing ["a|\tb"]),
+          "Unrecognized components in node info: a|\\tb")
+      ] $ \(what, reply, expected) ->
+      it ("escapes and shortens the endpoint's text in the error for " <> what) $
+        withMockServer [MR "VERSION 1.6.12\r\n", reply, Noop] $ \cfg ->
+          timeout 5000000 (EC.newClient Client.def hour (endpoint cfg)) `shouldThrow`
+            \(StringException message _) -> message == expected
+
     -- When a request is never answered, discovery gives up once
     -- optsServerTimeout has passed. The limit is above the 750 ms default, so
     -- giving up no sooner than 1 s shows that the default was not used. The
@@ -2711,6 +2729,10 @@ main = hspec $ do
       let node n = "127.0.0.1|" <> ip <> "|" <> C.pack (show (mockPort n))
           body = "1\n" <> C.unwords (map node nodes) <> "\n"
       in C.pack (show (B.length body)) <> "\r\n" <> body <> "\r\n"
+    -- A config reply listing the given node entries, each host|IP|port.
+    configListing entries =
+      let body = "1\n" <> C.unwords entries <> "\n"
+      in "CONFIG cluster 0 " <> C.pack (show (B.length body)) <> "\r\n" <> body <> "\r\nEND\r\n"
     -- The config endpoint's replies to one discovery of the given nodes,
     -- whether it creates a client or refreshes one.
     refreshTo = refreshToAt "127.0.0.1"

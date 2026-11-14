@@ -24,6 +24,7 @@ import Control.Monad (guard, when)
 import Data.Bifunctor (first)
 import Data.ByteString (ByteString)
 import qualified Data.ByteString.Char8 as C
+import Data.Char (isAscii, isPrint, showLitChar)
 import qualified Data.List.NonEmpty as NE
 import Data.Text (Text)
 import qualified Data.Text as T
@@ -67,7 +68,7 @@ parseVersion = interpretParseResults . delegateParse . C.unpack . C.dropEnd (C.l
       let tail' = NE.last results
       case tail' of
         (version, "") -> pure version
-        (_, rest) -> Left $ "eof expected. Got: " <> rest
+        (_, rest) -> Left $ "eof expected. Got" `withDetail` rest
 
 -- | A validated ElastiCache configuration endpoint.
 --
@@ -254,7 +255,7 @@ handleRawNodeInfo = mapM parseEntry . T.splitOn " "
     -- Node addresses come from the server and hold no credentials, so name
     -- the one that failed.
     parseNode :: String -> Either String ServerSpec
-    parseNode uri = first (<> (": " <> uri)) $ do
+    parseNode uri = first (`withDetail` uri) $ do
       spec <- parseServerSpec uri
       -- A node is a host to reach over the network. A host such as
       -- "/var/run/docker.sock?" makes a URI whose path is a Unix socket,
@@ -268,7 +269,7 @@ handleRawNodeInfo = mapM parseEntry . T.splitOn " "
     convertToUri t =
       case T.splitOn "|" t of
         [host, ip, port] -> pure ("memcached://" <> host <> ":" <> port, ip)
-        xs -> Left $ "Unrecognized components in node info: " <> show xs
+        _ -> Left $ "Unrecognized components in node info" `withDetail` T.unpack t
 
 -- This is the first version within which the /memcache/ engine on /ElastiCache/ uses the custom /config/ command.
 --
@@ -308,7 +309,7 @@ recvConfigReply socket = do
   line <- recvRawUntil crlf socket
   let text = C.dropEnd (C.length crlf) line
   when (C.takeWhile (/= ' ') text `elem` ["ERROR", "CLIENT_ERROR", "SERVER_ERROR"]) $
-    throwString $ "Configuration endpoint replied: " <> C.unpack text
+    throwString $ "Configuration endpoint replied" `withDetail` C.unpack text
   -- Otherwise read through the first END. This line can end with it: when
   -- the cluster key is missing, the reply is the END line alone.
   if end `C.isSuffixOf` line
@@ -319,3 +320,19 @@ recvConfigReply socket = do
 
 unTry :: Either String a -> IO a
 unTry = either throwString pure
+
+-- | Append a detail, which may hold text the endpoint sent, keeping the
+-- message on one line of ASCII, as 'displayException' does for a
+-- 'MemcacheError': characters outside printable ASCII and backslashes are
+-- escaped as in a Haskell string literal, and only the first 200 characters
+-- are kept.
+withDetail :: String -> String -> String
+withDetail problem "" = problem
+withDetail problem detail = problem <> ": " <> escape kept <> ellipsis
+  where
+    (kept, rest) = splitAt 200 detail
+    ellipsis = if null rest then "" else "..."
+    escape = foldr escapeChar ""
+    escapeChar c
+      | isAscii c && isPrint c && c /= '\\' = (c :)
+      | otherwise = showLitChar c
