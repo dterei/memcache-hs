@@ -605,15 +605,32 @@ main = hspec $ do
     -- A SERVER_ERROR whose text names no status, as memcached's proxy sends
     -- when a backend fails, is a server failure in a batch too: the batch is
     -- sent again on a new connection, and the retry's success leaves the
-    -- server alive. The mock reads the first attempt's mn, then closes the
-    -- connection.
+    -- server alive. The mock answers the first attempt's mn, as the proxy
+    -- does, and keeps the connection open, so only the SERVER_ERROR can make
+    -- the client send the batch again.
     it "sends the batch again after a server error" $
       withServerAndClientOpts fastFailover
-        [MR "SERVER_ERROR backend failure\r\n", CloseConnection, Noop, MR "VA 1 c5 O0\r\nv\r\nMN\r\n"] $
+        [MR "SERVER_ERROR backend failure\r\n", MR "MN\r\n", Noop, MR "VA 1 c5 O0\r\nv\r\nMN\r\n"] $
         \server client -> do
           Client.getMany client ["key"] `shouldReturn` [("key", ("v", 0, 5))]
           mockRequests server `shouldReturn`
             ["mg key v f c q O0\r\n", "mn\r\n", "mg key v f c q O0\r\n", "mn\r\n"]
+          [s] <- toList <$> Cluster.getServers client
+          readIORef (Server.failed s) `shouldReturn` 0
+
+    -- The proxy goes on to answer the batch's other keys and its mn. Here
+    -- only the first key's backend has failed, so the second key's hit
+    -- follows the SERVER_ERROR. The whole batch must still be sent again,
+    -- and the result is the retry's.
+    it "sends the whole batch again after a server error for one of its keys" $
+      withServerAndClientOpts fastFailover
+        [ MR "SERVER_ERROR backend failure\r\n", Noop, MR "VA 1 c1 O1\r\nw\r\nMN\r\n"
+        , Noop, Noop, MR "VA 1 c5 O0\r\nv\r\nVA 1 c1 O1\r\nw\r\nMN\r\n" ] $
+        \server client -> do
+          Client.getMany client ["a", "b"] `shouldReturn` [("a", ("v", 0, 5)), ("b", ("w", 0, 1))]
+          mockRequests server `shouldReturn`
+            [ "mg a v f c q O0\r\n", "mg b v f c q O1\r\n", "mn\r\n"
+            , "mg a v f c q O0\r\n", "mg b v f c q O1\r\n", "mn\r\n" ]
           [s] <- toList <$> Cluster.getServers client
           readIORef (Server.failed s) `shouldReturn` 0
 
