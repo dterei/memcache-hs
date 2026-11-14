@@ -24,13 +24,15 @@ import Control.Monad (guard, when)
 import Data.Bifunctor (first)
 import Data.ByteString (ByteString)
 import qualified Data.ByteString.Char8 as C
-import Data.Char (digitToInt, isAlphaNum, isAscii, isDigit, isPrint, showLitChar)
+import Data.Char (isAscii, isPrint, showLitChar)
 import Data.List (sort)
+import qualified Data.List.NonEmpty as NE
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as T
 import qualified Data.Vector as V
-import Data.Version (Version (Version), makeVersion)
+import Data.Version (Version, makeVersion)
+import qualified Data.Version as Version
 import Database.Memcache.Client (Client, optsServerSpecsToServers, optsServerOptions, optsServerTimeout)
 import qualified Database.Memcache.Client as Client
 import Database.Memcache.Cluster (Options, getServers, setServers)
@@ -42,6 +44,7 @@ import Database.Memcache.Types.ServerSpec (ServerSpec (..), parseServerSpec)
 import Database.Memcache.Util (note)
 import Network.Socket (HostName, ServiceName)
 import System.Timeout (timeout)
+import Text.ParserCombinators.ReadP (readP_to_S)
 import UnliftIO.Exception (bracket, throwIO, throwString, tryAny, uninterruptibleMask_)
 
 -- | Parse an ElastiCache configuration endpoint.
@@ -59,31 +62,26 @@ parseConfigurationEndpoint url = do
 -- https://github.com/memcached/memcached/blob/77709d04dd4fc7d59f59425802cb9645b2cfe0f8/doc/protocol.txt#L1805-L1812
 -- ByteString format: "VERSION <version>\r\n"
 --
--- The version is read by hand, as 'Data.Version.parseVersion' reads it:
--- numbers separated by dots, then any tags, each a dash and letters or
--- digits, as in @1.6.12@ or @1.6.24-15-g1a2b3c4@. But a version longer than
--- 'maxVersionLength' bytes, or with a number of more than 9 digits, is an
--- error. The endpoint can send a line of up to 1 MiB, and on a long version
--- 'Data.Version.parseVersion' takes time that grows faster than the square of
--- its length, which the time limit on discovery can't interrupt while the
--- caller has asynchronous exceptions masked.
+-- The version only chooses the request for the cluster configuration, and is
+-- read leniently, with 'Data.Version.parseVersion': the line's first 8 bytes
+-- aren't checked, and a number too large for an 'Int' wraps around. But a
+-- version longer than 'maxVersionLength' bytes is an error before it is
+-- parsed: 'readP_to_S' gives every partial parse of a dotted version, so the
+-- parse takes time that grows faster than the square of the version's
+-- length. The endpoint can send a line of up to 1 MiB, and the time limit on
+-- discovery can't interrupt the parse while the caller has asynchronous
+-- exceptions masked.
 parseVersion :: ByteString -> Either String Version
 parseVersion line = note ("Unrecognized version reply" `withDetail` C.unpack text) $ do
-  version <- C.stripPrefix "VERSION " text
+  let version = C.drop (C.length "VERSION ") text
   guard $ C.length version <= maxVersionLength
-  let (numbers, suffix) = C.break (== '-') version
-  branch <- traverse readNumber (C.split '.' numbers)
-  guard $ not (null branch)
-  Version branch <$> traverse readTag (drop 1 (C.split '-' suffix))
+  -- The longest parse comes last, and must take the whole version.
+  results <- NE.nonEmpty $ readP_to_S Version.parseVersion (C.unpack version)
+  case NE.last results of
+    (parsed, "") -> pure parsed
+    _ -> Nothing
   where
     text = C.dropEnd (C.length crlf) line
-    -- At most 9 digits, so that the number always fits an 'Int'.
-    readNumber digits = do
-      guard $ not (C.null digits) && C.length digits <= 9 && C.all isDigit digits
-      pure $ C.foldl' (\n d -> n * 10 + digitToInt d) 0 digits
-    readTag tag = do
-      guard $ not (C.null tag) && C.all isAlphaNum tag
-      pure $ C.unpack tag
 
 -- | The longest version @parseVersion@ reads, in bytes. memcached's versions,
 -- such as @1.6.12@, are a few bytes long, so this leaves plenty of room for

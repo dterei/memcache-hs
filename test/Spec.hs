@@ -2215,12 +2215,23 @@ main = hspec $ do
             \(StringException message _) -> message == "Configuration endpoint replied: ERROR"
           mockRequests cfg `shouldReturn` ["version\r\n", C.pack request <> "\r\n"]
 
+    -- The version is read leniently: discovery skips the line's first 8
+    -- bytes without checking them, and Data.Version.parseVersion takes a
+    -- number of any length.
+    forM_
+      [ ("version 1.4.13", "get AmazonElastiCache:cluster")
+      , ("VERSION 1.6.1234567890", "config get cluster")
+      ] $ \(line, request) ->
+      it ("reads the version reply " <> show line) $
+        withMockServer [MR (C.pack line <> "\r\n"), MR "ERROR\r\n", Noop] $ \cfg -> do
+          timeout 5000000 (EC.newClient Client.def hour (endpoint cfg)) `shouldThrow`
+            \(StringException message _) -> message == "Configuration endpoint replied: ERROR"
+          mockRequests cfg `shouldReturn` ["version\r\n", C.pack request <> "\r\n"]
+
     -- A version reply discovery can't read is an error, as another reply it
     -- can't parse is, and discovery asks for nothing more.
     forM_
-      [ "ERROR", "version 1.6.12", "VERSION 1.6.", "VERSION 1.6.12 extra", "VERSION 1.6.12-"
-      , "VERSION 1.6.1234567890"
-      ] $ \line ->
+      ["ERROR", "VERSION 1.6.", "VERSION 1.6.12 extra", "VERSION 1.6.12-"] $ \line ->
       it ("rejects the version reply " <> show line) $
         withMockServer [MR (C.pack line <> "\r\n"), Noop] $ \cfg -> do
           timeout 5000000 (EC.newClient Client.def hour (endpoint cfg)) `shouldThrow`
