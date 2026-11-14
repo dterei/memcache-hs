@@ -145,7 +145,9 @@ As a URI, the path follows an empty host, and there is no port:
 `memcached://user:secret@/run/memcached/memcached.sock` with credentials. An
 `@` in the path is written `%40`; a raw one is an error, so that a URI with one
 slash too many, such as `memcached:///user:secret@cache.example`, is never
-taken for a socket path holding the password.
+taken for a socket path holding the password. The error says that credentials
+go right after `memcached://`: such a URI needs a slash fewer, not its `@`
+written `%40`, which would make it that socket path after all.
 
 The client doesn't use a socket's port to connect, but the port still names
 the server, along with the path, when keys are routed, so changing it moves
