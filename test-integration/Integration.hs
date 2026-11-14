@@ -21,6 +21,7 @@ import           Network.Socket           (Family (AF_INET), SocketOption (Reuse
                                            setSocketOption, socket, socketPort,
                                            tupleToHostAddress)
 import qualified Network.Socket           as N
+import           Network.URI              (escapeURIString, isUnreserved)
 import           System.Directory         (doesFileExist, findExecutable, getTemporaryDirectory,
                                            removeFile, removePathForcibly)
 import           System.Exit              (ExitCode)
@@ -451,7 +452,11 @@ unixSocketSpecs executable =
       -- its pid file.
       port <- freePort
       withMemcachedOn executable ["-s", path, "-a", "0700"] port $ do
-        spec <- either fail return $ M.parseServerSpec ("memcached://" <> path)
+        -- The path is percent-encoded, but for its slashes, in case the
+        -- temporary directory's name has characters a URI can't, or an @,
+        -- which a socket path's URI must write as %40.
+        let uri = "memcached://" <> escapeURIString (\c -> c == '/' || isUnreserved c) path
+        spec <- either fail return $ M.parseServerSpec uri
         ssHost spec `shouldBe` path
         client <- M.newClient [spec] M.def
         cas <- M.set client "integration-unix" "value" 5 0
