@@ -4,8 +4,9 @@ module Main where
 
 import           Control.Concurrent       (threadDelay)
 import           Control.Exception        (bracket, finally, onException)
-import           Control.Monad            (filterM, forM, forM_, void)
+import           Control.Monad            (filterM, forM, forM_, unless, void)
 import qualified Data.ByteString.Char8    as B
+import           Data.Char                (isAscii)
 import           Data.Foldable            (toList)
 import           Data.IORef               (readIORef)
 import           Data.Maybe               (isJust)
@@ -447,6 +448,11 @@ unixSocketSpecs :: FilePath -> Spec
 unixSocketSpecs executable =
   it "sets and gets through a memcached:/// URI" $
     withSocketPath $ \path -> do
+      -- memcached makes its socket at the path's bytes, which ssHost holds
+      -- one per Char. Outside ASCII, the path's Chars aren't its bytes, and
+      -- the URI below encodes the Chars, so the test is pending there.
+      unless (all isAscii path) $
+        pendingWith $ "the socket's path isn't ASCII: " <> show path
       -- With -s, memcached listens on the socket alone. The port only names
       -- its pid file.
       port <- freePort
