@@ -152,7 +152,6 @@ test-suite integration
     , hspec
     , memcache
     , network
-    , network-uri
     , process
     , time
     , unliftio
