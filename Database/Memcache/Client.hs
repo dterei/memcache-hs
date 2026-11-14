@@ -498,12 +498,13 @@ flush c e = do
 -- memcached sends an error only as a reply's first line, and never an empty
 -- line. So after the first line, an empty line, or one whose first word is
 -- @ERROR@, @CLIENT_ERROR@ or @SERVER_ERROR@, can only be a listed key's bytes.
--- 'stats' throws the error such a line raises once every server has answered,
--- without sending the request again or marking the server dead, since a resend
--- would read the same key and fail again. The entries that keys' bytes add
--- still count towards the limit of 262,144 entries, and a reply they take over
--- it fails as any other reply that is too long does: the request is sent
--- again, and the server is marked dead if every attempt fails.
+-- 'stats' throws the error such a line raises, in place of all the servers'
+-- entries, once every server has answered. It doesn't send the request again
+-- or mark the server dead, since a resend would read the same key and fail
+-- again. If a server fails, its failure is thrown instead. The entries that
+-- keys' bytes add still count towards the limit of 262,144 entries, and a
+-- reply they take over it fails as any other reply that is too long does: the
+-- request is sent again, and the server is marked dead if every attempt fails.
 stats :: Client -> Maybe Key -> IO [(Server, StatResults)]
 stats c key = validateStatsArgs key >> allOp' c (runStats key) >>= mapM rethrow
   where
