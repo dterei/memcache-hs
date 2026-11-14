@@ -2533,6 +2533,31 @@ main = hspec $ do
           filter (/= [mockServerSpec cfg]) <$> made
             `shouldReturn` [[mockServerSpec a], [mockServerSpec b]]
 
+    -- A refresh runs with asynchronous exceptions unmasked even when the
+    -- client is made inside mask_, as in a bracket's acquire, so that its
+    -- time limit can interrupt it while it computes, not only where it
+    -- waits. The refresh thread calls the server constructor when it starts,
+    -- for the endpoint, and at the refresh that finds b, and each call
+    -- records the masking state it runs in.
+    it "refreshes unmasked when the client is made inside mask_" $
+      withMockServer [MR "OK\r\n"] $ \a ->
+      withMockServer [MR "OK\r\n"] $ \b ->
+      withMockServer (refreshTo [a] ++ refreshTo [a, b] ++ noReplies) $ \cfg ->
+      withDiscovery Client.def { Client.optsServerTimeout = 10000 } $ \opts start _ -> do
+        me <- myThreadId
+        states <- newIORef []
+        let recording serverOptions specs = do
+              thread <- myThreadId
+              when (thread /= me) $ do
+                state <- getMaskingState
+                atomicModifyIORef' states (\earlier -> (state : earlier, ()))
+              Client.optsServerSpecsToServers opts serverOptions specs
+        client <- mask_ $
+          EC.newClient opts { Client.optsServerSpecsToServers = recording } tenMs (endpoint cfg)
+        start
+        waitFor 2 (length <$> Cluster.getServers client) `shouldReturn` 2
+        readIORef states `shouldReturn` [Unmasked, Unmasked]
+
     it "keeps the connections of nodes still listed" $
       withMockServer [MR "OK\r\n", MR "OK\r\n"] $ \a ->
       withMockServer [MR "OK\r\n"] $ \b ->

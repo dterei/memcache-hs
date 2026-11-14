@@ -18,7 +18,7 @@ module Database.Memcache.ElastiCacheClient
   )
 where
 
-import Control.Concurrent (forkIO, threadDelay)
+import Control.Concurrent (forkIOWithUnmask, threadDelay)
 import Control.Concurrent.MVar (MVar, modifyMVar_, newMVar)
 import Control.Monad (guard, when)
 import Data.Bifunctor (first)
@@ -100,6 +100,8 @@ newtype ConfigurationEndpoint
 -- | Create a new client using service discovery.
 --
 -- This function discovers all the nodes in a cluster and sets up a new thread to run autodiscovery on an interval.
+-- The thread runs with asynchronous exceptions unmasked, even if this is
+-- called with them masked, as in the acquire action of a @bracket@.
 --
 -- The first discovery must finish within 'optsServerTimeout' (connecting,
 -- then asking for the version and for the cluster configuration), or this
@@ -149,7 +151,12 @@ newClient options interval cfgEndpoint = bracket acquireCfgClient releaseCfgClie
 
       -- Prepare MVar
       serversMVar <- newMVar $ nodeServers nodes
-      _ <- forkIO $ repeatAutoDiscover options interval cfgEndpoint serversMVar nodes
+      -- Refresh with asynchronous exceptions unmasked, whatever the caller's
+      -- masking state. A thread forked inside mask_, as in a bracket's
+      -- acquire, would otherwise refresh masked for good, and each refresh's
+      -- time limit could interrupt it only where it waits.
+      _ <- forkIOWithUnmask $ \unmask ->
+        unmask $ repeatAutoDiscover options interval cfgEndpoint serversMVar nodes
 
       -- The configuration client was made with the same options, so it only
       -- needs its servers replacing: cServers = Left <MVar <Vector Server>>
