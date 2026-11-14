@@ -434,8 +434,10 @@ pausedSpecs executable = do
       -- Open the client's connection first, so the request is all that
       -- waits for memcached.
       _ <- M.get client key
-      signal "STOP" process
-      result <- (waitStopped process >> Async.async (run client key)
+      -- Whatever fails from the STOP on, continue memcached: it acts on the
+      -- SIGTERM that ends it after the test only once it continues.
+      result <- (signal "STOP" process >> waitStopped process
+                  >> Async.async (run client key)
                   >>= \running -> threadDelay 650000 >> try (Async.wait running))
         `finally` signal "CONT" process
       result `shouldBe` Left (M.ClientError M.Timeout)
@@ -647,11 +649,8 @@ startMemcached executable args port = do
   -- wrong, stop it rather than leave it running.
   wait 50 `onException` stopMemcached process
 
--- | Stop a memcached and wait for it to exit. Continue it first, in case a
--- test stopped it with @STOP@: memcached acts on SIGTERM only once it
--- continues.
+-- | Stop a memcached and wait for it to exit.
 stopMemcached :: ProcessHandle -> IO ()
 stopMemcached process = do
-  signal "CONT" process
   terminateProcess process
   void (waitForProcess process)
