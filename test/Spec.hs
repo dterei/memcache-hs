@@ -2361,6 +2361,14 @@ main = hspec $ do
             \(StringException message _) -> message == "Configuration lists 1001 nodes, over the limit of 1000"
           filter (/= [mockServerSpec cfg]) <$> made `shouldReturn` []
 
+    -- Discovery counts the nodes before it parses any of them, so that a
+    -- reply listing too many costs no parsing: the first entry here can't
+    -- be parsed, and the count fails first.
+    it "counts the nodes before parsing any of them" $
+      withMockServer [MR "VERSION 1.6.12\r\n", MR (configListing ("bad" : manyNodes 1000)), Noop] $ \cfg ->
+        EC.newClient Client.def hour (endpoint cfg) `shouldThrow`
+          \(StringException message _) -> message == "Configuration lists 1001 nodes, over the limit of 1000"
+
     -- A node listed twice would get a second server, which its keys would
     -- fall back to when the first is marked failed. Nodes are told apart by
     -- host and port, as a refresh does, whatever their IP addresses.
