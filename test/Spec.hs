@@ -1286,11 +1286,13 @@ main = hspec $ do
         readIORef (Server.failed s) `shouldReturn` 0
         sendRaw idle "mn\r\n" `shouldReturn` ()
 
-    -- An error reply is an answer, not a server failure, so it closes no idle
-    -- connection either. The get opens the pool's first connection, and the
-    -- mock holds back its reply for 300 ms. Meanwhile a second connection is
-    -- opened and given back, so it is idle when the reply comes.
-    it "doesn't close the idle connections when a request gets an error reply" $
+    -- A CLIENT_ERROR reply is an answer, not a server failure, so it closes
+    -- no idle connection either; a SERVER_ERROR whose text names no status is
+    -- a server failure, as a later test checks. The get opens the pool's first
+    -- connection, and the mock holds back its reply for 300 ms. Meanwhile a
+    -- second connection is opened and given back, so it is idle when the
+    -- reply comes.
+    it "doesn't close the idle connections when a request gets a CLIENT_ERROR reply" $
       withServerAndClientOpts (threeConnections oneAttempt)
         [DelayMS 300 (MR "CLIENT_ERROR bad\r\n"), Noop] $ \server client -> do
           [s] <- toList <$> Cluster.getServers client
@@ -1521,10 +1523,11 @@ main = hspec $ do
 
     -- A request that mustn't be sent twice isn't sent again once the server
     -- may have it: neither after its reply runs out of time, nor after the
-    -- server drops its connection. The mock would answer a retry on a new
-    -- connection. The operation throws the failure, with its retry unused,
-    -- and the server is marked dead, as when the last attempt fails. A retry
-    -- would have been sent before the operation returned.
+    -- server drops its connection, nor after a SERVER_ERROR reply whose text
+    -- names no status, which is a server failure too. The mock would answer a
+    -- retry on a new connection. The operation throws the failure, with its
+    -- retry unused, and the server is marked dead, as when the last attempt
+    -- fails. A retry would have been sent before the operation returned.
     forM_ sentOnce $ \(name, reply, run) -> do
       it ("doesn't send " <> name <> " again after its reply times out") $
         withServerAndClientOpts fastStaysDead [Noop, MR reply] $ \server client -> do
@@ -1537,6 +1540,13 @@ main = hspec $ do
         withServerAndClientOpts fastStaysDead [CloseConnection, MR reply] $ \server client -> do
           [s] <- toList <$> Cluster.getServers client
           run client `shouldThrow` isUnexpectedEOF
+          length <$> mockRequests server `shouldReturn` 1
+          readIORef (Server.failed s) >>= (`shouldNotBe` 0)
+
+      it ("doesn't send " <> name <> " again after a server error") $
+        withServerAndClientOpts fastStaysDead [MR "SERVER_ERROR backend failure\r\n", MR reply] $ \server client -> do
+          [s] <- toList <$> Cluster.getServers client
+          run client `shouldThrow` (== ProtocolError (E.ServerError "backend failure"))
           length <$> mockRequests server `shouldReturn` 1
           readIORef (Server.failed s) >>= (`shouldNotBe` 0)
 
@@ -1686,6 +1696,22 @@ main = hspec $ do
           wait failing `shouldThrow` isUnexpectedEOF
           readIORef (Server.failed s) >>= (`shouldNotBe` 0)
           sendRaw idle "mn\r\n" `shouldThrow` anyIOException
+
+    -- So does a SERVER_ERROR reply whose text names no status, as memcached's
+    -- proxy sends when a backend fails, although the server answered. Here
+    -- the mock sends it 300 ms after the increment's request, while a second
+    -- connection is idle. The increment has a retry left, and doesn't use it.
+    it "closes the idle connections and marks the server dead when a request sent once gets a server error" $
+      withServerAndClientOpts (threeConnections dropping)
+        [DelayMS 300 (MR "SERVER_ERROR backend failure\r\n"), Noop] $ \server client -> do
+          [s] <- toList <$> Cluster.getServers client
+          failing <- async $ Client.increment client "key" 0 1 0 0
+          waitForRequests server 1 `shouldReturn` ["ma key D1 MI v c N0 J0\r\n"]
+          idle <- Server.withSocket s return
+          wait failing `shouldThrow` (== ProtocolError (E.ServerError "backend failure"))
+          readIORef (Server.failed s) >>= (`shouldNotBe` 0)
+          sendRaw idle "mn\r\n" `shouldThrow` anyIOException
+          mockRequests server `shouldReturn` ["ma key D1 MI v c N0 J0\r\n"]
 
   -- The mock serves one connection at a time, so it only answers a second
   -- client once the first client's connection has closed.

@@ -183,6 +183,14 @@ data Options = Options {
         -- was such an attempt, the server isn't marked down, whatever the
         -- earlier attempts did (see 'optsServerTimeout').
         --
+        -- A @SERVER_ERROR@ reply whose text names no status, such as
+        -- memcached's proxy sends when a backend fails, is a failed attempt,
+        -- as a timeout or a network error is: it closes the server's idle
+        -- connections, and counts towards marking the server down. Other
+        -- error replies are answers, thrown at once without counting against
+        -- the server: @ERROR@, @CLIENT_ERROR@, and a @SERVER_ERROR@ whose text
+        -- names a status, such as running out of memory.
+        --
         -- A request that mustn't be sent twice is retried only after a
         -- failure before any of it was sent: while waiting for a free
         -- connection, connecting or authenticating, or on finding that the
@@ -190,12 +198,14 @@ data Options = Options {
         -- @decrement@, @append@, @prepend@, @add@ and @delete@, and @cas@ and
         -- @replace@ with a version other than 0. Once the request may have
         -- reached the server, a failure such as a timeout, a network error,
-        -- the server closing the connection or a reply that can't be read is
-        -- thrown as it is, and the server is marked down as if every attempt
-        -- had failed, whatever retries are left. The server may have carried
-        -- out the request, and a retry could apply it twice, or report
-        -- failure because the first one succeeded (see
-        -- 'keyedOpExpectingOnce').
+        -- the server closing the connection, a reply that can't be read or a
+        -- @SERVER_ERROR@ that names no status is thrown as it is, and the
+        -- server is marked down as if every attempt had failed, whatever
+        -- retries are left. The server may have carried out the request, and
+        -- a retry could apply it twice, or report failure because the first
+        -- one succeeded (see 'keyedOpExpectingOnce'). So behind memcached's
+        -- proxy, one such request for a key on a failed backend marks the
+        -- whole proxy down.
         --
         -- Every other operation is retried after any failure, so the server
         -- may carry out its request more than once: gets, @touch@, @set@,
@@ -519,8 +529,10 @@ instance Exception OutOfStep
 -- replies it can read, only an error reply throws: @ERROR@ throws
 -- 'UnknownOp', and @CLIENT_ERROR@ and @SERVER_ERROR@ throw 'BadCommand' and
 -- 'ServerError', or an 'OpError' when their text names a status, such as
--- 'ErrValueTooLarge'. Any other reply is returned, and the connection goes
--- back to the pool, so a reply the request cannot get leaves it out of step;
+-- 'ErrValueTooLarge'. Each is an answer, thrown at once, except 'ServerError':
+-- a @SERVER_ERROR@ whose text names no status is a server failure, as a
+-- timeout is. Any other reply is returned, and the connection goes back to
+-- the pool, so a reply the request cannot get leaves it out of step;
 -- 'keyedOpExpecting' rejects such a reply.
 --
 -- After a failure the request is sent again, even if the server may have
@@ -542,8 +554,9 @@ keyedOp c = keyedOpWith c Resend rejectProtocolError
 -- @Expected GET, got: \"HD\"@. The server has received the request, so it
 -- is not sent again, and the error doesn't count towards marking the server
 -- dead. Error replies (@ERROR@, @CLIENT_ERROR@ and @SERVER_ERROR@) throw as
--- they do for 'keyedOp'. After any other failure, the request is sent again,
--- as with 'keyedOp'.
+-- they do for 'keyedOp', where a @SERVER_ERROR@ whose text names no status
+-- is a server failure. After a server failure, the request is sent again, as
+-- with 'keyedOp'.
 keyedOpExpecting :: Cluster -> String -> [ByteString] -> Key -> (WireKey -> ByteString) -> IO Response
 {-# INLINE keyedOpExpecting #-}
 keyedOpExpecting c operation codes = keyedOpWith c Resend (expectReply operation codes)
@@ -551,14 +564,15 @@ keyedOpExpecting c operation codes = keyedOpWith c Resend (expectReply operation
 -- | Like 'keyedOpExpecting', for a request that mustn't be sent twice, such
 -- as an increment, an @add@, a delete, or a store with a CAS version. Once
 -- the request may have reached the server, a failure, such as a timeout, a
--- network error, the server closing the connection or a reply that can't be
--- read, isn't retried: the server may have carried out the request, and a
--- second one could apply it twice, or report failure because the first one
--- succeeded. The failure is thrown as it is, and still counts against the
--- server: its idle connections are closed, and it is marked dead, as when the
--- last of an operation's attempts fails. A failure before any of the request
--- is sent, such as waiting for a connection, connecting or authenticating, is
--- retried as for 'keyedOpExpecting'.
+-- network error, the server closing the connection, a reply that can't be
+-- read or a @SERVER_ERROR@ whose text names no status, isn't retried: the
+-- server may have carried out the request, and a second one could apply it
+-- twice, or report failure because the first one succeeded. The failure is
+-- thrown as it is, and still counts against the server: its idle connections
+-- are closed, and it is marked dead, as when the last of an operation's
+-- attempts fails. A failure before any of the request is sent, such as
+-- waiting for a connection, connecting or authenticating, is retried as for
+-- 'keyedOpExpecting'.
 --
 -- Before sending, the connection is checked, without waiting, for the server
 -- having closed it, as memcached does to idle connections when it restarts
@@ -598,7 +612,8 @@ keyedOpWith c resend check k makeReq = do
 -- not quiet. As memcached answers in order, it counts as the reply to the
 -- next request, after the one the previous reply answered. Error replies
 -- (@ERROR@, @CLIENT_ERROR@ and @SERVER_ERROR@) throw as they do for
--- 'keyedOp'. A reply with an unknown code throws 'UnknownStatus', as its
+-- 'keyedOp', and here too a @SERVER_ERROR@ whose text names no status is a
+-- server failure. A reply with an unknown code throws 'UnknownStatus', as its
 -- length can't be known. Any other reply with no opaque, with the opaque of
 -- no request in its batch, or out of order throws 'UnexpectedResponse', as
 -- does a bare @EN@ after the reply to the batch's last request. Either way

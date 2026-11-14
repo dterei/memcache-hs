@@ -32,7 +32,9 @@ We support the following logic for handling failure in operations:
                 than 'optsServerTimeout', including time spent waiting for a
                 free connection to the server, and consider it failed.
 
-* __Retry__: on operation failure (timeout, network error) we close the
+* __Retry__: on operation failure (a timeout, a network error, or a
+             @SERVER_ERROR@ reply whose text names no status, such as
+             memcached's proxy sends when a backend fails) we close the
              connection, if any, and retry the operation, doing this up to
              'optsServerRetries' times. Unless the attempt only ran out of time
              waiting for a free connection, we also close the server's idle

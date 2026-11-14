@@ -99,6 +99,13 @@ the server: the failure is thrown, and the server is marked dead. Other
 operations are retried after any failure, so the server may carry out their
 request twice. Set `optsServerRetries` to 0 for no retries.
 
+A `SERVER_ERROR` reply is a failure too, as a timeout is, unless its text
+names a status, such as running out of memory. Such a status, and the other
+error replies, such as `CLIENT_ERROR`, are thrown at once and don't count
+against the server. memcached's proxy sends a `SERVER_ERROR` when a backend
+fails, so behind it, a request that mustn't be sent twice for a key on a
+failed backend marks the whole proxy dead.
+
 ### Servers and authentication
 
 `newClient` takes one `ServerSpec` per server, and routes each key to one of
