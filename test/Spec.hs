@@ -1382,6 +1382,21 @@ main = hspec $ do
           readIORef (Server.failed s) `shouldReturn` 0
           sendRaw idle "mn\r\n" `shouldReturn` ()
 
+    -- Nor does the error that stats throws for a listed key's bytes, here an
+    -- empty line after a cachedump reply's first entry: stats closes only the
+    -- connection the reply came on. As above, the mock holds back the reply
+    -- for 300 ms while a second connection is opened and given back.
+    it "doesn't close the idle connections when a stats key's bytes hold an empty line" $
+      withServerAndClientOpts (threeConnections oneAttempt)
+        [DelayMS 300 (MR "ITEM k\n\ny [1 b; 0 s]\r\nEND\r\n"), Noop] $ \server client -> do
+          [s] <- toList <$> Cluster.getServers client
+          failing <- async $ Client.stats client (Just "cachedump 1 0")
+          waitForRequests server 1 `shouldReturn` ["stats cachedump 1 0\r\n"]
+          idle <- Server.withSocket s return
+          wait failing `shouldThrow` isUnknownPkt
+          readIORef (Server.failed s) `shouldReturn` 0
+          sendRaw idle "mn\r\n" `shouldReturn` ()
+
     -- A request opens its connection, and authenticates, only once it holds
     -- a slot in the pool, so the server is to blame when either never ends,
     -- as it is when a request never gets its reply. The extra Noop keeps the
