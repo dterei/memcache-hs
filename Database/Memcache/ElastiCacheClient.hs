@@ -152,14 +152,17 @@ repeatAutoDiscover opts interval cfgEndpoint mVar initialNodes = do
         case result of
           Left _ -> refresh nodes
           Right (nodes', gone, moved) -> do
-            modifyMVar_ mVar $ \_curServers -> pure $ nodeServers nodes'
-            -- Close the connections of nodes that have gone, or whose IP
-            -- address has changed. A request still using one of them finishes
-            -- normally, and its connection is closed then instead of going
-            -- back to the pool. Mask the whole loop, so that an asynchronous
-            -- exception can't stop it part way and leave the other nodes'
-            -- connections open; 'closeAll' only ever waits briefly.
-            uninterruptibleMask_ $ mapM_ closeAll (gone ++ moved)
+            -- Swap in the new servers, then close the connections of nodes
+            -- that have gone, or whose IP address has changed. A request
+            -- still using one of them finishes normally, and its connection
+            -- is closed then instead of going back to the pool. Mask the swap
+            -- and the loop together, so that an asynchronous exception can't
+            -- arrive between them, or stop the loop part way, and leave some
+            -- of those connections open. Neither waits long: only this thread
+            -- takes the 'MVar', and 'closeAll' only ever waits briefly.
+            uninterruptibleMask_ $ do
+              modifyMVar_ mVar $ \_curServers -> pure $ nodeServers nodes'
+              mapM_ closeAll (gone ++ moved)
             refresh nodes'
   refresh initialNodes
 
