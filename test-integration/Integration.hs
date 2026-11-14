@@ -21,9 +21,9 @@ import           Network.Socket           (Family (AF_INET), SocketOption (Reuse
                                            setSocketOption, socket, socketPort,
                                            tupleToHostAddress)
 import qualified Network.Socket           as N
-import           System.Directory         (doesDirectoryExist, doesFileExist, findExecutable,
-                                           getTemporaryDirectory, listDirectory, removeFile,
-                                           removePathForcibly)
+import           System.Directory         (doesFileExist, findExecutable, getTemporaryDirectory,
+                                           removeFile, removePathForcibly)
+import qualified System.Directory         as Dir
 import           System.Exit              (ExitCode)
 import           System.IO                (hClose, hPutStr, openTempFile,
                                            openTempFileWithDefaultPermissions)
@@ -568,9 +568,9 @@ waitStopped process = getPid process >>= mapM_ (go (500 :: Int))
     go 0 pid = fail $ "process " <> show pid <> " did not stop within 5 s of SIGSTOP"
     go attempts pid = do
       let dir = "/proc/" <> show pid <> "/task/"
-      checkable <- doesDirectoryExist dir
+      checkable <- Dir.doesDirectoryExist dir
       if not checkable then threadDelay 100000 else do
-        threads <- listDirectory dir
+        threads <- Dir.listDirectory dir
         -- A thread's state follows its name, which is in parentheses.
         states <- forM threads $ \thread ->
           B.take 1 . B.drop 1 . snd . B.breakEnd (== ')') <$> B.readFile (dir <> thread <> "/stat")
