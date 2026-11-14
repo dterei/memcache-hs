@@ -602,6 +602,21 @@ main = hspec $ do
           Client.get client "two" `shouldReturn` Just ("foo", 2, 7)
           mockRequests server `shouldReturn` ["mg one v f c q O0\r\n", "mn\r\n", "mg two v f c\r\n"]
 
+    -- A SERVER_ERROR whose text names no status, as memcached's proxy sends
+    -- when a backend fails, is a server failure in a batch too: the batch is
+    -- sent again on a new connection, and the retry's success leaves the
+    -- server alive. The mock reads the first attempt's mn, then closes the
+    -- connection.
+    it "sends the batch again after a server error" $
+      withServerAndClientOpts fastFailover
+        [MR "SERVER_ERROR backend failure\r\n", CloseConnection, Noop, MR "VA 1 c5 O0\r\nv\r\nMN\r\n"] $
+        \server client -> do
+          Client.getMany client ["key"] `shouldReturn` [("key", ("v", 0, 5))]
+          mockRequests server `shouldReturn`
+            ["mg key v f c q O0\r\n", "mn\r\n", "mg key v f c q O0\r\n", "mn\r\n"]
+          [s] <- toList <$> Cluster.getServers client
+          readIORef (Server.failed s) `shouldReturn` 0
+
     -- As for a server failure, the batch is sent again on a new connection,
     -- and the failure counts towards marking the server dead.
     it "sends the batch again after a reply with an unknown code" $
