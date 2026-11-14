@@ -496,7 +496,7 @@ flush c e = do
 -- returning it to the pool.
 --
 -- memcached sends an error only as a reply's first line, and never an empty
--- line. So after the first line, an empty line, or one that starts with
+-- line. So after the first line, an empty line, or one whose first word is
 -- @ERROR@, @CLIENT_ERROR@ or @SERVER_ERROR@, can only be a listed key's bytes.
 -- 'stats' throws the error such a line raises once every server has answered,
 -- without sending the request again or marking the server dead, since a resend
