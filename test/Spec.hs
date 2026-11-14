@@ -838,9 +838,9 @@ main = hspec $ do
 
     -- A cachedump key whose bytes hold an empty line (here "k\n\ny") makes
     -- stats read an empty line after the first entry. That can only be a key's
-    -- bytes, not a reply, so stats throws it at once: the request isn't sent
-    -- again and the server isn't marked dead, so a later request still reaches
-    -- it. The connection is closed all the same.
+    -- bytes, not a reply, so stats throws its error without sending the
+    -- request again or marking the server dead, and a later request still
+    -- reaches the server. The connection is closed all the same.
     it "throws a cachedump key's empty line without a retry or a dead mark" $
       withServerAndClient [MR "ITEM k\n\ny [1 b; 0 s]\r\nEND\r\n", MR "EN\r\n"] $ \server client -> do
         Client.stats client (Just "cachedump 1 0") `shouldThrow` isUnknownPkt
@@ -850,13 +850,26 @@ main = hspec $ do
 
     -- The same for a key whose bytes hold a SERVER_ERROR line: memcached never
     -- sends one in the middle of a stats reply, so after the first entry it
-    -- can only be a key's bytes, thrown at once rather than failed over.
+    -- can only be a key's bytes, thrown without failing the server over.
     it "throws a cachedump key's SERVER_ERROR line without a retry or a dead mark" $
       withServerAndClient [MR "ITEM k\nSERVER_ERROR x [1 b; 0 s]\r\nEND\r\n", MR "EN\r\n"] $ \server client -> do
         Client.stats client (Just "cachedump 1 0") `shouldThrow` isServerError
         Client.get client "victim" `shouldReturn` Nothing
         mockRequests server `shouldReturn` ["stats cachedump 1 0\r\n", "mg victim v f c\r\n"]
         mockClosed server `shouldReturn` 1
+
+    -- stats throws a key's error only once every server has answered. Here
+    -- both servers list a key holding an empty line, and would list it again
+    -- for a resend, so whichever server stats asks first, the other must
+    -- still be asked. Neither is sent the request twice, and neither is
+    -- marked dead.
+    it "asks every server before throwing a cachedump key's error" $ do
+      let dump = MR "ITEM k\n\ny [1 b; 0 s]\r\nEND\r\n"
+      withTwoServerClient [dump, dump] [dump, dump] $ \a b client -> do
+        Client.stats client (Just "cachedump 1 0") `shouldThrow` isUnknownPkt
+        mockRequests a `shouldReturn` ["stats cachedump 1 0\r\n"]
+        mockRequests b `shouldReturn` ["stats cachedump 1 0\r\n"]
+        Cluster.getServers client >>= mapM_ (\s -> readIORef (Server.failed s) `shouldReturn` 0)
 
     -- A SERVER_ERROR on the reply's first line is the server's own reply, and
     -- one that names no status, as here, is a server failure: out of retries
