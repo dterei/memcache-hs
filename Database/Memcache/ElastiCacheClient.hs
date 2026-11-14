@@ -85,7 +85,7 @@ parseVersion line = note ("Unrecognized version reply" `withDetail` C.unpack tex
       guard $ not (C.null tag) && C.all isAlphaNum tag
       pure $ C.unpack tag
 
--- | The longest version 'parseVersion' reads, in bytes. memcached's versions,
+-- | The longest version @parseVersion@ reads, in bytes. memcached's versions,
 -- such as @1.6.12@, are a few bytes long, so this leaves plenty of room for
 -- tags.
 maxVersionLength :: Int
@@ -372,10 +372,10 @@ unTry :: Either String a -> IO a
 unTry = either throwString pure
 
 -- | Append a detail, which may hold text the endpoint sent, keeping the
--- message on one line of ASCII, as 'displayException' does for a
--- 'MemcacheError': characters outside printable ASCII and backslashes are
--- escaped as in a Haskell string literal, and only the first 200 characters
--- are kept.
+-- message on one line of ASCII, as 'Control.Exception.displayException' does
+-- for a 'MemcacheError': characters outside printable ASCII and backslashes
+-- are escaped as in a Haskell string literal, and only the first 200
+-- characters are kept.
 withDetail :: String -> String -> String
 withDetail problem "" = problem
 withDetail problem detail = problem <> ": " <> escape kept <> ellipsis
