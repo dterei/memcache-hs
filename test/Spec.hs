@@ -2202,6 +2202,63 @@ main = hspec $ do
           waitForRequests cfg 2 `shouldReturn`
             ["version\r\n", "get AmazonElastiCache:cluster\r\n"]
 
+    -- The version only chooses the request for the configuration. Tags, as
+    -- in a version that git describe makes, don't change the choice.
+    forM_
+      [ ("1.4.13", "get AmazonElastiCache:cluster")
+      , ("1.4.14", "config get cluster")
+      , ("1.6.24-15-g1a2b3c4", "config get cluster")
+      ] $ \(version, request) ->
+      it ("asks an endpoint at version " <> version <> " with " <> request) $
+        withMockServer [MR ("VERSION " <> C.pack version <> "\r\n"), MR "ERROR\r\n", Noop] $ \cfg -> do
+          timeout 5000000 (EC.newClient Client.def hour (endpoint cfg)) `shouldThrow`
+            \(StringException message _) -> message == "Configuration endpoint replied: ERROR"
+          mockRequests cfg `shouldReturn` ["version\r\n", C.pack request <> "\r\n"]
+
+    -- A version reply discovery can't read is an error, as another reply it
+    -- can't parse is, and discovery asks for nothing more.
+    forM_
+      [ "ERROR", "version 1.6.12", "VERSION 1.6.", "VERSION 1.6.12 extra", "VERSION 1.6.12-"
+      , "VERSION 1.6.1234567890"
+      ] $ \line ->
+      it ("rejects the version reply " <> show line) $
+        withMockServer [MR (C.pack line <> "\r\n"), Noop] $ \cfg -> do
+          timeout 5000000 (EC.newClient Client.def hour (endpoint cfg)) `shouldThrow`
+            \(StringException message _) -> message == "Unrecognized version reply: " <> line
+          mockRequests cfg `shouldReturn` ["version\r\n"]
+
+    it "reads a version of up to 64 bytes" $ do
+      let versionOf n = "VERSION 1.6.12-" <> C.replicate (n - 7) 'a'
+      withMockServer [MR (versionOf 64 <> "\r\n"), MR "ERROR\r\n", Noop] $ \cfg -> do
+        timeout 5000000 (EC.newClient Client.def hour (endpoint cfg)) `shouldThrow`
+          \(StringException message _) -> message == "Configuration endpoint replied: ERROR"
+        mockRequests cfg `shouldReturn` ["version\r\n", "config get cluster\r\n"]
+      withMockServer [MR (versionOf 65 <> "\r\n"), Noop] $ \cfg -> do
+        timeout 5000000 (EC.newClient Client.def hour (endpoint cfg)) `shouldThrow`
+          \(StringException message _) -> message == "Unrecognized version reply: " <> C.unpack (versionOf 65)
+        mockRequests cfg `shouldReturn` ["version\r\n"]
+
+    -- Reading a version of 32,000 numbers took seconds, which the time limit
+    -- can't interrupt where asynchronous exceptions are masked, as in a
+    -- bracket's acquire: there newClient overran optsServerTimeout, and with
+    -- the configuration sent along with the version, it returned a client.
+    -- Now discovery reads no version longer than 64 bytes, so it fails at once.
+    forM_
+      [ ("", id, MR longVersion)
+      , (" inside mask_", mask_, MR longVersion)
+      , (" as a bracket's acquire", \make -> bracket make Client.quit pure, MR longVersion)
+      , ( " inside mask_ with the configuration sent along", mask_
+        , MR (longVersion <> configListing ["127.0.0.1|127.0.0.1|11211"]) )
+      ] $ \(how, run, reply) ->
+      it ("fails at once on a long version reply" <> how) $
+        withMockServer [reply, Noop, Noop] $ \cfg -> do
+          begin <- getMonotonicTime
+          run (EC.newClient Client.def hour (endpoint cfg)) `shouldThrow`
+            \(StringException message _) -> "Unrecognized version reply: VERSION 1.1.1." `isPrefixOf` message
+          elapsed <- subtract begin <$> getMonotonicTime
+          elapsed `shouldSatisfy` (< 2)
+          mockRequests cfg `shouldReturn` ["version\r\n"]
+
     -- Discovery makes memcached://<host>:<port> of each node line, so hosts
     -- such as these, whose "?" puts the port in the query, would make the
     -- node a Unix socket on this machine, of the endpoint's choosing. The
@@ -2729,6 +2786,8 @@ main = hspec $ do
       let node n = "127.0.0.1|" <> ip <> "|" <> C.pack (show (mockPort n))
           body = "1\n" <> C.unwords (map node nodes) <> "\n"
       in C.pack (show (B.length body)) <> "\r\n" <> body <> "\r\n"
+    -- A version reply of 32,000 numbers, 64,009 bytes long.
+    longVersion = "VERSION " <> C.intercalate "." (replicate 32000 "1") <> "\r\n"
     -- A config reply listing the given node entries, each host|IP|port.
     configListing entries =
       let body = "1\n" <> C.unwords entries <> "\n"
