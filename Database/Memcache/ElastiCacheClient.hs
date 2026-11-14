@@ -108,7 +108,7 @@ newtype ConfigurationEndpoint
 -- as the @ERROR@ that plain memcached sends as it has no @config@ command,
 -- this throws a @StringException@ from "UnliftIO.Exception", as it does for a
 -- reply that can't be parsed, a version of more than 64 bytes, and a
--- configuration that lists more than 1,000 nodes, the same host and port
+-- configuration that lists no nodes, more than 1,000, the same host and port
 -- twice, or a node that isn't a plain host and port: one whose host or port
 -- is empty, or whose host has a character, such as @\/@, @?@ or @\@@, that
 -- would change the host or port, add credentials or make the node a Unix
@@ -276,6 +276,10 @@ handleConfigGetClusterResponse bs = do
 -- See: https://docs.aws.amazon.com/AmazonElastiCache/latest/mem-ug/AutoDiscovery.AddingToYourClientLibrary.html#AutoDiscovery.AddingToYourClientLibrary.OutputFormat
 handleRawNodeInfo :: Text -> Either String [(ServerSpec, Text)]
 handleRawNodeInfo nodeInfo = do
+  -- A line listing no nodes is empty, as it comes stripped of whitespace, and
+  -- would split into one empty entry.
+  when (T.null nodeInfo) $
+    Left "Configuration lists no nodes"
   -- Count the nodes before parsing any of them.
   let count = T.count " " nodeInfo + 1
   when (count > maxNodes) $
