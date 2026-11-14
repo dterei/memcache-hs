@@ -24,7 +24,6 @@ import Control.Monad (guard, when)
 import Data.Bifunctor (first)
 import Data.ByteString (ByteString)
 import qualified Data.ByteString.Char8 as C
-import Data.Char (isAscii, isPrint, showLitChar)
 import Data.List (sort)
 import qualified Data.List.NonEmpty as NE
 import Data.Text (Text)
@@ -41,7 +40,7 @@ import Database.Memcache.Server (Server, closeAll, withSocket)
 import Database.Memcache.Socket (Connection, crlf, recvRawUntil, sendRaw, versionRequest)
 import Database.Memcache.Types.Authentication (Authentication (NoAuth))
 import Database.Memcache.Types.ServerSpec (ServerSpec (..), parseServerSpec)
-import Database.Memcache.Util (note)
+import Database.Memcache.Util (note, withDetail)
 import Network.Socket (HostName, ServiceName)
 import System.Timeout (timeout)
 import Text.ParserCombinators.ReadP (readP_to_S)
@@ -377,19 +376,3 @@ recvConfigReply socket = do
 
 unTry :: Either String a -> IO a
 unTry = either throwString pure
-
--- | Append a detail, which may hold text the endpoint sent, keeping the
--- message on one line of ASCII, as 'Control.Exception.displayException' does
--- for a 'MemcacheError': characters outside printable ASCII and backslashes
--- are escaped as in a Haskell string literal, and only the first 200
--- characters are kept.
-withDetail :: String -> String -> String
-withDetail problem "" = problem
-withDetail problem detail = problem <> ": " <> escape kept <> ellipsis
-  where
-    (kept, rest) = splitAt 200 detail
-    ellipsis = if null rest then "" else "..."
-    escape = foldr escapeChar ""
-    escapeChar c
-      | isAscii c && isPrint c && c /= '\\' = (c :)
-      | otherwise = showLitChar c
