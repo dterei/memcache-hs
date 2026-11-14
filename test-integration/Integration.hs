@@ -449,8 +449,9 @@ unixSocketSpecs executable =
   it "sets and gets through a memcached:/// URI" $
     withSocketPath $ \path -> do
       -- memcached makes its socket at the path's bytes, which ssHost holds
-      -- one per Char. Outside ASCII, the path's Chars aren't its bytes, and
-      -- the URI below encodes the Chars, so the test is pending there.
+      -- one per Char. Outside ASCII, the path's Chars needn't be its bytes:
+      -- under a UTF-8 or the POSIX locale they aren't. The URI below encodes
+      -- the Chars, so the test is pending for a path that isn't ASCII.
       unless (all isAscii path) $
         pendingWith $ "the socket's path isn't ASCII: " <> show path
       -- With -s, memcached listens on the socket alone. The port only names
