@@ -2383,9 +2383,11 @@ main = hspec $ do
           -- newClient called the server constructor for the endpoint and for
           -- each node. As start is never run, the refresh thread is held at
           -- its first call, for the endpoint. Wait until it gets there, so
-          -- that it is killed when the test ends, rather than sleeping for an
-          -- hour and keeping the 1,000 servers, each with a pool whose
-          -- collector thread wakes every second, for the rest of the run.
+          -- that it is killed when the test ends. Otherwise the test could end
+          -- first, and the thread, not killed, would be held at that call,
+          -- keeping the 1,000 servers, each with a pool whose collector thread
+          -- wakes every second, until a major GC ended it, or would fail
+          -- withDiscovery's check that it has ended.
           waitFor 1002 (length <$> made) `shouldReturn` 1002
       withMockServer [MR "VERSION 1.6.12\r\n", MR (configListing (manyNodes 1001)), Noop] $ \cfg ->
         withDiscovery Client.def $ \opts _ made -> do
