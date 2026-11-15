@@ -2362,6 +2362,15 @@ main = hspec $ do
           EC.newClient Client.def hour (endpoint cfg) `shouldThrow`
             \(StringException message _) -> message == "Configuration lists no nodes"
 
+    -- Two spaces between nodes make an empty entry, as the line is split at
+    -- each space. The error says that the config lists an empty node, rather
+    -- than that the entry isn't a host, an IP address and a port.
+    it "rejects a config that lists an empty node" $ do
+      let config = configListing ["a|10.0.0.1|1", "", "b|10.0.0.2|2"]
+      withMockServer [MR "VERSION 1.6.12\r\n", MR config, Noop] $ \cfg ->
+        EC.newClient Client.def hour (endpoint cfg) `shouldThrow`
+          \(StringException message _) -> message == "Configuration lists an empty node"
+
     -- ElastiCache allows far fewer nodes in a cluster. A config reply of
     -- 300 KB can list 10,000, and discovery would make a server for each,
     -- and then the first request would wait seconds for the ring that routes
@@ -2545,11 +2554,13 @@ main = hspec $ do
         mockRequests a `shouldReturn` ["flush_all\r\n"]
 
     -- A refresh whose reply lists no nodes fails, rather than dropping every
-    -- server, and one whose reply lists too many nodes, or a node twice,
-    -- fails before making a server for any of them. Each keeps the servers.
+    -- server, and one whose reply lists too many nodes, an empty node or a
+    -- node twice, fails before making a server for any of them. Each keeps
+    -- the servers.
     forM_
       [ ("no nodes", [])
       , ("more than 1,000 nodes", manyNodes 1001)
+      , ("an empty node", ["one.example|10.0.0.1|11211", "", "two.example|10.0.0.2|11211"])
       , ("a node twice", ["dup.example|10.0.0.1|11211", "dup.example|10.0.0.2|11211"])
       ] $ \(problem, nodes) ->
       it ("keeps the servers when a refresh lists " <> problem) $

@@ -108,13 +108,13 @@ newtype ConfigurationEndpoint
 -- as the @ERROR@ that plain memcached sends as it has no @config@ command,
 -- this throws a @StringException@ from "UnliftIO.Exception", as it does for a
 -- reply that can't be parsed, a version of more than 64 bytes, and a
--- configuration that lists no nodes, more than 1,000, the same host and port
--- twice, or a node that isn't a plain host and port: one whose host or port
--- is empty, or whose host has a character, such as @\/@, @?@ or @\@@, that
--- would change the host or port, add credentials or make the node a Unix
--- socket on this machine. A host given as an IPv6 address in brackets is
--- rejected too. If a reply goes on for more than 1 MiB without the line end
--- or the @END@ line that discovery is waiting for, this throws
+-- configuration that lists no nodes, more than 1,000, an empty node, the same
+-- host and port twice, or a node that isn't a plain host and port: one whose
+-- host or port is empty, or whose host has a character, such as @\/@, @?@ or
+-- @\@@, that would change the host or port, add credentials or make the node
+-- a Unix socket on this machine. A host given as an IPv6 address in brackets
+-- is rejected too. If a reply goes on for more than 1 MiB without the line
+-- end or the @END@ line that discovery is waiting for, this throws
 -- v'Database.Memcache.Errors.ProtocolError'
 -- 'Database.Memcache.Errors.BadLength'.
 --
@@ -136,9 +136,10 @@ newtype ConfigurationEndpoint
 -- could lead to a node that ElastiCache has since replaced, and get no reply.
 -- Each refresh has the same time and length limits as the first discovery. A
 -- refresh that fails, for example because it runs out of time or the reply is
--- an error, is too long, can't be parsed, lists no nodes, more than 1,000 or
--- one twice, or lists a node that isn't a plain host and port, leaves the
--- servers as they are, and discovery tries again after the next interval.
+-- an error, is too long, can't be parsed, lists no nodes, more than 1,000, an
+-- empty node or one twice, or lists a node that isn't a plain host and port,
+-- leaves the servers as they are, and discovery tries again after the next
+-- interval.
 --
 -- N.B. The interval is in the same units as 'threadDelay'.
 newClient :: Options -> Int -> ConfigurationEndpoint -> IO Client
@@ -294,6 +295,9 @@ handleRawNodeInfo nodeInfo = do
   where
     listedTwice sorted = [node | (node, next) <- zip sorted (drop 1 sorted), node == next]
 
+    -- The line comes stripped of whitespace, and isn't empty, so an entry is
+    -- empty only where two spaces come in a row.
+    parseEntry t | T.null t = Left "Configuration lists an empty node"
     parseEntry t =
       case T.splitOn "|" t of
         [host, ip, port] -> do
