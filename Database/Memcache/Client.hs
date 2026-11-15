@@ -185,13 +185,13 @@ type StatResults = [(ByteString, ByteString)]
 -- use from many threads, and it keeps a pool of connections to each server,
 -- opened on first use and reused across requests. A client created for each
 -- request instead opens (and, with credentials, authenticates) a new
--- connection to every server it uses, every time. Each pool holds up to
--- 'soNumResources' connections, one by default (with resource-pool 0.3, one
--- for each capability: see 'soNumStripes'), so concurrent requests to a server
--- beyond that wait for a free connection. The wait counts towards each
--- attempt's 'optsServerTimeout'. If the last attempt runs out of time while
--- still waiting, the server isn't marked down; running out of time afterwards
--- is a server failure, however long the wait was.
+-- connection to every server it uses, every time. Each pool holds as many
+-- connections as 'soNumResources' and 'soNumStripes' allow, one by default
+-- (with resource-pool 0.3, one for each capability), so concurrent requests to
+-- a server beyond that wait for a free connection. The wait counts towards
+-- each attempt's 'optsServerTimeout'. If the last attempt runs out of time
+-- while still waiting, the server isn't marked down; running out of time
+-- afterwards is a server failure, however long the wait was.
 newClient :: [ServerSpec] -> Options -> IO Client
 newClient scs = newCluster $ if null scs then [defaultServerSpec] else scs
 

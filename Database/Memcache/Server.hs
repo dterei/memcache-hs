@@ -60,13 +60,19 @@ serverPort = port
 --
 data ServerOptions
   = ServerOptions
-  -- | Maximum number of pooled connections per stripe.
+  -- | Maximum number of pooled connections per stripe. With resource-pool 0.3,
+  -- see 'soNumStripes'. With 0.4 or later, it is split between the stripes
+  -- instead, and must be at least 'soNumStripes', or creating the server (and
+  -- so a client) throws an @ErrorCall@. Each stripe then holds up to
+  -- 'soNumResources' divided by 'soNumStripes', rounded up with 0.4, and
+  -- rounded down or up with 0.5 so that the total is 'soNumResources'.
   { soNumResources :: Int
   -- | Number of pool stripes. With resource-pool 0.3, a pool has a stripe for
   -- each capability instead, and each stripe holds up to 'soNumResources'
   -- times 'soNumStripes' connections divided by the number of capabilities,
   -- rounded up. A thread then takes connections from its own capability's
-  -- stripe, so a request can wait for one while other stripes have room.
+  -- stripe, so a request can wait for one while other stripes have room. With
+  -- 0.4 and 0.5.0.0, stripes beyond the number of capabilities are never used.
   , soNumStripes :: Int
 #if MIN_VERSION_resource_pool(0,4,0)
   -- | Connection keep-alive duration.
