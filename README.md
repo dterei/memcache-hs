@@ -236,6 +236,12 @@ more that you set yourself makes one more attempt than in 0.4. Set it one
 lower to keep the old number of attempts. The default went from 2 to 1, which
 still means two attempts.
 
+When a server's host name resolves to several addresses, the client now tries
+each in turn, where 0.4 tried only the first. If the addresses are separate
+memcached instances, give each its own `ServerSpec`: while the first refuses
+connections, new connections go to the next one that accepts, and so to another
+cache.
+
 ## Licensing
 
 This library is BSD-licensed.
@@ -319,8 +325,9 @@ There are two test suites:
 
 CI lints with [HLint](https://github.com/ndmitchell/hlint) 3.10, so please
 check that `hlint .` prints `No hints` before opening a pull request. For any
-user-visible change, add a line to [CHANGELOG.md](CHANGELOG.md) under an
-`Unreleased` heading at the top, adding the heading if it isn't there.
+user-visible change, propose a line for [CHANGELOG.md](CHANGELOG.md) in the
+pull request's description; don't edit the file, as the next release's pull
+request adds the lines.
 
 CI runs both build tools on every pull request. The `CI` workflow builds and
 tests with Stack against each `stack*.yaml` snapshot, and runs HLint and

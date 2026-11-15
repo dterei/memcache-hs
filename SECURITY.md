@@ -2,14 +2,16 @@
 
 ## Supported Versions
 
-Security fixes are made for the latest release series, currently 0.4.x, and
-released as a new version of it on Hackage. Older series don't receive fixes,
-so please upgrade to the latest 0.4 release.
+Security fixes are made for the latest release series, currently 0.5.x, and
+released as a new version of it on Hackage. The previous series, 0.4.x, also
+gets security fixes until May 18th, 2027. Older series don't receive fixes, so
+please upgrade to the latest 0.5 release.
 
-| Version | Supported          |
-| ------- | ------------------ |
-| 0.4.x   | :white_check_mark: |
-| < 0.4   | :x:                |
+| Version | Supported                               |
+| ------- | --------------------------------------- |
+| 0.5.x   | :white_check_mark:                      |
+| 0.4.x   | :white_check_mark: until May 18th, 2027 |
+| < 0.4   | :x:                                     |
 
 ## Reporting a Vulnerability
 
