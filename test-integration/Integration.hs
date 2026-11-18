@@ -25,6 +25,7 @@ import qualified Network.Socket           as N
 import qualified Network.Socket.ByteString as NB
 import           System.Directory         (doesFileExist, findExecutable, getTemporaryDirectory,
                                            removeFile, removePathForcibly)
+import qualified System.Directory         as Dir
 import           System.Exit              (ExitCode)
 import           System.IO                (hClose, hPutStr, openTempFile,
                                            openTempFileWithDefaultPermissions)
@@ -377,16 +378,17 @@ clusterSpecs ports = beforeAll newClusterClient $ do
 restartSpecs :: FilePath -> Spec
 restartSpecs executable = do
   it "isn't marked dead when the pool held several connections" $ do
-    port <- freePort
-    client <- M.newClient [ServerSpec "127.0.0.1" (show port) M.NoAuth]
-      M.def { M.optsServerOptions = M.def { M.soNumResources = 3 } }
-    [server] <- toList <$> Cluster.getServers client
-    withMemcachedOn executable [] port $ do
+    (port, client, server) <- withMemcached executable [] $ \port -> do
+      client <- M.newClient [ServerSpec "127.0.0.1" (show port) M.NoAuth]
+        M.def { M.optsServerOptions = M.def { M.soNumResources = 3 } }
+      [server] <- toList <$> Cluster.getServers client
       _ <- M.set client "integration-restart" "value" 0 0
       -- Hold three connections at once, so that the pool keeps three.
       Server.withSocket server $ \_ -> Server.withSocket server $ \_ ->
         Server.withSocket server $ \_ -> return ()
-    -- That memcached has exited, closing all three. A new one starts empty.
+      return (port, client, server)
+    -- That memcached has exited, closing all three. A new one starts empty,
+    -- on the same port, which another process could take in between.
     withMemcachedOn executable [] port $ do
       M.get client "integration-restart" `shouldReturn` Nothing
       readIORef (Server.failed server) `shouldReturn` 0
@@ -395,11 +397,11 @@ restartSpecs executable = do
   -- client checks the pooled connection before sending it, finds it closed,
   -- and sends the increment once, on a new connection.
   it "sends an increment once, on a new connection, after a restart" $ do
-    port <- freePort
-    client <- M.newClient [ServerSpec "127.0.0.1" (show port) M.NoAuth] M.def
-    [server] <- toList <$> Cluster.getServers client
-    withMemcachedOn executable [] port $
-      void $ M.set client "integration-restart-counter" "0" 0 0
+    (port, client, server) <- withMemcached executable [] $ \port -> do
+      client <- M.newClient [ServerSpec "127.0.0.1" (show port) M.NoAuth] M.def
+      [server] <- toList <$> Cluster.getServers client
+      _ <- M.set client "integration-restart-counter" "0" 0 0
+      return (port, client, server)
     withMemcachedOn executable [] port $ do
       other <- M.newClient [ServerSpec "127.0.0.1" (show port) M.NoAuth] M.def
       _ <- M.set other "integration-restart-counter" "5" 0 0
@@ -429,9 +431,8 @@ pausedSpecs executable = do
   -- requests one higher than before. A retry would have been sent before
   -- memcached continued, on a new connection, so memcached would carry it
   -- out too, whether or not its reply came in time.
-  withPaused key initial stat run expected = do
-    port <- freePort
-    withMemcachedProcessOn executable [] port $ \process -> do
+  withPaused key initial stat run expected =
+    withMemcachedProcess executable [] $ \(port, process) -> do
       let spec = ServerSpec "127.0.0.1" (show port) M.NoAuth
       client <- M.newClient [spec] M.def { M.optsServerTimeout = 300 }
       other <- M.newClient [spec] M.def
@@ -444,10 +445,15 @@ pausedSpecs executable = do
       -- Open the client's connection first, so the request is all that
       -- waits for memcached.
       _ <- M.get client key
-      signal "STOP" process
-      result <- (Async.async (run client key) >>= \running -> threadDelay 650000 >> try (Async.wait running))
+      -- Whatever fails from the STOP on, continue memcached: it acts on the
+      -- SIGTERM that ends it after the test only once it continues. An
+      -- operation the client failed to time out would wait for memcached for
+      -- ever, so give it 5 s, and cancel it if it is still running then.
+      result <- (signal "STOP" process >> waitStopped process
+                  >> Async.withAsync (run client key) (\running ->
+                       threadDelay 650000 >> timeout 5000000 (try (Async.wait running))))
         `finally` signal "CONT" process
-      result `shouldBe` Left (M.ClientError M.Timeout)
+      result `shouldBe` Just (Left (M.ClientError M.Timeout))
       readIORef (Server.failed server) >>= (`shouldNotBe` 0)
       threadDelay 300000
       fmap first <$> M.get other key `shouldReturn` expected
@@ -558,8 +564,15 @@ withMemcached
   -> [String]
   -> (Int -> IO a)
   -> IO a
-withMemcached executable args action =
-  bracket (start (5 :: Int)) (stopMemcached . snd) (action . fst)
+withMemcached executable args action = withMemcachedProcess executable args (action . fst)
+
+-- | Like 'withMemcached', giving the action memcached's process too.
+withMemcachedProcess
+  :: FilePath
+  -> [String]
+  -> ((Int, ProcessHandle) -> IO a)
+  -> IO a
+withMemcachedProcess executable args = bracket (start (5 :: Int)) (stopMemcached . snd)
  where
   -- Another process can take the port before memcached listens on it, as
   -- when several runs of these tests share a machine. memcached then exits,
@@ -601,6 +614,25 @@ signal :: String -> ProcessHandle -> IO ()
 signal name process = do
   pid <- getPid process
   mapM_ (\p -> callProcess "kill" ["-" <> name, show p]) pid
+
+-- | Wait until every thread of a process sent @STOP@ has stopped. kill(1)
+-- returns once the signal is pending: on Linux one thread takes it and only
+-- then stops the others, which until then can still read and answer a
+-- request. A stopped thread is in state T, or t if the process is traced, as
+-- under strace. Where there is no @\/proc@ to check, wait a moment instead.
+waitStopped :: ProcessHandle -> IO ()
+waitStopped process = getPid process >>= mapM_ (go (500 :: Int))
+  where
+    go 0 pid = fail $ "process " <> show pid <> " did not stop within 5 s of SIGSTOP"
+    go attempts pid = do
+      let dir = "/proc/" <> show pid <> "/task/"
+      checkable <- Dir.doesDirectoryExist dir
+      if not checkable then threadDelay 100000 else do
+        threads <- Dir.listDirectory dir
+        -- A thread's state follows its name, which is in parentheses.
+        states <- forM threads $ \thread ->
+          B.take 1 . B.drop 1 . snd . B.breakEnd (== ')') <$> B.readFile (dir <> thread <> "/stat")
+        if all (`elem` ["T", "t"]) states then return () else threadDelay 10000 >> go (attempts - 1) pid
 
 -- | Run an action against @n@ memcached servers.
 withMemcacheds :: FilePath -> Int -> ([Int] -> IO a) -> IO a
