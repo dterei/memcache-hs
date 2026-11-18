@@ -320,6 +320,9 @@ main = hspec $ do
       mapM_ (\n -> recvResponseFrom ("VA " <> n <> "\r\nabc\r\n") `shouldThrow` isBadLength)
         ["(3)", "+3", "-3", "0x3", "3x", "18446744073709551619"]
 
+    it "rejects a value reply with no length" $
+      mapM_ (\reply -> recvResponseFrom reply `shouldThrow` isBadLength) ["VA\r\n", "VA \r\n", "VA\r\nabc\r\n"]
+
     -- Reply lines are split on spaces alone, so a token can also hold other
     -- whitespace, which a lenient parser would skip around a number.
     it "reads a number that shares its token with other whitespace as invalid" $ do
@@ -814,6 +817,84 @@ main = hspec $ do
         result <- Client.stats client (Just "cachedump 1 1")
         map snd result `shouldBe` [[("ITEM", "key [3 b; 0 s]")]]
 
+    -- memcached lists some keys in cachedump as they are stored, and a key
+    -- can hold a line break, here followed by END and a forged reply. The
+    -- reply as stats reads it ends at that END, so stats must close the
+    -- connection rather than leave the rest to be read as the next reply.
+    it "closes its connection, so a dump cut short by a key can't answer a later request" $
+      withServerAndClient
+        [MR "ITEM k\nEND\r\nVA 4 f0 c0\r\nevil\r\n [1 b; 0 s]\r\nEND\r\n", MR "EN\r\n"] $ \server client -> do
+          map snd <$> Client.stats client (Just "cachedump 1 0") `shouldReturn` [[("ITEM", "k")]]
+          Client.get client "victim" `shouldReturn` Nothing
+          mockRequests server `shouldReturn` ["stats cachedump 1 0\r\n", "mg victim v f c\r\n"]
+          mockClosed server `shouldReturn` 1
+
+    -- A cachedump key's bytes read as a line of their own after the key's line
+    -- break, so a key holding "k\nITEM forged [9 b; 0 s]" splits into two
+    -- entries, the second one the server never sent as an entry.
+    it "reads the bytes after a key's line break as further entries" $
+      withServerAndClient [MR "ITEM k\nITEM forged [9 b; 0 s] [1 b; 0 s]\r\nEND\r\n"] $ \_ client ->
+        map snd <$> Client.stats client (Just "cachedump 1 0")
+          `shouldReturn` [[("ITEM", "k"), ("ITEM", "forged [9 b; 0 s] [1 b; 0 s]")]]
+
+    -- A cachedump key whose bytes hold an empty line (here "k\n\ny") makes
+    -- stats read an empty line after the first entry. That can only be a key's
+    -- bytes, not a reply, so stats throws its error without sending the
+    -- request again or marking the server dead, and a later request still
+    -- reaches the server. The connection is closed all the same.
+    it "throws a cachedump key's empty line without a retry or a dead mark" $
+      withServerAndClient [MR "ITEM k\n\ny [1 b; 0 s]\r\nEND\r\n", MR "EN\r\n"] $ \server client -> do
+        Client.stats client (Just "cachedump 1 0") `shouldThrow` isUnknownPkt
+        Client.get client "victim" `shouldReturn` Nothing
+        mockRequests server `shouldReturn` ["stats cachedump 1 0\r\n", "mg victim v f c\r\n"]
+        mockClosed server `shouldReturn` 1
+
+    -- The same for a key whose bytes hold a SERVER_ERROR line: memcached never
+    -- sends one in the middle of a stats reply, so after the first entry it
+    -- can only be a key's bytes, thrown without failing the server over.
+    it "throws a cachedump key's SERVER_ERROR line without a retry or a dead mark" $
+      withServerAndClient [MR "ITEM k\nSERVER_ERROR x [1 b; 0 s]\r\nEND\r\n", MR "EN\r\n"] $ \server client -> do
+        Client.stats client (Just "cachedump 1 0") `shouldThrow` isServerError
+        Client.get client "victim" `shouldReturn` Nothing
+        mockRequests server `shouldReturn` ["stats cachedump 1 0\r\n", "mg victim v f c\r\n"]
+        mockClosed server `shouldReturn` 1
+
+    -- stats throws a key's error only once every server has answered. Here
+    -- both servers list a key holding an empty line, and would list it again
+    -- for a resend, so whichever server stats asks first, the other must
+    -- still be asked. Neither is sent the request twice, and neither is
+    -- marked dead.
+    it "asks every server before throwing a cachedump key's error" $ do
+      let dump = MR "ITEM k\n\ny [1 b; 0 s]\r\nEND\r\n"
+      withTwoServerClient [dump, dump] [dump, dump] $ \a b client -> do
+        Client.stats client (Just "cachedump 1 0") `shouldThrow` isUnknownPkt
+        mockRequests a `shouldReturn` ["stats cachedump 1 0\r\n"]
+        mockRequests b `shouldReturn` ["stats cachedump 1 0\r\n"]
+        Cluster.getServers client >>= mapM_ (\s -> readIORef (Server.failed s) `shouldReturn` 0)
+
+    -- A SERVER_ERROR on the reply's first line is the server's own reply, and
+    -- one that names no status, as here, is a server failure: out of retries
+    -- it marks the server dead, and a later request to it finds no server
+    -- ready.
+    it "fails the server over a SERVER_ERROR on the stats reply's first line" $
+      withServerAndClientOpts
+        Client.def { Client.optsServerRetries = 0, Client.optsDeadRetryDelay = 60000 }
+        [MR "SERVER_ERROR x\r\n"] $ \_ client -> do
+        Client.stats client Nothing `shouldThrow` isServerError
+        Client.get client "key" `shouldThrow` (== ClientError NoServersReady)
+
+    -- The entries that keys' line breaks add count towards the limit of
+    -- 262,144 entries like any others, so a dump they take over it fails the
+    -- server over, as any reply that is too long does. Here 2,900 keys of 181
+    -- bytes each hold 90 line breaks, so 2,900 items give 263,900 entries.
+    it "fails the server over a dump that keys' line breaks take over the entry limit" $ do
+      let item = "ITEM k" <> B.concat (replicate 90 "\nx") <> " [1 b; 0 s]\r\n"
+      withServerAndClientOpts
+        (slowStats Client.def { Client.optsServerRetries = 0, Client.optsDeadRetryDelay = 60000 })
+        [MR (B.concat (replicate 2900 item) <> "END\r\n")] $ \_ client -> do
+        Client.stats client (Just "cachedump 1 0") `shouldThrow` isBadLength
+        Client.get client "key" `shouldThrow` (== ClientError NoServersReady)
+
     -- stats reads its reply a line at a time: a line that starts with VA is
     -- an entry like any other, and each line is split as other replies are.
     it "splits each stats line as other replies are, even one that starts with VA" $
@@ -1299,6 +1380,21 @@ main = hspec $ do
           waitForRequests server 1 `shouldReturn` ["mg key v f c\r\n"]
           idle <- Server.withSocket s return
           wait failing `shouldThrow` isBadCommand
+          readIORef (Server.failed s) `shouldReturn` 0
+          sendRaw idle "mn\r\n" `shouldReturn` ()
+
+    -- Nor does the error that stats throws for a listed key's bytes, here an
+    -- empty line after a cachedump reply's first entry: stats closes only the
+    -- connection the reply came on. As above, the mock holds back the reply
+    -- for 300 ms while a second connection is opened and given back.
+    it "doesn't close the idle connections when a stats key's bytes hold an empty line" $
+      withServerAndClientOpts (threeConnections oneAttempt)
+        [DelayMS 300 (MR "ITEM k\n\ny [1 b; 0 s]\r\nEND\r\n"), Noop] $ \server client -> do
+          [s] <- toList <$> Cluster.getServers client
+          failing <- async $ Client.stats client (Just "cachedump 1 0")
+          waitForRequests server 1 `shouldReturn` ["stats cachedump 1 0\r\n"]
+          idle <- Server.withSocket s return
+          wait failing `shouldThrow` isUnknownPkt
           readIORef (Server.failed s) `shouldReturn` 0
           sendRaw idle "mn\r\n" `shouldReturn` ()
 
