@@ -43,6 +43,11 @@ data MockResponse
     -- | Send these bytes over and over until the client closes the
     -- connection.
     | Repeat B.ByteString
+    -- | Reply with these bytes, then reset the connection: close it with
+    -- @SO_LINGER@ set to 0, so that once the client has read the bytes, its
+    -- next read fails with @ECONNRESET@ rather than finding the connection
+    -- closed. TCP only. The 'MVar' is filled once the connection is closed.
+    | ReplyThenReset B.ByteString (MVar ())
 
 -- | A running mock server.
 data MockServer = MockServer
@@ -258,6 +263,15 @@ serveConnection client remaining received closed =
       DelayMS ms r' -> threadDelay (ms * 1000) >> respond r'
       CloseConnection -> return False
       Repeat bytes  -> forever (N.sendAll client bytes)
+      -- The connection is closed here, so that the MVar is filled only once
+      -- it is closed. Closing it again, as serveConnection does, does
+      -- nothing.
+      ReplyThenReset bytes reset -> do
+        N.sendAll client bytes
+        N.setSockOpt client N.Linger (N.StructLinger 1 0)
+        N.close client
+        void (tryPutMVar reset ())
+        return False
 
 -- | Read one request: its command line and, for storage commands, the data
 -- block that follows it.

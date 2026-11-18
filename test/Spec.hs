@@ -404,6 +404,31 @@ main = hspec $ do
     it "rejects an unterminated response line" $
       recvResponseFrom (C.replicate (16 * 1024) 'x') `shouldThrow` isBadLength
 
+  describe "idle check" $ do
+    -- A read can take more than the reply it is for. The rest then waits in
+    -- the connection's buffer, where the socket doesn't show it.
+    it "rejects bytes waiting in the connection's buffer" $
+      bracket (N.socketPair N.AF_UNIX N.Stream 0) closePair $ \(left, right) -> do
+        connection <- newConnection left
+        N.sendAll right "MN\r\nMN\r\n"
+        recvResponse connection `shouldReturn` Response "MN" [] ""
+        checkIdle connection `shouldThrow` isUnexpectedResponse
+        recvResponse connection `shouldReturn` Response "MN" [] ""
+        checkIdle connection
+
+    -- The check fails on a reset that nothing has read with the error that
+    -- reading would get, not as on a connection the server closed. The mock
+    -- answers the mn, then resets the connection.
+    it "reports a reset that nothing has read as an IOException" $ do
+      reset <- newEmptyMVar
+      withServerAndClient [ReplyThenReset "MN\r\n" reset] $ \_ client -> do
+        [s] <- toList <$> Cluster.getServers client
+        Server.withSocket s $ \c -> do
+          sendRaw c "mn\r\n"
+          recvResponse c `shouldReturn` Response "MN" [] ""
+          timeout 5000000 (takeMVar reset) `shouldReturn` Just ()
+          checkIdle c `shouldThrow` anyIOException
+
   describe "error messages" $ do
     let everyError detail =
           map OpError
@@ -502,6 +527,18 @@ main = hspec $ do
       withClient [MR "VA 1 f0 c1 O0\r\na\r\n", Noop, MR "VA 1 f0 c1 O2\r\na\r\n", MR "MN\r\n"] $ \client ->
         Client.getMany client ["key", "other", "key"] `shouldReturn` [("key", ("a", 0, 1)), ("key", ("a", 0, 1))]
 
+    -- A batch is written whole before its replies are read, so it must be
+    -- small enough that the replies can't fill the socket buffers first,
+    -- which would leave both ends blocked until the attempt runs out of
+    -- time. A server's requests go in batches of at most 256, each ended by
+    -- an mn, and the opaques count on from one batch to the next.
+    it "closes a batch once it holds 256 requests" $
+      withServerAndClient
+        (replicate 256 Noop ++ [MR "MN\r\n"] ++ replicate 43 Noop ++ [MR "VA 1 f0 c1 O299\r\nv\r\n", MR "MN\r\n"]) $
+        \server client -> do
+          Client.getMany client batchKeys `shouldReturn` [("key299", ("v", 0, 1))]
+          batchEnds <$> mockRequests server `shouldReturn` [256, 301]
+
     it "reads a malformed CAS or flags as zero rather than wrapping them" $
       withClient [MR "VA 3 f2 c-1 O0\r\nfoo\r\n", MR "VA 3 f4294967298 c7 O1\r\nbar\r\n", MR "MN\r\n"] $ \client ->
         Client.getMany client ["one", "two"] `shouldReturn` [("one", ("foo", 2, 0)), ("two", ("bar", 0, 7))]
@@ -569,6 +606,38 @@ main = hspec $ do
           Client.get client "two" `shouldReturn` Just ("foo", 2, 7)
           mockRequests server `shouldReturn` ["mg one v f c q O0\r\n", "mn\r\n", "mg two v f c\r\n"]
 
+    -- A SERVER_ERROR whose text names no status, as memcached's proxy sends
+    -- when a backend fails, is a server failure in a batch too: the batch is
+    -- sent again on a new connection, and the retry's success leaves the
+    -- server alive. The mock answers the first attempt's mn, as the proxy
+    -- does, and keeps the connection open, so only the SERVER_ERROR can make
+    -- the client send the batch again.
+    it "sends the batch again after a server error" $
+      withServerAndClientOpts fastFailover
+        [MR "SERVER_ERROR backend failure\r\n", MR "MN\r\n", Noop, MR "VA 1 c5 O0\r\nv\r\nMN\r\n"] $
+        \server client -> do
+          Client.getMany client ["key"] `shouldReturn` [("key", ("v", 0, 5))]
+          mockRequests server `shouldReturn`
+            ["mg key v f c q O0\r\n", "mn\r\n", "mg key v f c q O0\r\n", "mn\r\n"]
+          [s] <- toList <$> Cluster.getServers client
+          readIORef (Server.failed s) `shouldReturn` 0
+
+    -- The proxy goes on to answer the batch's other keys and its mn. Here
+    -- only the first key's backend has failed, so the second key's hit
+    -- follows the SERVER_ERROR. The whole batch must still be sent again,
+    -- and the result is the retry's.
+    it "sends the whole batch again after a server error for one of its keys" $
+      withServerAndClientOpts fastFailover
+        [ MR "SERVER_ERROR backend failure\r\n", Noop, MR "VA 1 c1 O1\r\nw\r\nMN\r\n"
+        , Noop, Noop, MR "VA 1 c5 O0\r\nv\r\nVA 1 c1 O1\r\nw\r\nMN\r\n" ] $
+        \server client -> do
+          Client.getMany client ["a", "b"] `shouldReturn` [("a", ("v", 0, 5)), ("b", ("w", 0, 1))]
+          mockRequests server `shouldReturn`
+            [ "mg a v f c q O0\r\n", "mg b v f c q O1\r\n", "mn\r\n"
+            , "mg a v f c q O0\r\n", "mg b v f c q O1\r\n", "mn\r\n" ]
+          [s] <- toList <$> Cluster.getServers client
+          readIORef (Server.failed s) `shouldReturn` 0
+
     -- As for a server failure, the batch is sent again on a new connection,
     -- and the failure counts towards marking the server dead.
     it "sends the batch again after a reply with an unknown code" $
@@ -586,6 +655,18 @@ main = hspec $ do
           Client.getMany client ["one"] `shouldThrow` (== ProtocolError (UnknownStatus "XX"))
           Client.get client "two" `shouldThrow` (== ClientError NoServersReady)
           length <$> mockRequests server `shouldReturn` 4
+
+    -- A SERVER_ERROR whose text names no status counts against the server
+    -- in a batch too. Each answers the batch's mn, so the mock has recorded
+    -- both requests of each attempt before the client sees it.
+    it "marks the server dead once every attempt at a batch gets a server error" $
+      withServerAndClientOpts fastFailover
+        [Noop, MR "SERVER_ERROR backend failure\r\nMN\r\n", Noop, MR "SERVER_ERROR backend failure\r\nMN\r\n"] $
+        \server client -> do
+          Client.getMany client ["key"] `shouldThrow` (== ProtocolError (E.ServerError "backend failure"))
+          length <$> mockRequests server `shouldReturn` 4
+          [s] <- toList <$> Cluster.getServers client
+          readIORef (Server.failed s) >>= (`shouldNotBe` 0)
 
   describe "setMany" $ do
     it "stores each pair and returns its version" $
@@ -656,6 +737,16 @@ main = hspec $ do
             `shouldReturn` [("one", 1), ("two", 2), ("three", 3), ("four", 4)]
           map (== "mn\r\n") <$> mockRequests server `shouldReturn` [False, False, True, False, True, False, True]
 
+    -- As for getMany, a batch holds at most 256 requests, and the opaques
+    -- count on from one batch to the next.
+    it "closes a batch once it holds 256 requests" $ do
+      let stored i = MR ("HD c" <> asDecimal (i + 1) <> " O" <> asDecimal i <> "\r\n")
+      withServerAndClient
+        (map stored [0 .. 255 :: Int] ++ [MR "MN\r\n"] ++ map stored [256 .. 299 :: Int] ++ [MR "MN\r\n"]) $
+        \server client -> do
+          Client.setMany client [(key, "v", 0, 0) | key <- batchKeys] `shouldReturn` zip batchKeys [1 ..]
+          batchEnds <$> mockRequests server `shouldReturn` [256, 301]
+
     it "throws a reply other than stored, after reading the whole batch" $
       withMockServer
         [ MR "CLIENT_ERROR unauthenticated\r\n", MR "STORED\r\n"
@@ -688,6 +779,15 @@ main = hspec $ do
         Client.deleteMany client ["a1", "b1"] `shouldReturn` ()
         mockRequests a `shouldReturn` ["md a1 O0\r\n", "mn\r\n"]
         mockRequests b `shouldReturn` ["md b1 O1\r\n", "mn\r\n"]
+
+    -- As for getMany, a batch holds at most 256 requests.
+    it "closes a batch once it holds 256 requests" $ do
+      let deleted i = MR ("HD O" <> asDecimal i <> "\r\n")
+      withServerAndClient
+        (map deleted [0 .. 255 :: Int] ++ [MR "MN\r\n"] ++ map deleted [256 .. 299 :: Int] ++ [MR "MN\r\n"]) $
+        \server client -> do
+          Client.deleteMany client batchKeys `shouldReturn` ()
+          batchEnds <$> mockRequests server `shouldReturn` [256, 301]
 
     it "checks every key before sending anything" $
       withServerAndClient [MR "HD O0\r\n", MR "MN\r\n"] $ \server client -> do
@@ -1140,6 +1240,19 @@ main = hspec $ do
         Client.get client "key" `shouldReturn` Just ("foo", 2, 7)
         length <$> mockRequests server `shouldReturn` 2
 
+    -- A SERVER_ERROR whose text names no status counts against the server
+    -- for a request that can be repeated too: once every attempt has got
+    -- one, it is thrown and the server is marked dead. Behind memcached's
+    -- proxy, a get for a key on a failed backend marks the whole proxy dead
+    -- this way.
+    it "marks the server dead once every attempt gets a server error" $
+      withServerAndClientOpts fastFailover
+        [MR "SERVER_ERROR backend failure\r\n", MR "SERVER_ERROR backend failure\r\n"] $ \server client -> do
+          Client.get client "key" `shouldThrow` (== ProtocolError (E.ServerError "backend failure"))
+          length <$> mockRequests server `shouldReturn` 2
+          [s] <- toList <$> Cluster.getServers client
+          readIORef (Server.failed s) >>= (`shouldNotBe` 0)
+
     it "retries after an operation times out" $
       withServerAndClientOpts fast [DelayMS 350 Noop, MR "VA 3 f2 c7\r\nfoo\r\n"] $ \_ client ->
         Client.get client "key" `shouldReturn` Just ("foo", 2, 7)
@@ -1368,11 +1481,13 @@ main = hspec $ do
         readIORef (Server.failed s) `shouldReturn` 0
         sendRaw idle "mn\r\n" `shouldReturn` ()
 
-    -- An error reply is an answer, not a server failure, so it closes no idle
-    -- connection either. The get opens the pool's first connection, and the
-    -- mock holds back its reply for 300 ms. Meanwhile a second connection is
-    -- opened and given back, so it is idle when the reply comes.
-    it "doesn't close the idle connections when a request gets an error reply" $
+    -- A CLIENT_ERROR reply is an answer, not a server failure, so it closes
+    -- no idle connection either; a SERVER_ERROR whose text names no status is
+    -- a server failure, as a later test checks. The get opens the pool's first
+    -- connection, and the mock holds back its reply for 300 ms. Meanwhile a
+    -- second connection is opened and given back, so it is idle when the
+    -- reply comes.
+    it "doesn't close the idle connections when a request gets a CLIENT_ERROR reply" $
       withServerAndClientOpts (threeConnections oneAttempt)
         [DelayMS 300 (MR "CLIENT_ERROR bad\r\n"), Noop] $ \server client -> do
           [s] <- toList <$> Cluster.getServers client
@@ -1618,10 +1733,11 @@ main = hspec $ do
 
     -- A request that mustn't be sent twice isn't sent again once the server
     -- may have it: neither after its reply runs out of time, nor after the
-    -- server drops its connection. The mock would answer a retry on a new
-    -- connection. The operation throws the failure, with its retry unused,
-    -- and the server is marked dead, as when the last attempt fails. A retry
-    -- would have been sent before the operation returned.
+    -- server drops its connection, nor after a SERVER_ERROR reply whose text
+    -- names no status, which is a server failure too. The mock would answer a
+    -- retry on a new connection. The operation throws the failure, with its
+    -- retry unused, and the server is marked dead, as when the last attempt
+    -- fails. A retry would have been sent before the operation returned.
     forM_ sentOnce $ \(name, reply, run) -> do
       it ("doesn't send " <> name <> " again after its reply times out") $
         withServerAndClientOpts fastStaysDead [Noop, MR reply] $ \server client -> do
@@ -1634,6 +1750,13 @@ main = hspec $ do
         withServerAndClientOpts fastStaysDead [CloseConnection, MR reply] $ \server client -> do
           [s] <- toList <$> Cluster.getServers client
           run client `shouldThrow` isUnexpectedEOF
+          length <$> mockRequests server `shouldReturn` 1
+          readIORef (Server.failed s) >>= (`shouldNotBe` 0)
+
+      it ("doesn't send " <> name <> " again after a server error") $
+        withServerAndClientOpts fastStaysDead [MR "SERVER_ERROR backend failure\r\n", MR reply] $ \server client -> do
+          [s] <- toList <$> Cluster.getServers client
+          run client `shouldThrow` (== ProtocolError (E.ServerError "backend failure"))
           length <$> mockRequests server `shouldReturn` 1
           readIORef (Server.failed s) >>= (`shouldNotBe` 0)
 
@@ -1740,12 +1863,16 @@ main = hspec $ do
     -- memcached's idle_timeout leaves them, is closed instead, and that
     -- failure, before sending, is retried: the request is sent once, on a new
     -- connection, and the server isn't marked dead. Sent on the old one, it
-    -- would fail after it may have reached the server.
+    -- would fail after it may have reached the server. leaveThreeClosed reads
+    -- each connection, and a read that reports a reset leaves the connection
+    -- reading as closed, so here the check finds all three closed. The test
+    -- after this one leaves a reset that nothing has read.
     forM_
-      [ ("closed", \s -> leaveThreeClosed s "mn\r\n" isUnexpectedEOF)
-      , ("reset", \s -> leaveThreeClosed s "mn\r\nmn\r\n" anyIOException)
+      [ ("closed the idle ones", \s -> leaveThreeClosed s "mn\r\n" isUnexpectedEOF)
+      , ("reset the idle ones and the client has read the resets"
+        , \s -> leaveThreeClosed s "mn\r\nmn\r\n" anyIOException)
       ] $ \(ended, leaveThree) ->
-      it ("sends an increment once, on a new connection, when the server has " <> ended <> " the idle ones") $
+      it ("sends an increment once, on a new connection, when the server has " <> ended) $
         withServerAndClientOpts (threeConnections fast)
           [CloseConnection, CloseConnection, CloseConnection, MR "VA 1 c5\r\n6\r\n"] $ \server client -> do
             [s] <- toList <$> Cluster.getServers client
@@ -1753,6 +1880,22 @@ main = hspec $ do
             Client.increment client "key" 0 1 0 0 `shouldReturn` Just (6, 5)
             readIORef (Server.failed s) `shouldReturn` 0
             mockRequests server `shouldReturn` replicate 3 "mn\r\n" ++ ["ma key D1 MI v c N0 J0\r\n"]
+
+    -- Here the mock answers an mn on the connection and then resets it, as a
+    -- firewall or a load balancer may reset an idle connection, and the
+    -- connection goes back to the pool with the reset unread. Sent on it, the
+    -- increment would fail once it counts as sent, so it would be thrown and
+    -- the server marked dead. The increment must start only once the mock has
+    -- reset the connection, or it could be sent before the reset.
+    it "sends an increment once, on a new connection, when an unread reset is waiting on the idle one" $ do
+      reset <- newEmptyMVar
+      withServerAndClientOpts fast [ReplyThenReset "MN\r\n" reset, MR "VA 1 c5\r\n6\r\n"] $ \server client -> do
+        [s] <- toList <$> Cluster.getServers client
+        Server.withSocket s $ \c -> sendRaw c "mn\r\n" >> void (recvResponse c)
+        timeout 5000000 (takeMVar reset) `shouldReturn` Just ()
+        Client.increment client "key" 0 1 0 0 `shouldReturn` Just (6, 5)
+        readIORef (Server.failed s) `shouldReturn` 0
+        mockRequests server `shouldReturn` ["mn\r\n", "ma key D1 MI v c N0 J0\r\n"]
 
     -- Bytes waiting on an idle connection would be read as the reply to the
     -- next request, so that connection is closed too, before the request is
@@ -1769,6 +1912,20 @@ main = hspec $ do
         readIORef (Server.failed s) `shouldReturn` 0
         mockRequests server `shouldReturn` ["mn\r\n", "ma key D1 MI v c N0 J0\r\n"]
 
+    -- Bytes can also wait in the connection's own buffer, where the socket
+    -- doesn't show them: an earlier read took them with the reply before
+    -- them. Here the mock answers one mn with two MNs, which the client reads
+    -- at once, and takes one as the reply. The mock sees the connection
+    -- closed before the increment reaches it, on a new one.
+    it "sends an increment once, on a new connection, when a reply is waiting in the idle one's buffer" $
+      withServerAndClientOpts fast [MR "MN\r\nMN\r\n", MR "VA 1 c5\r\n6\r\n"] $ \server client -> do
+        [s] <- toList <$> Cluster.getServers client
+        Server.withSocket s $ \c -> sendRaw c "mn\r\n" >> void (recvResponse c)
+        Client.increment client "key" 0 1 0 0 `shouldReturn` Just (6, 5)
+        readIORef (Server.failed s) `shouldReturn` 0
+        mockClosed server `shouldReturn` 1
+        mockRequests server `shouldReturn` ["mn\r\n", "ma key D1 MI v c N0 J0\r\n"]
+
     -- A failure after sending that ends the operation still closes the
     -- server's idle connections, as any server failure does. The increment
     -- opens the pool's first connection, and the mock drops it 300 ms after
@@ -1783,6 +1940,22 @@ main = hspec $ do
           wait failing `shouldThrow` isUnexpectedEOF
           readIORef (Server.failed s) >>= (`shouldNotBe` 0)
           sendRaw idle "mn\r\n" `shouldThrow` anyIOException
+
+    -- So does a SERVER_ERROR reply whose text names no status, as memcached's
+    -- proxy sends when a backend fails, although the server answered. Here
+    -- the mock sends it 300 ms after the increment's request, while a second
+    -- connection is idle. The increment has a retry left, and doesn't use it.
+    it "closes the idle connections and marks the server dead when a request sent once gets a server error" $
+      withServerAndClientOpts (threeConnections dropping)
+        [DelayMS 300 (MR "SERVER_ERROR backend failure\r\n"), Noop] $ \server client -> do
+          [s] <- toList <$> Cluster.getServers client
+          failing <- async $ Client.increment client "key" 0 1 0 0
+          waitForRequests server 1 `shouldReturn` ["ma key D1 MI v c N0 J0\r\n"]
+          idle <- Server.withSocket s return
+          wait failing `shouldThrow` (== ProtocolError (E.ServerError "backend failure"))
+          readIORef (Server.failed s) >>= (`shouldNotBe` 0)
+          sendRaw idle "mn\r\n" `shouldThrow` anyIOException
+          mockRequests server `shouldReturn` ["ma key D1 MI v c N0 J0\r\n"]
 
   -- The mock serves one connection at a time, so it only answers a second
   -- client once the first client's connection has closed.
@@ -2846,6 +3019,11 @@ main = hspec $ do
     fastFailover = Client.def { Client.optsFailRetryDelay = 10, Client.optsDeadRetryDelay = 60000 }
     -- One attempt per operation, and a server it marks dead is used again at once.
     oneAttempt = Client.def { Client.optsServerRetries = 0, Client.optsDeadRetryDelay = 0 }
+    -- 300 keys, more than a batch holds: a batch of 256, then one of 44.
+    batchKeys = [C.pack ("key" <> show i) | i <- [0 .. 299 :: Int]]
+    -- Where each batch ended among the requests the mock received: the
+    -- positions of the mn requests.
+    batchEnds requests = [i | (i, "mn\r\n") <- zip [0 :: Int ..] requests]
     -- The operations whose request mustn't be sent twice, each with a
     -- successful reply the mock would give a retry.
     sentOnce :: [(String, B.ByteString, Client.Client -> IO ())]

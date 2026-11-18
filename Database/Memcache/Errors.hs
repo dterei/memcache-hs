@@ -50,9 +50,21 @@ instance Exception MemcacheError where
 
 -- | Errors that occur on the client.
 data ClientError
-    -- | All servers are currently marked failed.
+    -- | No server is available: the cluster has none, every server is marked
+    -- failed, or the router ('Database.Memcache.Cluster.optsGetServerForKey')
+    -- chose none.
     = NoServersReady
-    -- | Timeout occurred sending request to server.
+    -- | The attempt that ended an operation ran out of time
+    -- ('Database.Memcache.Cluster.optsServerTimeout'): the last attempt, or,
+    -- for a request that mustn't be sent twice, the attempt that had started
+    -- sending it. The attempt may have been waiting for a free connection to
+    -- the server, connecting, authenticating, sending a request or reading a
+    -- reply; the error doesn't say which. An attempt that only waited for its
+    -- first connection sent nothing, but for an operation that is retried
+    -- after any failure, an earlier attempt may have sent the request. The
+    -- server may have carried out any request that was sent. ElastiCache's
+    -- 'Database.Memcache.ElastiCacheClient.newClient' also throws it when its
+    -- first discovery takes longer than the timeout.
     | Timeout
     -- | Credentials were rejected before being sent: they contain a
     -- forbidden delimiter, or the server is not in auth-file mode.

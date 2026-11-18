@@ -32,7 +32,9 @@ We support the following logic for handling failure in operations:
                 than 'optsServerTimeout', including time spent waiting for a
                 free connection to the server, and consider it failed.
 
-* __Retry__: on operation failure (timeout, network error) we close the
+* __Retry__: on operation failure (a timeout, a network error, or a
+             @SERVER_ERROR@ reply whose text names no status, such as
+             memcached's proxy sends when a backend fails) we close the
              connection, if any, and retry the operation, doing this up to
              'optsServerRetries' times. Unless the attempt only ran out of time
              waiting for a free connection, we also close the server's idle
@@ -54,9 +56,10 @@ We support the following logic for handling failure in operations:
              request, and a retry could apply it twice, or report failure
              because the first one succeeded. Before sending one on a
              connection from the pool, we check that the server hasn't
-             closed it, as memcached does to idle connections when it
-             restarts or after @-o idle_timeout@; if it has, the request is
-             retried on a new connection if retries are left. With
+             closed or reset it, as memcached closes idle connections when
+             it restarts or after @-o idle_timeout@, and that no bytes from
+             the server are already waiting on it. If the check fails, the
+             request is retried on a new connection if retries are left. With
              'optsServerRetries' at @0@, that failure is thrown instead, and
              the server is marked dead. Other operations are retried after
              any server failure, so the server may carry out their request
