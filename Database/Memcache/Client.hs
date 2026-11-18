@@ -163,6 +163,7 @@ import           Database.Memcache.Server
 import           Database.Memcache.Socket
 import           Database.Memcache.Types
 
+import           Control.Exception         (uninterruptibleMask_)
 import           Control.Monad             (foldM, forM_, when)
 import           Data.ByteString           (ByteString)
 import qualified Data.ByteString           as B (any, empty, length, null, stripSuffix)
@@ -184,12 +185,13 @@ type StatResults = [(ByteString, ByteString)]
 -- use from many threads, and it keeps a pool of connections to each server,
 -- opened on first use and reused across requests. A client created for each
 -- request instead opens (and, with credentials, authenticates) a new
--- connection to every server it uses, every time. Each pool holds up to
--- 'soNumResources' connections, one by default, so concurrent requests to a
--- server beyond that wait for a free connection. The wait counts towards each
--- attempt's 'optsServerTimeout'. If the last attempt runs out of time while
--- still waiting, the server isn't marked down; running out of time afterwards
--- is a server failure, however long the wait was.
+-- connection to every server it uses, every time. Each pool holds as many
+-- connections as 'soNumResources' and 'soNumStripes' allow, one by default
+-- (with resource-pool 0.3, one for each capability), so concurrent requests to
+-- a server beyond that wait for a free connection. The wait counts towards
+-- each attempt's 'optsServerTimeout'. If the last attempt runs out of time
+-- while still waiting, the server isn't marked down; running out of time
+-- afterwards is a server failure, however long the wait was.
 newClient :: [ServerSpec] -> Options -> IO Client
 newClient scs = newCluster $ if null scs then [defaultServerSpec] else scs
 
@@ -199,14 +201,18 @@ newClient scs = newCluster $ if null scs then [defaultServerSpec] else scs
 -- finishes, instead of going back to the pool; 'quit' doesn't wait for those
 -- requests or interrupt them. Requests that start after 'quit', including
 -- later requests of an operation that was already running, never use those
--- connections: they open new ones, which stay open as usual.
+-- connections: they open new ones, which stay open as usual. So does a request
+-- that is still waiting for a connection, or opening one, when 'quit' runs.
 --
 -- This doesn't send Memcached's @quit@ command: closing the connection has the
 -- same effect, while sending the command would mean first connecting to any
 -- server the client has no connection to. So 'quit' never connects to a
 -- server, returns promptly and doesn't throw, even when a server is down.
+-- Like 'closeAll', it can't be cut short by an asynchronous exception: one
+-- that arrives while it closes connections is delivered once every server's
+-- idle connections are closed.
 quit :: Client -> IO ()
-quit c = getServers c >>= mapM_ closeAll
+quit c = getServers c >>= uninterruptibleMask_ . mapM_ closeAll
 
 -- | Create a client with 'newClient', run an action with it, and close the
 -- client's connections with 'quit' when the action returns or throws.
@@ -224,9 +230,10 @@ quit c = getServers c >>= mapM_ closeAll
 --
 -- Don't use the client after 'withClient' returns, or from threads that
 -- outlive the action. A request such a thread is making when the action ends
--- completes, and its connection is then closed; requests it starts afterwards
--- open new connections, which stay open until they have been idle for
--- 'soKeepAlive'.
+-- completes. If it already has a connection, that connection is then closed.
+-- If it is still waiting for a connection, or opening one, it opens a new one,
+-- which, like those of the requests the thread starts afterwards, stays open
+-- until it has been idle for 'soKeepAlive'.
 withClient :: [ServerSpec] -> Options -> (Client -> IO a) -> IO a
 withClient specs opts = bracket (newClient specs opts) quit
 

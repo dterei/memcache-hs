@@ -60,9 +60,19 @@ serverPort = port
 --
 data ServerOptions
   = ServerOptions
-  -- | Maximum number of pooled connections per stripe.
+  -- | Maximum number of pooled connections per stripe. With resource-pool 0.3,
+  -- see 'soNumStripes'. With 0.4 or later, it is split between the stripes
+  -- instead, and must be at least 'soNumStripes', or creating the server (and
+  -- so a client) throws an @ErrorCall@. Each stripe then holds up to
+  -- 'soNumResources' divided by 'soNumStripes', rounded up with 0.4, and
+  -- rounded down or up with 0.5 so that the total is 'soNumResources'.
   { soNumResources :: Int
-  -- | Number of pool stripes.
+  -- | Number of pool stripes. With resource-pool 0.3, a pool has a stripe for
+  -- each capability instead, and each stripe holds up to 'soNumResources'
+  -- times 'soNumStripes' connections divided by the number of capabilities,
+  -- rounded up. A thread then takes connections from its own capability's
+  -- stripe, so a request can wait for one while other stripes have room. With
+  -- 0.4 and 0.5.0.0, stripes beyond the number of capabilities are never used.
   , soNumStripes :: Int
 #if MIN_VERSION_resource_pool(0,4,0)
   -- | Connection keep-alive duration.
@@ -79,8 +89,8 @@ data ServerOptions
 -- * 'soNumStripes': 1
 -- * 'soKeepAlive': 300 seconds
 --
--- That is, at most one connection to each server, closed once it has been
--- idle for 300 seconds.
+-- That is, at most one connection to each server (with resource-pool 0.3, one
+-- for each capability), closed once it has been idle for 300 seconds.
 defaultServerOptions :: ServerOptions
 defaultServerOptions = ServerOptions
       { soNumResources = 1
@@ -153,18 +163,21 @@ withSocket svr act = mask $ \restore -> do
 
 -- | Close the connections that are idle in the pool. Connections in use stay
 -- open and go back to the pool when their request finishes; 'closeAll' closes
--- those too. A later request re-establishes connections as needed.
+-- those too. A later request re-establishes connections as needed. An
+-- asynchronous exception can't cut 'close' short: it is delivered once every
+-- idle connection is closed.
 close :: Server -> IO ()
 {-# INLINE close #-}
-close srv = P.destroyAllResources $ pool srv
+close srv = uninterruptibleMask_ $ P.destroyAllResources $ pool srv
 
 -- | Close every connection to the server: idle connections now, and each
 -- connection in use as soon as the request using it finishes, instead of
 -- returning it to the pool. It doesn't wait for those requests or interrupt
 -- them, and it never connects or throws. Requests that start later never use
--- a connection opened before 'closeAll'; they open new ones.
+-- a connection opened before 'closeAll'; they open new ones. Like 'close', it
+-- can't be cut short by an asynchronous exception.
 closeAll :: Server -> IO ()
-closeAll srv = do
+closeAll srv = uninterruptibleMask_ $ do
     atomicModifyIORef' (generation srv) (\g -> (g + 1, ()))
     P.destroyAllResources (pool srv)
 

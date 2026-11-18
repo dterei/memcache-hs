@@ -2,6 +2,7 @@
 
 module Main where
 
+import           FileLimit
 import           MockServer
 import           RoutingSpec
 import qualified Database.Memcache.Auth    as Auth
@@ -22,13 +23,13 @@ import qualified Data.ByteString.Char8     as C
 import           Data.Char                 (isAscii, isPrint)
 import qualified Network.Socket            as N
 import qualified Network.Socket.ByteString as N
-import           Control.Concurrent        (forkIO, killThread, myThreadId, newEmptyMVar,
-                                            putMVar, readMVar, takeMVar, threadDelay,
-                                            tryPutMVar, yield)
+import           Control.Concurrent        (MVar, forkIO, getNumCapabilities, killThread,
+                                            myThreadId, newEmptyMVar, putMVar, readMVar,
+                                            takeMVar, threadDelay, tryPutMVar, yield)
 import           Control.Exception         (MaskingState (..), bracket, displayException, finally,
                                             getMaskingState, mask_, try)
-import           Control.Monad             (forM_, forever, void, when, (>=>))
-import           Data.Either               (isLeft)
+import           Control.Monad             (forM_, forever, replicateM_, void, when, (>=>))
+import           Data.Either               (isLeft, isRight)
 import           Data.Foldable             (toList)
 import           Data.IORef                (atomicModifyIORef', newIORef, readIORef,
                                             writeIORef)
@@ -37,8 +38,8 @@ import           GHC.Clock                 (getMonotonicTime)
 import           GHC.Conc                  (ThreadStatus (..), threadStatus)
 import           System.IO.Error           (isDoesNotExistError)
 import           System.Timeout            (timeout)
-import           UnliftIO.Async            (Async, async, asyncThreadId, cancel,
-                                            mapConcurrently, wait)
+import           UnliftIO.Async            (Async, AsyncCancelled (..), async, asyncOn,
+                                            asyncThreadId, cancel, mapConcurrently, wait)
 import           UnliftIO.Exception        (StringException (..), tryIO)
 
 main :: IO ()
@@ -1769,6 +1770,99 @@ main = hspec $ do
         cancel interrupted
         Client.get client "key" `shouldReturn` Just ("foo", 2, 7)
 
+    -- A failed attempt closes the server's idle connections. A cancel that
+    -- arrives meanwhile must end the operation, not be lost so that it
+    -- retries, and must not leave any of them open. Here a listener takes
+    -- connections and never answers, 500 of them are idle in the pool, and
+    -- the get is cancelled as soon as the first idle one is closed. Without
+    -- the mask in 'Server.close', this fails with resource-pool 0.2, which
+    -- closes them unmasked, and with 0.3, which has a stripe for each
+    -- capability and lets an exception in between two of them. It fails
+    -- reliably only on more than one capability, which the suite's +RTS -N
+    -- gives on a multi-core machine. On one, the get's thread nearly always
+    -- keeps the capability until it has closed them all, so the cancel lands
+    -- only then, whatever the version. On several, it still lands that late
+    -- now and then, so the test runs three times.
+    it "lets the caller interrupt a failed request while it closes the idle connections" $
+      withOpenFiles 1100 $ replicateM_ 3 $ withSilentListener $ \port idleClosed firstClosed -> do
+        let idle = 500
+            opts = Client.def
+              { Client.optsServerTimeout = 200
+              , Client.optsFailRetryDelay = 3000
+              , Client.optsServerOptions = Client.defaultServerOptions { Client.soNumResources = idle + 1 } }
+        client <- Client.newClient [ServerSpec "127.0.0.1" (show port) Auth.NoAuth] opts
+        [s] <- toList <$> Cluster.getServers client
+        fillPool s (idle + 1)
+        running <- async $ Client.get client "key"
+        timeout 5000000 (takeMVar firstClosed) `shouldReturn` Just ()
+        start <- getMonotonicTime
+        cancel running
+        end <- getMonotonicTime
+        -- A lost cancel would let the get retry, 3 s later.
+        (end - start) `shouldSatisfy` (< 1)
+        wait running `shouldThrow` (== AsyncCancelled)
+        -- Each close reaches the listener within moments, whereas a
+        -- connection left open would be closed only by a later garbage
+        -- collection.
+        timeout 1000000 (waitFor idle idleClosed) `shouldReturn` Just idle
+        keepReachable client
+
+    -- closeAll closes the idle connections the same way, and a cancel that
+    -- arrives meanwhile mustn't be lost or leave any of them open either.
+    -- The thread waits after closeAll, so that a cancel that lands once
+    -- closeAll has returned still ends it at once, as one that closeAll lost
+    -- wouldn't. Without the mask in 'Server.closeAll', this fails with
+    -- resource-pool 0.2 and 0.3, but, like the get's test, reliably only on
+    -- more than one capability.
+    it "lets the caller interrupt closeAll while it closes the idle connections" $
+      withOpenFiles 1100 $ replicateM_ 3 $ withSilentListener $ \port idleClosed firstClosed -> do
+        let idle = 500
+            opts = Client.def
+              { Client.optsServerOptions = Client.defaultServerOptions { Client.soNumResources = idle } }
+        client <- Client.newClient [ServerSpec "127.0.0.1" (show port) Auth.NoAuth] opts
+        [s] <- toList <$> Cluster.getServers client
+        fillPool s idle
+        running <- async $ Server.closeAll s >> threadDelay 3000000
+        timeout 5000000 (takeMVar firstClosed) `shouldReturn` Just ()
+        start <- getMonotonicTime
+        cancel running
+        end <- getMonotonicTime
+        (end - start) `shouldSatisfy` (< 1)
+        wait running `shouldThrow` (== AsyncCancelled)
+        timeout 1000000 (waitFor idle idleClosed) `shouldReturn` Just idle
+        keepReachable client
+
+    -- quit closes each server's idle connections in turn, and a cancel that
+    -- arrives meanwhile must wait until every server's are closed. Here 450
+    -- connections to one listener and 50 to another are idle, and quit is
+    -- cancelled as soon as the first one to the first server is closed: most
+    -- are to that one, so that the cancel lands while quit closes those. As
+    -- in closeAll's test, the thread waits after quit. Without the mask in
+    -- 'Client.quit', the cancel ended quit before it got to the second
+    -- server, with any resource-pool version. Like the get's test, this one
+    -- catches that reliably only on more than one capability.
+    it "lets the caller interrupt quit while it closes every server's idle connections" $
+      withOpenFiles 1100 $ replicateM_ 3 $
+        withSilentListener $ \port1 idleClosed1 firstClosed ->
+        withSilentListener $ \port2 idleClosed2 _ -> do
+          let spec port = ServerSpec "127.0.0.1" (show port) Auth.NoAuth
+              opts = Client.def
+                { Client.optsServerOptions = Client.defaultServerOptions { Client.soNumResources = 450 } }
+          client <- Client.newClient [spec port1, spec port2] opts
+          [s1, s2] <- toList <$> Cluster.getServers client
+          fillPool s1 450
+          fillPool s2 50
+          running <- async $ Client.quit client >> threadDelay 3000000
+          timeout 5000000 (takeMVar firstClosed) `shouldReturn` Just ()
+          start <- getMonotonicTime
+          cancel running
+          end <- getMonotonicTime
+          (end - start) `shouldSatisfy` (< 1)
+          wait running `shouldThrow` (== AsyncCancelled)
+          timeout 1000000 (waitFor (450, 50) ((,) <$> idleClosed1 <*> idleClosed2))
+            `shouldReturn` Just (450, 50)
+          keepReachable client
+
     it "withClient returns the action's result and closes the connection" $
       withMockServer [MR "VA 3 f2 c7\r\nfoo\r\n", MR "VA 3 f2 c7\r\nbar\r\n"] $ \server -> do
         (client, result) <- Client.withClient [mockServerSpec server] Client.def $ \client ->
@@ -2722,6 +2816,52 @@ withDiscovery opts test = do
   where
     ended status = status == ThreadFinished || status == ThreadDied
 
+-- | Run an action with a listener on 127.0.0.1 that takes every connection
+-- and never answers. The action is passed the listener's port, an action that
+-- counts the connections closed without sending anything, as the client
+-- closes an idle one, and an 'MVar' that is filled once the first of them is.
+-- The connections are closed when the action ends.
+withSilentListener :: (N.PortNumber -> IO Int -> MVar () -> IO a) -> IO a
+withSilentListener action =
+  bracket (N.socket N.AF_INET N.Stream N.defaultProtocol) N.close $ \listener -> do
+    N.bind listener (N.SockAddrInet 0 (N.tupleToHostAddress (127, 0, 0, 1)))
+    -- Room in the queue for all the connections a test opens at once:
+    -- 'N.maxListenQueue' is only 128 on some systems.
+    N.listen listener 1024
+    port <- N.socketPort listener
+    accepted <- newIORef []
+    idleClosed <- newIORef (0 :: Int)
+    firstClosed <- newEmptyMVar
+    let serve connection = do
+          -- The client closes an idle connection without sending anything.
+          request <- N.recv connection 4096
+          when (B.null request) $ do
+            atomicModifyIORef' idleClosed (\n -> (n + 1, ()))
+            void $ tryPutMVar firstClosed ()
+        takeAll = forever $ do
+          (connection, _) <- N.accept listener
+          atomicModifyIORef' accepted (\earlier -> (connection : earlier, ()))
+          forkIO (serve connection)
+    bracket (forkIO takeAll) killThread $ \_ ->
+      action port (readIORef idleClosed) firstClosed `finally` (readIORef accepted >>= mapM_ N.close)
+
+-- | Open @n@ connections to the server at once, then give them all back, so
+-- that they are idle in its pool. The threads that open them are spread over
+-- the capabilities: with resource-pool 0.3, a pool has a stripe for each
+-- capability, whatever 'Client.soNumStripes' says, each holding an even share
+-- of the connections, and a thread uses its capability's stripe.
+fillPool :: Server.Server -> Int -> IO ()
+fillPool s n = do
+  capabilities <- getNumCapabilities
+  arrived <- newIORef (0 :: Int)
+  release <- newEmptyMVar
+  let hold = Server.withSocket s $ \_ ->
+        atomicModifyIORef' arrived (\k -> (k + 1, ())) >> readMVar release
+  holders <- mapM (\i -> asyncOn (i `mod` capabilities) hold) [1 .. n]
+  waitFor n (readIORef arrived) `shouldReturn` n
+  putMVar release ()
+  mapM_ wait holders
+
 -- | Wait until the thread is blocked, as when it waits for the pool. A thread
 -- that ends instead fails the test rather than hanging it.
 waitUntilBlocked :: Async a -> IO ()
@@ -2759,6 +2899,19 @@ withLocalhostAddresses test = do
     Right addresses -> pendingWith $ "localhost resolves to a single address: " ++ show addresses
   where
     hints = N.defaultHints { N.addrSocketType = N.Stream }
+
+-- | Run a test that has up to @n@ sockets open at once, or mark it pending
+-- where the process can't open that many files. The soft limit on open files
+-- is raised first, by @n@ or as far as the hard limit allows: the usual ones,
+-- 1024 on Linux and 256 on macOS, are too low for these tests.
+withOpenFiles :: Int -> Expectation -> Expectation
+withOpenFiles n test = do
+  raiseFileLimit n
+  opened <- newIORef []
+  let open = N.socket N.AF_INET N.Stream N.defaultProtocol
+        >>= \socket -> atomicModifyIORef' opened (\sockets -> (socket : sockets, ()))
+  enough <- isRight <$> tryIO (replicateM_ n open) `finally` (readIORef opened >>= mapM_ N.close)
+  if enough then test else pendingWith $ "cannot have " ++ show n ++ " files open at once"
 
 -- | The given address with its port replaced.
 atPort :: N.PortNumber -> N.SockAddr -> N.SockAddr

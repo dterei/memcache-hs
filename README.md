@@ -82,15 +82,15 @@ requests. A client created for each request opens a new connection to every
 server it uses (and authenticates, if credentials are set) every time.
 `M.withClient` closes a client's connections when an action ends, so use it
 around your whole program, a worker or a test, not around single requests.
-Each server's pool holds one connection by default, so concurrent requests to
-the same server wait for each other; see
-[Architecture Notes](#architecture-notes) to allow more. The wait counts
-towards each attempt's `optsServerTimeout`. An attempt that runs out of time
-while still waiting is retried like any failed attempt, but if it was the last
-attempt, the operation fails with `Timeout` and the server isn't marked dead.
-An attempt that runs out of time afterwards, while opening, authenticating or
-using its connection, counts as a server failure, however long it waited
-first.
+Each server's pool holds one connection by default (with resource-pool 0.3,
+one for each capability), so concurrent requests to the same server wait for
+each other; see [Architecture Notes](#architecture-notes) to allow more. The
+wait counts towards each attempt's `optsServerTimeout`. An attempt that runs
+out of time while still waiting is retried like any failed attempt, but if it
+was the last attempt, the operation fails with `Timeout` and the server isn't
+marked dead. An attempt that runs out of time afterwards, while opening,
+authenticating or using its connection, counts as a server failure, however
+long it waited first.
 
 A failed operation is retried, except that a request that mustn't be sent
 twice (`increment`, `decrement`, `append`, `prepend`, `add`, `delete`, and
@@ -228,10 +228,11 @@ requests using that connection until the operation completes. `getMany`,
 `setMany` and `deleteMany` are the exception: they pipeline Meta Text requests
 to each server in batches, each batch over one pooled connection.
 
-By default each server's pool holds a single connection (`soNumResources = 1`),
-so concurrent operations against the same server wait for each other. Raising
-`soNumResources` in the `ServerOptions` set through `optsServerOptions` allows
-concurrent operations without requiring a separate pool implementation.
+By default each server's pool holds a single connection (`soNumResources = 1`;
+with resource-pool 0.3, one for each capability), so concurrent operations
+against the same server wait for each other. Raising `soNumResources` in the
+`ServerOptions` set through `optsServerOptions` allows concurrent operations
+without requiring a separate pool implementation.
 
 Either way, a pool is fine for now.
 

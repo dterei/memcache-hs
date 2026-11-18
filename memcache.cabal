@@ -123,10 +123,13 @@ test-suite spec
   hs-source-dirs:   test
   main-is:          Spec.hs
   other-modules:
+    FileLimit
     KetamaVectors
     MockServer
     RoutingSpec
-  other-extensions: OverloadedStrings
+  other-extensions:
+    CPP
+    OverloadedStrings
   ghc-options:      -threaded -rtsopts "-with-rtsopts=-N"
   build-depends:
     , base64-bytestring  >=1.2.1.0
@@ -138,6 +141,11 @@ test-suite spec
     , QuickCheck
     , time
     , unliftio
+
+  -- To raise the limit on open files; unix doesn't build on Windows.
+  if !os(windows)
+    build-depends:
+      , unix
 
 -- Runs against a real memcached; reports a pending test if none is on PATH.
 test-suite integration
