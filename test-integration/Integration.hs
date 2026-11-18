@@ -4,8 +4,9 @@ module Main where
 
 import           Control.Concurrent       (threadDelay)
 import           Control.Exception        (bracket, finally, onException)
-import           Control.Monad            (filterM, forM, forM_, void)
+import           Control.Monad            (filterM, forM, forM_, unless, void)
 import qualified Data.ByteString.Char8    as B
+import           Data.Char                (isAscii)
 import           Data.Foldable            (toList)
 import           Data.IORef               (readIORef)
 import           Data.Maybe               (isJust)
@@ -457,11 +458,27 @@ unixSocketSpecs :: FilePath -> Spec
 unixSocketSpecs executable =
   it "sets and gets through a memcached:/// URI" $
     withSocketPath $ \path -> do
+      -- memcached makes its socket at the path's bytes, which ssHost holds
+      -- one per Char. Outside ASCII, the path's Chars needn't be its bytes:
+      -- under a UTF-8 or the POSIX locale they aren't. The URI below encodes
+      -- the Chars, so the test is pending for a path that isn't ASCII.
+      unless (all isAscii path) $
+        pendingWith $ "the socket's path isn't ASCII: " <> show path
       -- With -s, memcached listens on the socket alone. The port only names
       -- its pid file.
       port <- freePort
       withMemcachedOn executable ["-s", path, "-a", "0700"] port $ do
-        spec <- either fail return $ M.parseServerSpec ("memcached://" <> path)
+        -- The path is percent-encoded, but for its slashes and unreserved
+        -- characters, as in the spec's test of the same URI, in case the
+        -- temporary directory's name has an ASCII character a URI can't hold
+        -- as it is, such as a space, or an @, which a socket path's URI must
+        -- write as %40.
+        let unreserved = ['A' .. 'Z'] <> ['a' .. 'z'] <> ['0' .. '9'] <> "-._~"
+            hex = B.index "0123456789ABCDEF"
+            escape c
+              | c == '/' || c `elem` unreserved = [c]
+              | otherwise = ['%', hex (fromEnum c `div` 16), hex (fromEnum c `mod` 16)]
+        spec <- either fail return $ M.parseServerSpec ("memcached://" <> concatMap escape path)
         ssHost spec `shouldBe` path
         client <- M.newClient [spec] M.def
         cas <- M.set client "integration-unix" "value" 5 0

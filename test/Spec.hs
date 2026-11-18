@@ -2100,6 +2100,9 @@ main = hspec $ do
             fmap specFields (parseServerSpec uri) `shouldBe` Right (specFields (ServerSpec host port auth))
         rejects (uri, message) =
           it ("rejects " <> uri) $ fmap specFields (parseServerSpec uri) `shouldBe` Left message
+        rawAtMessage =
+          "Unix socket path contains @; credentials go right after memcached://, as in "
+            <> "memcached://user:password@host, and an @ in a socket path is written %40"
 
     mapM_ parses
       [ ("memcached://cache.example:1234", "cache.example", "1234", Auth.NoAuth)
@@ -2128,6 +2131,7 @@ main = hspec $ do
       -- Its path is percent-decoded to bytes, one Char each, as SockAddrUnix
       -- writes them.
       , ("memcached:///run/caf%C3%A9.sock", "/run/caf\xc3\xa9.sock", "11211", Auth.NoAuth)
+      , ("memcached:///run/a%40b.sock", "/run/a@b.sock", "11211", Auth.NoAuth)
       -- A path of only slashes is no socket: the root directory isn't one.
       , ("memcached:///", "127.0.0.1", "11211", Auth.NoAuth)
       , ("memcached://:11211/", "127.0.0.1", "11211", Auth.NoAuth)
@@ -2152,6 +2156,15 @@ main = hspec $ do
       -- A Unix socket takes no port, and its path no NUL, which would end it.
       , ("memcached://:1234/run/memcached.sock", "A Unix socket path takes no port")
       , ("memcached:///run/mc%00d.sock", "Unix socket path contains NUL")
+      -- Nor a raw @, as a URI with one slash too many has: as a socket path,
+      -- its password would be in ssHost, which show prints. The message says
+      -- where credentials go before it says that an @ in a socket path, as in
+      -- the last URI, is written %40: in the first three, a %40 would put the
+      -- password in ssHost after all.
+      , ("memcached:///user:secret@cache.example", rawAtMessage)
+      , ("memcached:///user:secret@/run/memcached.sock", rawAtMessage)
+      , ("memcached:////user:secret@cache.example", rawAtMessage)
+      , ("memcached:///run/a@b.sock", rawAtMessage)
       ]
 
     -- Without the "//", the URI has no host, not even an empty one, so its

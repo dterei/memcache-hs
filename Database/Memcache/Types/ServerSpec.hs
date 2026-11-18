@@ -75,12 +75,16 @@ data ServerSpec = ServerSpec
 -- @memcached:\/\/user:secret\@\/run\/memcached.sock@ with credentials. The
 -- path is percent-decoded to bytes too, which 'ssHost' holds one per 'Char',
 -- so @%C3%A9@ is the two bytes that encode U+00E9 in UTF-8. It mustn't contain
--- @%00@. A socket takes no port, so
--- @memcached:\/\/:11211\/run\/memcached.sock@ is an error, and its 'ssPort'
--- is @\"11211\"@, which names it by its path alone (see 'ssPort'). A path of
--- only slashes is no socket: @memcached:\/\/\/@, @memcached:\/\/\/\/@ and
--- @memcached:\/\/:11211\/@ are @127.0.0.1@ on port @11211@, as
--- @memcached:\/\/@ is.
+-- @%00@, and an @\@@ in it must be written @%40@: a URI with one slash too
+-- many, such as @memcached:\/\/\/user:secret\@cache.example@, is then an
+-- error, not a socket whose path holds the password. The error says that
+-- credentials go right after @memcached:\/\/@: such a URI needs a slash fewer,
+-- not its @\@@ written @%40@, which would make it that socket after all. A
+-- socket takes no port, so @memcached:\/\/:11211\/run\/memcached.sock@ is an
+-- error, and its 'ssPort' is @\"11211\"@, which names it by its path alone
+-- (see 'ssPort'). A path of only slashes is no socket: @memcached:\/\/\/@,
+-- @memcached:\/\/\/\/@ and @memcached:\/\/:11211\/@ are @127.0.0.1@ on port
+-- @11211@, as @memcached:\/\/@ is.
 --
 -- Error messages never quote the URI, as it may contain a password.
 parseServerSpec :: String -> Either String ServerSpec
@@ -120,18 +124,27 @@ readAuthentication userInfo = case break (== ':') (takeWhile (/= '@') userInfo) 
 --
 -- The path is percent-decoded to bytes, one 'Char' each, as
 -- 'Network.Socket.SockAddrUnix' writes a path one byte per 'Char'. A NUL
--- would end the path early, so it is an error.
+-- would end the path early, so it is an error. So is an @\@@ that isn't
+-- written @%40@, as in @memcached:\/\/\/user:secret\@cache.example@, which
+-- has one slash too many: as a path, its password would be in 'ssHost' too.
+-- The error says that credentials go right after @memcached:\/\/@ before it
+-- says that an @\@@ in a socket path is written @%40@: in such a URI, a @%40@
+-- would put the password in 'ssHost' after all.
 readSocketPath :: URI -> Either String (Maybe FilePath)
 readSocketPath uri = case uriAuthority uri of
   Just a | null (uriRegName a), any (/= '/') path -> do
     note "A Unix socket path takes no port" $ guard $ null (uriPort a)
     note "Unix socket path contains NUL" $ guard $ notElem '\0' path
+    note rawAtMessage $ guard $ notElem '@' (uriPath uri)
     pure (Just path)
   _ -> pure Nothing
   where
     -- After an authority, a path is empty or begins with a slash, so this
     -- one begins with a slash whenever it has more than slashes.
     path = C.unpack (unEscapeBytes (uriPath uri))
+    rawAtMessage =
+      "Unix socket path contains @; credentials go right after memcached://, as in "
+        <> "memcached://user:password@host, and an @ in a socket path is written %40"
 
 -- | Percent-decode a string to the bytes it encodes. Unlike
 -- 'unEscapeString', this doesn't decode them as UTF-8, which would replace
