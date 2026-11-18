@@ -21,8 +21,8 @@ module Database.Memcache.Errors (
     ) where
 
 import           Database.Memcache.Types
+import           Database.Memcache.Util (withDetail)
 
-import           Data.Char (isAscii, isPrint, showLitChar)
 import           UnliftIO.Exception
 
 -- | All exceptions that a Memcached client may throw.
@@ -130,18 +130,3 @@ describeProtocolError e = problem `withDetail` protocolError e
         ServerError _        -> "server error"
         BadCommand _         -> "command rejected by server"
         UnexpectedEOF _      -> "connection closed by server"
-
--- | Append a detail, which may hold server-supplied bytes, keeping the message
--- on one line of ASCII: characters outside printable ASCII and backslashes are
--- escaped as in a Haskell string literal, and only the first 200 characters
--- are kept.
-withDetail :: String -> String -> String
-withDetail problem ""     = problem
-withDetail problem detail = problem <> ": " <> escape kept <> ellipsis
-  where
-    (kept, rest) = splitAt 200 detail
-    ellipsis = if null rest then "" else "..."
-    escape = foldr escapeChar ""
-    escapeChar c
-        | isAscii c && isPrint c && c /= '\\' = (c :)
-        | otherwise                          = showLitChar c

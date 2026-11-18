@@ -2578,14 +2578,85 @@ main = hspec $ do
           waitForRequests cfg 2 `shouldReturn`
             ["version\r\n", "get AmazonElastiCache:cluster\r\n"]
 
+    -- The version only chooses the request for the configuration. Tags, as
+    -- in a version that git describe makes, don't change the choice.
+    forM_
+      [ ("1.4.13", "get AmazonElastiCache:cluster")
+      , ("1.4.14", "config get cluster")
+      , ("1.6.24-15-g1a2b3c4", "config get cluster")
+      ] $ \(version, request) ->
+      it ("asks an endpoint at version " <> version <> " with " <> request) $
+        withMockServer [MR ("VERSION " <> C.pack version <> "\r\n"), MR "ERROR\r\n", Noop] $ \cfg -> do
+          timeout 5000000 (EC.newClient Client.def hour (endpoint cfg)) `shouldThrow`
+            \(StringException message _) -> message == "Configuration endpoint replied: ERROR"
+          mockRequests cfg `shouldReturn` ["version\r\n", C.pack request <> "\r\n"]
+
+    -- The version is read leniently: discovery skips the line's first 8
+    -- bytes without checking them, and Data.Version.parseVersion takes a
+    -- number of any length.
+    forM_
+      [ ("version 1.4.13", "get AmazonElastiCache:cluster")
+      , ("VERSION 1.6.1234567890", "config get cluster")
+      ] $ \(line, request) ->
+      it ("reads the version reply " <> show line) $
+        withMockServer [MR (C.pack line <> "\r\n"), MR "ERROR\r\n", Noop] $ \cfg -> do
+          timeout 5000000 (EC.newClient Client.def hour (endpoint cfg)) `shouldThrow`
+            \(StringException message _) -> message == "Configuration endpoint replied: ERROR"
+          mockRequests cfg `shouldReturn` ["version\r\n", C.pack request <> "\r\n"]
+
+    -- A version reply discovery can't read is an error, as another reply it
+    -- can't parse is, and discovery asks for nothing more.
+    forM_
+      ["ERROR", "VERSION 1.6.", "VERSION 1.6.12 extra", "VERSION 1.6.12-"] $ \line ->
+      it ("rejects the version reply " <> show line) $
+        withMockServer [MR (C.pack line <> "\r\n"), Noop] $ \cfg -> do
+          timeout 5000000 (EC.newClient Client.def hour (endpoint cfg)) `shouldThrow`
+            \(StringException message _) -> message == "Unrecognized version reply: " <> line
+          mockRequests cfg `shouldReturn` ["version\r\n"]
+
+    it "reads a version of up to 64 bytes" $ do
+      let versionOf n = "VERSION 1.6.12-" <> C.replicate (n - 7) 'a'
+      withMockServer [MR (versionOf 64 <> "\r\n"), MR "ERROR\r\n", Noop] $ \cfg -> do
+        timeout 5000000 (EC.newClient Client.def hour (endpoint cfg)) `shouldThrow`
+          \(StringException message _) -> message == "Configuration endpoint replied: ERROR"
+        mockRequests cfg `shouldReturn` ["version\r\n", "config get cluster\r\n"]
+      withMockServer [MR (versionOf 65 <> "\r\n"), Noop] $ \cfg -> do
+        timeout 5000000 (EC.newClient Client.def hour (endpoint cfg)) `shouldThrow`
+          \(StringException message _) -> message == "Unrecognized version reply: " <> C.unpack (versionOf 65)
+        mockRequests cfg `shouldReturn` ["version\r\n"]
+
+    -- Reading a version of 32,000 numbers took seconds, which the time limit
+    -- can't interrupt where asynchronous exceptions are masked, as in a
+    -- bracket's acquire: there newClient overran optsServerTimeout, and with
+    -- the configuration sent along with the version, it returned a client.
+    -- Now discovery reads no version longer than 64 bytes, so it fails at once.
+    forM_
+      [ ("", id, MR longVersion)
+      , (" inside mask_", mask_, MR longVersion)
+      , (" as a bracket's acquire", \make -> bracket make Client.quit pure, MR longVersion)
+      , ( " inside mask_ with the configuration sent along", mask_
+        , MR (longVersion <> configListing ["127.0.0.1|127.0.0.1|11211"]) )
+      ] $ \(how, run, reply) ->
+      it ("fails at once on a long version reply" <> how) $
+        withMockServer [reply, Noop, Noop] $ \cfg -> do
+          begin <- getMonotonicTime
+          run (EC.newClient Client.def hour (endpoint cfg)) `shouldThrow`
+            \(StringException message _) -> "Unrecognized version reply: VERSION 1.1.1." `isPrefixOf` message
+          elapsed <- subtract begin <$> getMonotonicTime
+          elapsed `shouldSatisfy` (< 2)
+          mockRequests cfg `shouldReturn` ["version\r\n"]
+
     -- Discovery makes memcached://<host>:<port> of each node line, so hosts
     -- such as these, whose "?" puts the port in the query, would make the
     -- node a Unix socket on this machine, of the endpoint's choosing. The
-    -- third gives its URI an empty port, which a socket can't have.
+    -- third gives its URI an empty port, which a socket can't have. The
+    -- fourth puts an "@" in the socket's path, and whatever parseServerSpec
+    -- makes of that, the error is that the node isn't a plain host and port.
     forM_
-      [ ("/var/run/docker.sock?", "Node names a Unix socket: memcached:///var/run/docker.sock?:11211")
-      , ("u:p@/x.sock?", "Node names a Unix socket: memcached://u:p@/x.sock?:11211")
+      [ ("/var/run/docker.sock?", "Node is not a plain host and port: memcached:///var/run/docker.sock?:11211")
+      , ("u:p@/x.sock?", "Node is not a plain host and port: memcached://u:p@/x.sock?:11211")
       , (":/x.sock?", "A Unix socket path takes no port: memcached://:/x.sock?:11211")
+      , ("/a@b?", "Node is not a plain host and port: memcached:///a@b?:11211")
       ] $ \(host, expected) ->
       it ("won't take the node " <> C.unpack host <> " for a Unix socket") $ do
         let body = "1\n" <> host <> "|127.0.0.1|11211\n"
@@ -2594,6 +2665,25 @@ main = hspec $ do
         withMockServer [MR "VERSION 1.6.12\r\n", MR config, Noop] $ \cfg ->
           EC.newClient Client.def hour (endpoint cfg) `shouldThrow`
             \(StringException message _) -> message == expected
+
+    -- Other hosts change the node in other ways. "/" or "?" ends the host,
+    -- so the port is lost. The host is what follows "@", and what comes
+    -- before it is taken as credentials if it holds a user and a password.
+    -- An IPv6 address loses its brackets. An empty host would be 127.0.0.1,
+    -- and an empty port would fail only at the first request. A host or port
+    -- with an "@" gets this error even where parseServerSpec would turn down
+    -- the credentials before the "@", as it does a user or password holding
+    -- a space, written %20.
+    forM_
+      [ ("h/x", "22122"), ("h?x", "22122"), ("u@h", "22122"), ("u:p@h", "22122"), ("[::1]", "22122")
+      , ("", "11211"), ("h", ""), ("u%20:p@h", "22122"), ("u", "p%20@h")
+      ] $
+      \(host, port) -> do
+        let node = host <> "|10.0.0.1|" <> port
+        it ("won't take the node " <> show node) $
+          withMockServer [MR "VERSION 1.6.12\r\n", MR (configListing [node]), Noop] $ \cfg ->
+            EC.newClient Client.def hour (endpoint cfg) `shouldThrow` \(StringException message _) ->
+              message == "Node is not a plain host and port: memcached://" <> C.unpack host <> ":" <> C.unpack port
 
     -- An error reply is one line with no END line after it, and memcached
     -- keeps the connection open, as the Noop does: discovery must not wait
@@ -2620,6 +2710,88 @@ main = hspec $ do
       withMockServer [MR "VERSION 1.4.5\r\n", MR "END\r\n", Noop] $ \cfg ->
         timeout 5000000 (EC.newClient Client.def hour (endpoint cfg)) `shouldThrow`
           \(StringException message _) -> message == "Unrecognized number of lines: 1"
+
+    -- The endpoint's text goes into these errors escaped, and cut to its
+    -- first 200 characters, as displayException does for a MemcacheError, so
+    -- that it can't break the lines of a log.
+    forM_
+      [ ("an error reply", MR "SERVER_ERROR x\ESC[2J\nforged log line\r\n",
+          "Configuration endpoint replied: SERVER_ERROR x\\ESC[2J\\nforged log line")
+      , ("a long error reply", MR ("SERVER_ERROR " <> C.replicate 1000 'x' <> "\r\n"),
+          "Configuration endpoint replied: SERVER_ERROR " <> replicate 187 'x' <> "...")
+      , ("a malformed node", MR (configListing ["a\ESCb|127.0.0.1|11211"]),
+          "Not a valid URI: memcached://a\\ESCb:11211")
+      , ("node info it can't split", MR (configListing ["a|\tb"]),
+          "Unrecognized components in node info: a|\\tb")
+      ] $ \(what, reply, expected) ->
+      it ("escapes and shortens the endpoint's text in the error for " <> what) $
+        withMockServer [MR "VERSION 1.6.12\r\n", reply, Noop] $ \cfg ->
+          timeout 5000000 (EC.newClient Client.def hour (endpoint cfg)) `shouldThrow`
+            \(StringException message _) -> message == expected
+
+    -- A config whose node line is empty, or only spaces, lists no nodes. The
+    -- error says so, rather than that the line, taken as one empty entry,
+    -- isn't a host, an IP address and a port.
+    forM_ [("empty", []), ("only spaces", ["  "])] $ \(what, entries) ->
+      it ("rejects a config whose node line is " <> what) $
+        withMockServer [MR "VERSION 1.6.12\r\n", MR (configListing entries), Noop] $ \cfg ->
+          EC.newClient Client.def hour (endpoint cfg) `shouldThrow`
+            \(StringException message _) -> message == "Configuration lists no nodes"
+
+    -- Two spaces between nodes make an empty entry, as the line is split at
+    -- each space. The error says that the config lists an empty node, rather
+    -- than that the entry isn't a host, an IP address and a port.
+    it "rejects a config that lists an empty node" $ do
+      let config = configListing ["a|10.0.0.1|1", "", "b|10.0.0.2|2"]
+      withMockServer [MR "VERSION 1.6.12\r\n", MR config, Noop] $ \cfg ->
+        EC.newClient Client.def hour (endpoint cfg) `shouldThrow`
+          \(StringException message _) -> message == "Configuration lists an empty node"
+
+    -- ElastiCache allows far fewer nodes in a cluster. A config reply of
+    -- 300 KB can list 10,000, and discovery would make a server for each,
+    -- and then the first request would wait seconds for the ring that routes
+    -- keys. Discovery counts the nodes before it makes any server.
+    it "takes a config listing 1,000 nodes, but not 1,001" $ do
+      withMockServer [MR "VERSION 1.6.12\r\n", MR (configListing (manyNodes 1000))] $ \cfg ->
+        withDiscovery Client.def $ \opts _ made -> do
+          client <- EC.newClient opts hour (endpoint cfg)
+          length <$> Cluster.getServers client `shouldReturn` 1000
+          -- newClient called the server constructor for the endpoint and for
+          -- each node. As start is never run, the refresh thread is held at
+          -- its first call, for the endpoint. Wait until it gets there, so
+          -- that it is killed when the test ends. Otherwise the test could end
+          -- first, and the thread, not killed, would be held at that call,
+          -- keeping the 1,000 servers, each with a pool whose collector thread
+          -- wakes every second, until a major GC ended it, or would fail
+          -- withDiscovery's check that it has ended.
+          waitFor 1002 (length <$> made) `shouldReturn` 1002
+      withMockServer [MR "VERSION 1.6.12\r\n", MR (configListing (manyNodes 1001)), Noop] $ \cfg ->
+        withDiscovery Client.def $ \opts _ made -> do
+          EC.newClient opts hour (endpoint cfg) `shouldThrow`
+            \(StringException message _) -> message == "Configuration lists 1001 nodes, over the limit of 1000"
+          filter (/= [mockServerSpec cfg]) <$> made `shouldReturn` []
+
+    -- Discovery counts the nodes before it parses any of them, so that a
+    -- reply listing too many costs no parsing: the first entry here can't
+    -- be parsed, and the count fails first.
+    it "counts the nodes before parsing any of them" $
+      withMockServer [MR "VERSION 1.6.12\r\n", MR (configListing ("bad" : manyNodes 1000)), Noop] $ \cfg ->
+        EC.newClient Client.def hour (endpoint cfg) `shouldThrow`
+          \(StringException message _) -> message == "Configuration lists 1001 nodes, over the limit of 1000"
+
+    -- A node listed twice would get a second server, which its keys would
+    -- fall back to when the first is marked failed. Nodes are told apart by
+    -- host and port, as a refresh does, whatever their IP addresses.
+    it "rejects a config that lists a node twice" $
+      withMockServer [MR "OK\r\n"] $ \a ->
+      withMockServer [MR "OK\r\n"] $ \b -> do
+        let node m ip = "127.0.0.1|" <> ip <> "|" <> C.pack (show (mockPort m))
+            config = configListing [node a "127.0.0.1", node b "127.0.0.1", node a "10.0.0.2"]
+        withMockServer [MR "VERSION 1.6.12\r\n", MR config, Noop] $ \cfg ->
+          withDiscovery Client.def $ \opts _ made -> do
+            EC.newClient opts hour (endpoint cfg) `shouldThrow`
+              \(StringException message _) -> message == "Node listed twice: 127.0.0.1:" <> show (mockPort a)
+            filter (/= [mockServerSpec cfg]) <$> made `shouldReturn` []
 
     -- When a request is never answered, discovery gives up once
     -- optsServerTimeout has passed. The limit is above the 750 ms default, so
@@ -2758,6 +2930,59 @@ main = hspec $ do
         length <$> Cluster.getServers client `shouldReturn` 1
         Client.flush client Nothing
         mockRequests a `shouldReturn` ["flush_all\r\n"]
+
+    -- A refresh whose reply lists no nodes fails, rather than dropping every
+    -- server, and one whose reply lists too many nodes, an empty node or a
+    -- node twice, fails before making a server for any of them. Each keeps
+    -- the servers.
+    forM_
+      [ ("no nodes", [])
+      , ("more than 1,000 nodes", manyNodes 1001)
+      , ("an empty node", ["one.example|10.0.0.1|11211", "", "two.example|10.0.0.2|11211"])
+      , ("a node twice", ["dup.example|10.0.0.1|11211", "dup.example|10.0.0.2|11211"])
+      ] $ \(problem, nodes) ->
+      it ("keeps the servers when a refresh lists " <> problem) $
+        withMockServer [MR "OK\r\n"] $ \a ->
+        withMockServer [MR "OK\r\n"] $ \b ->
+        withMockServer (refreshTo [a]
+            ++ [MR "VERSION 1.6.12\r\n", MR (configListing nodes)]
+            ++ refreshTo [a, b]
+            ++ noReplies) $ \cfg ->
+        -- With this time limit no refresh runs out of time on a slow machine,
+        -- which would shift the replies.
+        withDiscovery Client.def { Client.optsServerTimeout = 10000 } $ \opts start made -> do
+          client <- EC.newClient opts tenMs (endpoint cfg)
+          start
+          waitFor 2 (length <$> Cluster.getServers client) `shouldReturn` 2
+          -- Servers were made for a when the client was created and for b at
+          -- the last refresh, and for no node of the refresh between them.
+          filter (/= [mockServerSpec cfg]) <$> made
+            `shouldReturn` [[mockServerSpec a], [mockServerSpec b]]
+
+    -- A refresh runs with asynchronous exceptions unmasked even when the
+    -- client is made inside mask_, as in a bracket's acquire, so that its
+    -- time limit can interrupt it while it computes, not only where it
+    -- waits. The refresh thread calls the server constructor when it starts,
+    -- for the endpoint, and at the refresh that finds b, and each call
+    -- records the masking state it runs in.
+    it "refreshes unmasked when the client is made inside mask_" $
+      withMockServer [MR "OK\r\n"] $ \a ->
+      withMockServer [MR "OK\r\n"] $ \b ->
+      withMockServer (refreshTo [a] ++ refreshTo [a, b] ++ noReplies) $ \cfg ->
+      withDiscovery Client.def { Client.optsServerTimeout = 10000 } $ \opts start _ -> do
+        me <- myThreadId
+        states <- newIORef []
+        let recording serverOptions specs = do
+              thread <- myThreadId
+              when (thread /= me) $ do
+                state <- getMaskingState
+                atomicModifyIORef' states (\earlier -> (state : earlier, ()))
+              Client.optsServerSpecsToServers opts serverOptions specs
+        client <- mask_ $
+          EC.newClient opts { Client.optsServerSpecsToServers = recording } tenMs (endpoint cfg)
+        start
+        waitFor 2 (length <$> Cluster.getServers client) `shouldReturn` 2
+        readIORef states `shouldReturn` [Unmasked, Unmasked]
 
     it "keeps the connections of nodes still listed" $
       withMockServer [MR "OK\r\n", MR "OK\r\n"] $ \a ->
@@ -3092,6 +3317,14 @@ main = hspec $ do
       let node n = "127.0.0.1|" <> ip <> "|" <> C.pack (show (mockPort n))
           body = "1\n" <> C.unwords (map node nodes) <> "\n"
       in C.pack (show (B.length body)) <> "\r\n" <> body <> "\r\n"
+    -- A version reply of 32,000 numbers, 64,009 bytes long.
+    longVersion = "VERSION " <> C.intercalate "." (replicate 32000 "1") <> "\r\n"
+    -- Node entries for n nodes, each with a name of its own.
+    manyNodes n = ["node" <> C.pack (show i) <> ".example|10.0.0.1|11211" | i <- [1 .. n :: Int]]
+    -- A config reply listing the given node entries, each host|IP|port.
+    configListing entries =
+      let body = "1\n" <> C.unwords entries <> "\n"
+      in "CONFIG cluster 0 " <> C.pack (show (B.length body)) <> "\r\n" <> body <> "\r\nEND\r\n"
     -- The config endpoint's replies to one discovery of the given nodes,
     -- whether it creates a client or refreshes one.
     refreshTo = refreshToAt "127.0.0.1"
@@ -3175,7 +3408,8 @@ waitFor expected action = do
 -- until the test runs the action it is passed. The test is also passed an
 -- action that lists the specs given to each call of the constructor, oldest
 -- first. The thread is killed when the test ends, as nothing else stops it,
--- and a test that passed then checks that the thread has ended.
+-- if it has called the constructor by then, and a test that passed then
+-- checks that the thread has ended.
 withDiscovery
   :: Client.Options -> (Client.Options -> IO () -> IO [[ServerSpec]] -> IO a) -> IO a
 withDiscovery opts test = do
@@ -3184,11 +3418,13 @@ withDiscovery opts test = do
   threads <- newIORef []
   calls <- newIORef []
   let makeServers serverOptions specs = do
-        atomicModifyIORef' calls (\earlier -> (specs : earlier, ()))
         thread <- myThreadId
-        when (thread /= me) $ do
-          atomicModifyIORef' threads (\ts -> (thread : ts, ()))
-          readMVar started
+        let discovery = thread /= me
+        -- Record the thread before its call, so that once a test has seen
+        -- the call, the thread is killed when the test ends.
+        when discovery $ atomicModifyIORef' threads (\ts -> (thread : ts, ()))
+        atomicModifyIORef' calls (\earlier -> (specs : earlier, ()))
+        when discovery $ readMVar started
         Client.optsServerSpecsToServers opts serverOptions specs
       -- The thread is recorded at each call it makes, but killed only once.
       discoveryThreads = nub <$> readIORef threads

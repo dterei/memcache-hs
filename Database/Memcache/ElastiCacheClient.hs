@@ -18,12 +18,13 @@ module Database.Memcache.ElastiCacheClient
   )
 where
 
-import Control.Concurrent (forkIO, threadDelay)
+import Control.Concurrent (forkIOWithUnmask, threadDelay)
 import Control.Concurrent.MVar (MVar, modifyMVar_, newMVar)
 import Control.Monad (guard, when)
 import Data.Bifunctor (first)
 import Data.ByteString (ByteString)
 import qualified Data.ByteString.Char8 as C
+import Data.List (sort)
 import qualified Data.List.NonEmpty as NE
 import Data.Text (Text)
 import qualified Data.Text as T
@@ -37,8 +38,9 @@ import Database.Memcache.Cluster (Options, getServers, setServers)
 import Database.Memcache.Errors (ClientError (Timeout), MemcacheError (ClientError))
 import Database.Memcache.Server (Server, closeAll, withSocket)
 import Database.Memcache.Socket (Connection, crlf, recvRawUntil, sendRaw, versionRequest)
+import Database.Memcache.Types.Authentication (Authentication (NoAuth))
 import Database.Memcache.Types.ServerSpec (ServerSpec (..), parseServerSpec)
-import Database.Memcache.Util (note)
+import Database.Memcache.Util (note, withDetail)
 import Network.Socket (HostName, ServiceName)
 import System.Timeout (timeout)
 import Text.ParserCombinators.ReadP (readP_to_S)
@@ -58,16 +60,33 @@ parseConfigurationEndpoint url = do
 -- Please see:
 -- https://github.com/memcached/memcached/blob/77709d04dd4fc7d59f59425802cb9645b2cfe0f8/doc/protocol.txt#L1805-L1812
 -- ByteString format: "VERSION <version>\r\n"
+--
+-- The version only chooses the request for the cluster configuration, and is
+-- read leniently, with 'Data.Version.parseVersion': the line's first 8 bytes
+-- aren't checked, and a number too large for an 'Int' wraps around. But a
+-- version longer than 'maxVersionLength' bytes is an error before it is
+-- parsed: 'readP_to_S' gives every partial parse of a dotted version, so the
+-- parse takes time that grows faster than the square of the version's
+-- length. The endpoint can send a line of up to 1 MiB, and the time limit on
+-- discovery can't interrupt the parse while the caller has asynchronous
+-- exceptions masked.
 parseVersion :: ByteString -> Either String Version
-parseVersion = interpretParseResults . delegateParse . C.unpack . C.dropEnd (C.length crlf) . C.drop (C.length "VERSION ")
+parseVersion line = note ("Unrecognized version reply" `withDetail` C.unpack text) $ do
+  let version = C.drop (C.length "VERSION ") text
+  guard $ C.length version <= maxVersionLength
+  -- The longest parse comes last, and must take the whole version.
+  results <- NE.nonEmpty $ readP_to_S Version.parseVersion (C.unpack version)
+  case NE.last results of
+    (parsed, "") -> pure parsed
+    _ -> Nothing
   where
-    delegateParse = readP_to_S Version.parseVersion
-    interpretParseResults parseResults = do
-      results <- note "Unable to parse input" $ NE.nonEmpty parseResults
-      let tail' = NE.last results
-      case tail' of
-        (version, "") -> pure version
-        (_, rest) -> Left $ "eof expected. Got: " <> rest
+    text = C.dropEnd (C.length crlf) line
+
+-- | The longest version @parseVersion@ reads, in bytes. memcached's versions,
+-- such as @1.6.12@, are a few bytes long, so this leaves plenty of room for
+-- tags.
+maxVersionLength :: Int
+maxVersionLength = 64
 
 -- | A validated ElastiCache configuration endpoint.
 --
@@ -80,16 +99,23 @@ newtype ConfigurationEndpoint
 -- | Create a new client using service discovery.
 --
 -- This function discovers all the nodes in a cluster and sets up a new thread to run autodiscovery on an interval.
+-- The thread runs with asynchronous exceptions unmasked, even if this is
+-- called with them masked, as in the acquire action of a @bracket@.
 --
 -- The first discovery must finish within 'optsServerTimeout' (connecting,
 -- then asking for the version and for the cluster configuration), or this
 -- throws v'ClientError' 'Timeout'. If the endpoint sends an error reply, such
 -- as the @ERROR@ that plain memcached sends as it has no @config@ command,
 -- this throws a @StringException@ from "UnliftIO.Exception", as it does for a
--- reply that can't be parsed, or that lists a node whose host is a path,
--- which would make it a Unix socket on this machine. If a reply goes on for
--- more than 1 MiB without the line end or the @END@ line that discovery is
--- waiting for, this throws v'Database.Memcache.Errors.ProtocolError'
+-- reply that can't be parsed, a version of more than 64 bytes, and a
+-- configuration that lists no nodes, more than 1,000, an empty node, the same
+-- host and port twice, or a node that isn't a plain host and port: one whose
+-- host or port is empty, or whose host has a character, such as @\/@, @?@ or
+-- @\@@, that would change the host or port, add credentials or make the node
+-- a Unix socket on this machine. A host given as an IPv6 address in brackets
+-- is rejected too. If a reply goes on for more than 1 MiB without the line
+-- end or the @END@ line that discovery is waiting for, this throws
+-- v'Database.Memcache.Errors.ProtocolError'
 -- 'Database.Memcache.Errors.BadLength'.
 --
 -- Servers are made by calling 'optsServerSpecsToServers' with one node at a
@@ -110,9 +136,10 @@ newtype ConfigurationEndpoint
 -- could lead to a node that ElastiCache has since replaced, and get no reply.
 -- Each refresh has the same time and length limits as the first discovery. A
 -- refresh that fails, for example because it runs out of time or the reply is
--- an error, is too long, can't be parsed, lists no nodes or lists a Unix
--- socket, leaves the servers as they are, and discovery tries again after the
--- next interval.
+-- an error, is too long, can't be parsed, lists no nodes, more than 1,000, an
+-- empty node or one twice, or lists a node that isn't a plain host and port,
+-- leaves the servers as they are, and discovery tries again after the next
+-- interval.
 --
 -- N.B. The interval is in the same units as 'threadDelay'.
 newClient :: Options -> Int -> ConfigurationEndpoint -> IO Client
@@ -126,7 +153,12 @@ newClient options interval cfgEndpoint = bracket acquireCfgClient releaseCfgClie
 
       -- Prepare MVar
       serversMVar <- newMVar $ nodeServers nodes
-      _ <- forkIO $ repeatAutoDiscover options interval cfgEndpoint serversMVar nodes
+      -- Refresh with asynchronous exceptions unmasked, whatever the caller's
+      -- masking state. A thread forked inside mask_, as in a bracket's
+      -- acquire, would otherwise refresh masked for good, and each refresh's
+      -- time limit could interrupt it only where it waits.
+      _ <- forkIOWithUnmask $ \unmask ->
+        unmask $ repeatAutoDiscover options interval cfgEndpoint serversMVar nodes
 
       -- The configuration client was made with the same options, so it only
       -- needs its servers replacing: cServers = Left <MVar <Vector Server>>
@@ -244,31 +276,72 @@ handleConfigGetClusterResponse bs = do
 --
 -- See: https://docs.aws.amazon.com/AmazonElastiCache/latest/mem-ug/AutoDiscovery.AddingToYourClientLibrary.html#AutoDiscovery.AddingToYourClientLibrary.OutputFormat
 handleRawNodeInfo :: Text -> Either String [(ServerSpec, Text)]
-handleRawNodeInfo = mapM parseEntry . T.splitOn " "
+handleRawNodeInfo nodeInfo = do
+  -- A line listing no nodes is empty, as it comes stripped of whitespace, and
+  -- would split into one empty entry.
+  when (T.null nodeInfo) $
+    Left "Configuration lists no nodes"
+  -- Count the nodes before parsing any of them.
+  let count = T.count " " nodeInfo + 1
+  when (count > maxNodes) $
+    Left $ "Configuration lists " <> show count <> " nodes, over the limit of " <> show maxNodes
+  nodes <- mapM parseEntry (T.splitOn " " nodeInfo)
+  -- A node listed twice would get a second server, at the same points on the
+  -- ring as the first, so that when the first is marked failed, its keys
+  -- would fall back to the same node rather than to another.
+  case listedTwice (sort [(ssHost spec, ssPort spec) | (spec, _) <- nodes]) of
+    (host, port) : _ -> Left $ "Node listed twice" `withDetail` (host <> ":" <> port)
+    [] -> pure nodes
   where
-    parseEntry t = do
-      (uri, ip) <- convertToUri t
-      spec <- parseNode (T.unpack uri)
-      pure (spec, ip)
+    listedTwice sorted = [node | (node, next) <- zip sorted (drop 1 sorted), node == next]
+
+    -- The line comes stripped of whitespace, and isn't empty, so an entry is
+    -- empty only where two spaces come in a row.
+    parseEntry t | T.null t = Left "Configuration lists an empty node"
+    parseEntry t =
+      case T.splitOn "|" t of
+        [host, ip, port] -> do
+          spec <- parseNode (T.unpack host) (T.unpack port)
+          pure (spec, ip)
+        _ -> Left $ "Unrecognized components in node info" `withDetail` T.unpack t
 
     -- Node addresses come from the server and hold no credentials, so name
     -- the one that failed.
-    parseNode :: String -> Either String ServerSpec
-    parseNode uri = first (<> (": " <> uri)) $ do
+    parseNode :: HostName -> ServiceName -> Either String ServerSpec
+    parseNode host port = first (`withDetail` uri) $ do
+      -- A node is a host to reach over the network, on the port listed. The
+      -- URI pastes the two together, so a host such as "h/x" or "h?x" would
+      -- lose the port, one such as "u:p@h" would give the node credentials
+      -- of the endpoint's choosing, and one such as "/var/run/docker.sock?",
+      -- whose "?" puts the port in the URI's query, would make the node a
+      -- Unix socket on this machine. An empty host would be 127.0.0.1, and
+      -- an empty port would fail only at the first request. So the URI must
+      -- give back the host and port listed, neither of them empty, and no
+      -- credentials.
+      --
+      -- No plain host or port holds an "@", so a node whose host or port
+      -- does is turned down before the URI is parsed, whatever
+      -- 'parseServerSpec' would make of the "@": its errors, such as those
+      -- about credentials, are for someone who wrote the URI, which no one
+      -- did here.
+      note notPlain $ guard $ notElem '@' (host <> port)
       spec <- parseServerSpec uri
-      -- A node is a host to reach over the network. A host such as
-      -- "/var/run/docker.sock?" makes a URI whose path is a Unix socket,
-      -- with the port in its query, so without this the endpoint, or anyone
-      -- who can change its reply, could point the client at any local socket.
-      case ssHost spec of
-        '/' : _ -> Left "Node names a Unix socket"
-        _ -> pure spec
+      note notPlain $
+        guard $ not (null host || null port) && spec == ServerSpec host port NoAuth
+      pure spec
+      where
+        uri = "memcached://" <> host <> ":" <> port
+        notPlain = "Node is not a plain host and port"
 
-    convertToUri :: Text -> Either String (Text, Text)
-    convertToUri t =
-      case T.splitOn "|" t of
-        [host, ip, port] -> pure ("memcached://" <> host <> ":" <> port, ip)
-        xs -> Left $ "Unrecognized components in node info: " <> show xs
+-- | The most nodes a configuration can list. ElastiCache allows 60 nodes in a
+-- Memcached cluster unless that quota is raised, so a reply that lists more
+-- than this comes from a broken or hostile endpoint. Without a limit, a reply
+-- well inside the 1 MiB that discovery reads could list over 100,000 nodes of
+-- a few bytes each, and discovery would make a server, with its pool of
+-- connections, for each one, and the first request would wait while the ring
+-- that routes keys was built, with 160 points for each node.
+maxNodes :: Int
+maxNodes = 1000
 
 -- This is the first version within which the /memcache/ engine on /ElastiCache/ uses the custom /config/ command.
 --
@@ -308,7 +381,7 @@ recvConfigReply socket = do
   line <- recvRawUntil crlf socket
   let text = C.dropEnd (C.length crlf) line
   when (C.takeWhile (/= ' ') text `elem` ["ERROR", "CLIENT_ERROR", "SERVER_ERROR"]) $
-    throwString $ "Configuration endpoint replied: " <> C.unpack text
+    throwString $ "Configuration endpoint replied" `withDetail` C.unpack text
   -- Otherwise read through the first END. This line can end with it: when
   -- the cluster key is missing, the reply is the END line alone.
   if end `C.isSuffixOf` line
