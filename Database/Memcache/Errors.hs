@@ -58,13 +58,13 @@ data ClientError
     -- ('Database.Memcache.Cluster.optsServerTimeout'): the last attempt, or,
     -- for a request that mustn't be sent twice, the attempt that had started
     -- sending it. The attempt may have been waiting for a free connection to
-    -- the server, connecting, authenticating, sending a request or reading a
-    -- reply; the error doesn't say which. An attempt that only waited for its
-    -- first connection sent nothing, but for an operation that is retried
-    -- after any failure, an earlier attempt may have sent the request. The
-    -- server may have carried out any request that was sent. ElastiCache's
-    -- 'Database.Memcache.ElastiCacheClient.newClient' also throws it when its
-    -- first discovery takes longer than the timeout.
+    -- the server, connecting, authenticating, checking the server's version,
+    -- sending a request or reading a reply; the error doesn't say which. An
+    -- attempt that only waited for its first connection sent nothing, but for
+    -- an operation that is retried after any failure, an earlier attempt may
+    -- have sent the request. The server may have carried out any request that
+    -- was sent. ElastiCache's 'Database.Memcache.ElastiCacheClient.newClient'
+    -- also throws it when its first discovery takes longer than the timeout.
     | Timeout
     -- | Credentials were rejected before being sent: they contain a
     -- forbidden delimiter, or the server is not in auth-file mode.
@@ -78,7 +78,12 @@ data ClientError
 data ProtocolError
     -- | Received an unknown response line.
     = UnknownPkt    { protocolError :: String }
-    -- | Unknown Memcached operation.
+    -- | Unknown Memcached operation. Also thrown when a new connection asks
+    -- the server for its version and the reply is a version below 1.6.10, or
+    -- any other reply that is neither an error nor a readable version; the
+    -- message quotes the reply. The connection is then closed, having sent
+    -- only the authentication exchange, when credentials are set, and
+    -- @version@.
     | UnknownOp     { protocolError :: String }
     -- | Unknown Memcached status field value.
     | UnknownStatus { protocolError :: String }

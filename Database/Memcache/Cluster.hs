@@ -193,21 +193,22 @@ data Options = Options {
         --
         -- A request that mustn't be sent twice is retried only after a
         -- failure before any of it was sent: while waiting for a free
-        -- connection, connecting or authenticating, or on finding that the
-        -- server has closed or reset the connection, or that bytes from the
-        -- server are already waiting on it. Those are @increment@,
-        -- @decrement@, @append@, @prepend@, @add@ and @delete@, and @cas@ and
-        -- @replace@ with a version other than 0. Once the request may have
-        -- reached the server, a failure such as a timeout, a network error,
-        -- the server closing the connection, a reply that can't be read or a
-        -- @SERVER_ERROR@ that names no status is thrown as it is, and the
-        -- server is marked down as if every attempt had failed, whatever
-        -- retries are left. The server may have carried out the request, and
-        -- a retry could apply it twice, or report failure because the first
-        -- one succeeded (see 'keyedOpExpectingOnce'). So behind memcached's
-        -- proxy, a request for a key on a failed backend marks the whole
-        -- proxy down: at once if it mustn't be sent twice, and otherwise once
-        -- every attempt gets that reply.
+        -- connection, connecting, authenticating or checking the server's
+        -- version, or on finding that the server has closed or reset the
+        -- connection, or that bytes from the server are already waiting on
+        -- it. Those are @increment@, @decrement@, @append@, @prepend@, @add@
+        -- and @delete@, and @cas@ and @replace@ with a version other than 0.
+        -- Once the request may have reached the server, a failure such as a
+        -- timeout, a network error, the server closing the connection, a
+        -- reply that can't be read or a @SERVER_ERROR@ that names no status
+        -- is thrown as it is, and the server is marked down as if every
+        -- attempt had failed, whatever retries are left. The server may have
+        -- carried out the request, and a retry could apply it twice, or
+        -- report failure because the first one succeeded (see
+        -- 'keyedOpExpectingOnce'). So behind memcached's proxy, a request for
+        -- a key on a failed backend marks the whole proxy down: at once if it
+        -- mustn't be sent twice, and otherwise once every attempt gets that
+        -- reply.
         --
         -- Every other operation is retried after any failure, so the server
         -- may carry out its request more than once: gets, @touch@, @set@,
@@ -236,17 +237,18 @@ data Options = Options {
         -- considered failed. @getMany@, @setMany@ and @deleteMany@ make their
         -- attempts for each batch, and @stats@ and @flush@ for each server in
         -- turn. The time counts from the start of the attempt: it covers
-        -- waiting for a free connection in the server's pool, opening and
-        -- authenticating a new connection if one is needed, sending the
-        -- request and reading the reply.
+        -- waiting for a free connection in the server's pool, opening a new
+        -- connection if one is needed (connecting, authenticating when there
+        -- are credentials, and asking the server for its version), sending
+        -- the request and reading the reply.
         --
         -- An attempt that runs out of time while it is still waiting for a
         -- free connection never reached the server. It is retried like any
         -- failed attempt, but if it was the last attempt, the operation
         -- throws v'Timeout' without marking the server down. Running out of
-        -- time afterwards, while opening, authenticating or using the
-        -- connection, is a server failure like any other, however long the
-        -- attempt waited first.
+        -- time afterwards, while opening (including authenticating and
+        -- checking the version) or using the connection, is a server failure
+        -- like any other, however long the attempt waited first.
         --
         -- Default is 750ms.
         optsServerTimeout        :: Milli,
@@ -573,8 +575,8 @@ keyedOpExpecting c operation codes = keyedOpWith c Resend (expectReply operation
 -- thrown as it is, and still counts against the server: its idle connections
 -- are closed, and it is marked dead, as when the last of an operation's
 -- attempts fails. A failure before any of the request is sent, such as
--- waiting for a connection, connecting or authenticating, is retried as for
--- 'keyedOpExpecting'.
+-- waiting for a connection, connecting, authenticating or checking the
+-- server's version, is retried as for 'keyedOpExpecting'.
 --
 -- Before sending, the connection is checked, without waiting, for the server
 -- having closed or reset it, as memcached closes idle connections when it
@@ -856,8 +858,10 @@ instance Exception WaitedForSlot
 
 -- | A rejected command or a reported operation status is an answer, not a
 -- server failure: retrying it will fail identically and must not count towards
--- marking the server dead. Nor is a reply out of step retried or counted: the
--- server has the request, and may have carried it out.
+-- marking the server dead. That includes the 'UnknownOp' a new connection
+-- throws when it refuses the server's version: a retry would find the same
+-- version. Nor is a reply out of step retried or counted: the server has the
+-- request, and may have carried it out.
 clientFault :: SomeException -> Bool
 clientFault err = case fromException err of
     Just (ProtocolError BadCommand{}) -> True

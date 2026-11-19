@@ -1,6 +1,6 @@
 cabal-version: 3.0
 name:          memcache
-version:       0.4.2.0
+version:       0.5.0.0
 synopsis:      A memcached client library.
 description:
   A client library for a Memcached cluster. Memcached is an in-memory key-value
@@ -8,8 +8,11 @@ description:
   group of Memcached servers and perform out-of-band caching for things like
   SQL results, rendered pages, or third-party APIs.
 
-  It uses the Memcached Meta Text protocol and requires memcached 1.6.0 or
-  newer. Username/password authentication is supported through memcached's
+  It uses the Memcached Meta Text protocol and requires memcached 1.6.10 or
+  newer: each new connection checks the server's version, and refuses an
+  older server. Until the check passes, the only requests sent are the
+  authentication exchange, when credentials are set, and @version@.
+  Username/password authentication is supported through memcached's
   @-Y authfile@ mode; the binary protocol and SASL authentication are no longer
   supported. It supports connecting to a single, or a cluster of Memcached
   servers. When connecting to a cluster, keys are routed by ketama consistent
@@ -35,8 +38,12 @@ description:
   >     print v
 
   You should only need to import 'Database.Memcache.Client', but other modules
-  are exposed for lower-level use. Version 0.4 is a breaking change from 0.3;
-  see the changelog for details.
+  are exposed for lower-level use. Version 0.5 is a breaking change from 0.4.
+  Keys are now routed by ketama, so with /n/ servers, upgrading moves all but
+  about one key in /n/ to a different server, once. The @optsServerRetries@
+  option now counts retries, not attempts. Version 0.5, like 0.4.2.1, needs
+  memcached 1.6.10 or later. See /Upgrading from 0.4/ in the README, and the
+  changelog, for details.
 
 category:      Database
 homepage:      https://github.com/dterei/memcache-hs#readme

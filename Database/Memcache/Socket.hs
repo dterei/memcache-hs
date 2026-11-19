@@ -79,6 +79,12 @@ data Response = Response
   } deriving (Eq, Show)
 
 -- | Create a connection wrapper around a socket.
+--
+-- This doesn't check the server's version. Connections that
+-- "Database.Memcache.Server" makes are checked, and refuse a server older than
+-- memcached 1.6.10; a connection made here directly is not, so check the
+-- server's version before sending it 'storeRequest', 'setManyRequest' or
+-- 'modifyRequest'.
 newConnection :: N.Socket -> IO Connection
 newConnection s = Connection s <$> newIORef B.empty
 
@@ -453,6 +459,16 @@ touchRequest key expiry = render (B.length (wireKey key)) $
   <> bytes " c" <> bytes crlf
 
 -- | Encode a storage request.
+--
+-- Send this only to memcached 1.6.10 or later. Older servers reject it without
+-- reading the value, and then run the value's bytes as commands. Connections
+-- that "Database.Memcache.Server" makes check the server's version, but a
+-- connection made with 'newConnection' directly does not.
+--
+-- Nor send it with a value longer than 1 GiB, the largest item memcached can
+-- store: from 2147483646 bytes, every memcached release up to 1.6.45 runs the
+-- value's bytes as commands. The operations in "Database.Memcache.Client" check
+-- the length before sending anything, but this encodes a value of any length.
 storeRequest :: StoreMode -> WireKey -> Value -> Flags -> Expiration -> Version -> ByteString
 storeRequest mode key value flags expiry version = render (B.length (wireKey key) + B.length value) $
   bytes cmdMetaSet <> bytes " " <> bytes (wireKey key) <> bytes " " <> intDec (B.length value)
@@ -463,6 +479,16 @@ storeRequest mode key value flags expiry version = render (B.length (wireKey key
 -- | Encode a set request for a pipelined batch. It is 'storeRequest' in 'Set'
 -- mode without a CAS, plus the given opaque as the @O@ flag, which memcached
 -- copies into the reply so that it can be matched to its request.
+--
+-- Send this only to memcached 1.6.10 or later. Older servers reject it without
+-- reading the value, and then run the value's bytes as commands. Connections
+-- that "Database.Memcache.Server" makes check the server's version, but a
+-- connection made with 'newConnection' directly does not.
+--
+-- Nor send it with a value longer than 1 GiB, the largest item memcached can
+-- store: from 2147483646 bytes, every memcached release up to 1.6.45 runs the
+-- value's bytes as commands. The operations in "Database.Memcache.Client" check
+-- the length before sending anything, but this encodes a value of any length.
 setManyRequest :: WireKey -> Value -> Flags -> Expiration -> Int -> ByteString
 setManyRequest key value flags expiry opaque = render (B.length (wireKey key) + B.length value) $
   bytes cmdMetaSet <> bytes " " <> bytes (wireKey key) <> bytes " " <> intDec (B.length value)
@@ -483,6 +509,16 @@ arithmeticRequest mode key initial delta expiry version = render (B.length (wire
   <> bytes crlf
 
 -- | Encode an append or prepend request.
+--
+-- Send this only to memcached 1.6.10 or later. Older servers reject it without
+-- reading the value, and then run the value's bytes as commands. Connections
+-- that "Database.Memcache.Server" makes check the server's version, but a
+-- connection made with 'newConnection' directly does not.
+--
+-- Nor send it with a value longer than 1 GiB, the largest item memcached can
+-- store: from 2147483646 bytes, every memcached release up to 1.6.45 runs the
+-- value's bytes as commands. The operations in "Database.Memcache.Client" check
+-- the length before sending anything, but this encodes a value of any length.
 modifyRequest :: StoreMode -> WireKey -> Value -> Version -> ByteString
 modifyRequest mode key value version = render (B.length (wireKey key) + B.length value) $
   bytes cmdMetaSet <> bytes " " <> bytes (wireKey key) <> bytes " " <> intDec (B.length value)

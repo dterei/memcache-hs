@@ -1,5 +1,6 @@
-{-# LANGUAGE RecordWildCards #-}
-{-# LANGUAGE CPP             #-}
+{-# LANGUAGE RecordWildCards   #-}
+{-# LANGUAGE CPP               #-}
+{-# LANGUAGE OverloadedStrings #-}
 
 {-|
 Module      : Database.Memcache.Server
@@ -11,6 +12,13 @@ Stability   : stable
 Portability : GHC
 
 Handles the connections between a Memcached client and a single server.
+
+Each new connection is authenticated, when its 'ServerSpec' has credentials,
+and then asks the server for its version before it is used. Unless the server
+reports memcached 1.6.10 or later, the connection is closed, having sent
+nothing but the authentication exchange, when there are credentials, and
+@version@, and v'ProtocolError' 'UnknownOp' is thrown (or, for an error reply,
+what that reply throws for any request).
 
 Memcached expected errors (part of the protocol) are returned in the Response;
 unexpected errors, such as network failures, are thrown as exceptions. The
@@ -26,10 +34,13 @@ module Database.Memcache.Server (
     ) where
 
 import           Database.Memcache.Auth
+import           Database.Memcache.Errors
 import           Database.Memcache.Socket
 import           Database.Memcache.Types.Server
 
-import           Control.Monad            (when)
+import           Control.Monad            (void, when)
+import qualified Data.ByteString.Char8    as C
+import           Data.Char                (isDigit)
 import           Data.Default
 import           Data.Hashable
 import           Data.IORef
@@ -237,8 +248,61 @@ connectSocket ServerSpec{..} = do
                 S.setSocketOption s S.NoDelay 1
             buffered <- newConnection s
             authenticate buffered ssAuth
+            checkVersion buffered
             return buffered
         )
+
+-- | The oldest memcached this client works with. From 1.6.10, the meta set
+-- command that every store sends takes the data length as the token after
+-- the key. Older servers reject the command without reading the data that
+-- follows it, and then run the stored value's bytes as commands.
+minimumVersion :: (Integer, Integer, Integer)
+minimumVersion = (1, 6, 10)
+
+-- | Ask the server for its version, and throw unless it is at least
+-- @minimumVersion@. Every new connection does this, after authenticating when
+-- there are credentials, before it is used for anything else, whichever of
+-- the host's addresses it connected to, or through a Unix socket;
+-- @connectSocket@ closes the connection when this throws.
+--
+-- An error reply, such as @CLIENT_ERROR unauthenticated@ from a server in
+-- auth-file mode when no credentials are set, throws what it throws as the
+-- reply to any request. Any other reply that isn't @VERSION@ and a version of
+-- at least @minimumVersion@ throws v'ProtocolError' 'UnknownOp', quoting the
+-- reply and naming the minimum. Retries treat that as a client fault, like a
+-- rejected command: the server's version won't change on a retry, so the
+-- operation fails at once and the server isn't marked as failed.
+checkVersion :: Connection -> IO ()
+checkVersion connection = do
+    sendRaw connection versionRequest
+    response <- recvResponse connection
+    when (responseCode response `elem` ["ERROR", "CLIENT_ERROR", "SERVER_ERROR"]) $
+        void (responseStatus response)
+    case responseVersion response of
+        Just v | v >= minimumVersion -> return ()
+        _ -> throwIO $ ProtocolError UnknownOp
+            { protocolError = "memcached " <> showVersion minimumVersion
+                <> " or later is required, but the server answered version with "
+                <> show (C.unwords (responseCode response : responseTokens response))
+            }
+  where
+    showVersion (major, minor, patch) =
+        show major <> "." <> show minor <> "." <> show patch
+
+-- | The version in a @VERSION@ reply, as its first three numbers: major,
+-- minor and patch, separated by dots. Anything after the third number, such
+-- as a @-rc1@ suffix or a word after the version, is ignored.
+responseVersion :: Response -> Maybe (Integer, Integer, Integer)
+responseVersion (Response "VERSION" (token:_) _) = do
+    (major, afterMajor) <- number token
+    (minor, afterMinor) <- number =<< C.stripPrefix "." afterMajor
+    (patch, _)          <- number =<< C.stripPrefix "." afterMinor
+    return (major, minor, patch)
+  where
+    number bytes = case C.span isDigit bytes of
+        (digits, remainder) | not (C.null digits) -> Just (read (C.unpack digits), remainder)
+        _ -> Nothing
+responseVersion _ = Nothing
 
 -- | Connect a socket to the first of the resolved addresses that accepts,
 -- trying them in order, so a host whose first address refuses the connection
