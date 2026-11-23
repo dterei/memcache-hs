@@ -75,7 +75,7 @@ jobs:
           stack-build-arguments: --fast --pedantic --bench --no-run-benchmarks
 
       - if: ${{ matrix.stack-yaml == 'stack.yaml' }}
-        uses: freckle/weeder-action@fc4ae04b473960ab78b14fdb01d6e235a8b62767 # v3.0.14
+        uses: freckle/weeder-action@7a2b2344b15eb8fa6532c0b4c202b135c25d778c # v3.0.15
         with:
           ghc-version: ${{ steps.stack.outputs.compiler-version }}
 
